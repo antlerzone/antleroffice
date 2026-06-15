@@ -1,0 +1,90 @@
+{
+  "templates": [
+    {
+      "id": "graphic_design",
+      "name": "Graphic Design",
+      "tagline": "Pixel art & office NPC skins",
+      "role": "graphic_design",
+      "defaultSkinId": "forest",
+      "sprite": 2,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 10,
+      "currency": "credits",
+      "skillIds": ["create_npc_skin"],
+      "openclawSkillNames": ["antleroffice-npc-skin-creator"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["spritecook", "antleroffice"],
+      "highlights": [
+        "High-quality pixel art",
+        "Unique NPC design",
+        "Commercial use"
+      ],
+      "trustedBy": "2,500+",
+      "rating": 4.9,
+      "reviewCount": 128,
+      "featured": true
+    },
+    {
+      "id": "it_guys",
+      "name": "IT Guys",
+      "tagline": "MCP wiring, scripts & automation",
+      "role": "it",
+      "defaultSkinId": "ocean",
+      "sprite": 1,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 15,
+      "currency": "credits",
+      "skillIds": ["it_guys", "token_saver"],
+      "openclawSkillNames": ["token-saver"],
+      "mcps": [
+        {
+          "slug": "openclaw",
+          "name": "OpenClaw MCP Bridge",
+          "transport": "stdio",
+          "command": "openclaw",
+          "args": ["mcp", "serve"],
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        },
+        {
+          "slug": "claude-code",
+          "name": "Claude Code MCP Bridge",
+          "transport": "stdio",
+          "command": "claude",
+          "args": ["mcp", "serve"],
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        },
+        {
+          "slug": "codex",
+          "name": "Codex MCP Bridge",
+          "transport": "stdio",
+          "command": "codex",
+          "args": ["mcp-server"],
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["openclaw", "claude-code", "codex"],
+      "highlights": [
+        "OpenClaw, Claude Code & Codex MCP bridges",
+        "stdio + HTTP MCP server wiring",
+        "Scripts, crawlers & IT fixes"
+      ],
+      "trustedBy": "800+",
+      "rating": 4.8,
+      "reviewCount": 64,
+      "featured": false
+    }
+  ]
+}
