@@ -25,8 +25,10 @@ const payroll = require('./payroll');
 const agentCatalog = require('./agent-catalog');
 const mcpProbe = require('./mcp-probe');
 const mcpOAuth = require('./mcp-oauth');
-const { handleInstruction } = require('./agent-runtime');
+const { handleInstruction, savePlanDeliverable } = require('./agent-runtime');
 const bossChat = require('./boss-chat-store');
+const antlerofficeMcp = require('./antleroffice-mcp');
+const webAccounts = require('./web-accounts-store');
 const { attachPaBridge, getOfficePresence } = require('./pa-bridge');
 const gatewayOfficeAdapter = require('./gateway-office-adapter');
 const materials = require('./materials.cjs');
@@ -108,8 +110,19 @@ function resolveBossOwner(req) {
   return { ownerKey: 'local:boss', ownerName: 'Boss' };
 }
 
+function requireBossOnly(req, res, next) {
+  if (req.officeMember && req.officeMember.role !== 'owner') {
+    return res.status(403).json({ ok: false, error: 'Boss only' });
+  }
+  next();
+}
+
 function registerAntlerRoutes(app) {
   store.setDataDir();
+  antlerofficeMcp.attachMcpRoutes(app);
+  defaultMcpPack.ensureAntlerofficeToolsBinding().catch((e) => {
+    console.warn('[AntlerOffice] antleroffice-tools MCP bind:', e.message);
+  });
   try {
     openclaw.ensureValidOpenClawConfig();
   } catch {
@@ -166,6 +179,7 @@ function registerAntlerRoutes(app) {
     if (saved.label) bootPatch.label = saved.label;
     if (Number.isInteger(saved.sprite)) bootPatch.charSprite = saved.sprite;
     if (Number.isInteger(saved.hueShift)) bootPatch.hueShift = saved.hueShift;
+    if (d.role === 'coo') bootPatch.openclawAgentId = 'main';
     if (Object.keys(bootPatch).length) office.setAgent(a.id, bootPatch);
   }
   // Hydrate user-created agents persisted from previous sessions.
@@ -385,21 +399,69 @@ function registerAntlerRoutes(app) {
   // ── Boss chat threads (per-agent, per-user conversations) ─────────────────
   app.get('/api/boss-chats', (req, res) => {
     const agentId = String(req.query.agentId || '').trim();
-    if (!agentId) return res.status(400).json({ ok: false, error: 'agentId required' });
     const owner = resolveBossOwner(req);
+    const threads = agentId
+      ? bossChat.threadSummaries(agentId, owner.ownerKey)
+      : bossChat.inboxSummaries(owner.ownerKey, owner.ownerName);
     res.json({
       ok: true,
       ownerKey: owner.ownerKey,
       ownerName: owner.ownerName,
-      threads: bossChat.threadSummaries(agentId, owner.ownerKey),
+      threads,
     });
   });
   app.post('/api/boss-chats', (req, res) => {
     const agentId = String(req.body?.agentId || '').trim();
     if (!agentId) return res.status(400).json({ ok: false, error: 'agentId required' });
     const owner = resolveBossOwner(req);
-    const thread = bossChat.createThread(agentId, req.body?.title, owner);
-    res.json({ ok: true, thread: { ...thread, messageCount: 0 } });
+    const openclawAgentId = office.resolveOpenClawAgentId(agentId);
+    const thread = bossChat.createThread(agentId, req.body?.title, { ...owner, openclawAgentId });
+    res.json({
+      ok: true,
+      thread: {
+        id: thread.id,
+        agentId: thread.agentId,
+        title: thread.title,
+        pinned: thread.pinned,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        messageCount: thread.gatewayBacked ? null : 0,
+        gatewayBacked: !!openclawAgentId,
+        openclawSessionKey: thread.openclawSessionKey,
+        openclawAgentId: thread.openclawAgentId,
+      },
+    });
+  });
+  app.post('/api/boss-chats/:id/plan-deliverable', (req, res) => {
+    const threadId = String(req.params.id || '').trim();
+    const owner = resolveBossOwner(req);
+    const thread = bossChat.getThreadForOwner(threadId, owner.ownerKey);
+    if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
+    const agent = office.getAgent(thread.agentId);
+    if (!agent || agent.role !== 'coo') {
+      return res.status(400).json({ ok: false, error: 'plan deliverables are COO-only' });
+    }
+    const task = String(req.body?.task || '').trim();
+    const result = String(req.body?.result || '').trim();
+    if (!task || !result) return res.status(400).json({ ok: false, error: 'task and result required' });
+    try {
+      const file = savePlanDeliverable({ agentIdOrRole: agent.id, task, result });
+      res.json({ ok: true, file });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || String(e) });
+    }
+  });
+  app.get('/api/boss-chats/:id/openclaw-session', (req, res) => {
+    const threadId = String(req.params.id || '').trim();
+    const owner = resolveBossOwner(req);
+    const thread = bossChat.getThreadForOwner(threadId, owner.ownerKey);
+    if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
+    const openclawAgentId = office.resolveOpenClawAgentId(thread.agentId);
+    if (!openclawAgentId) {
+      return res.status(400).json({ ok: false, error: 'agent has no OpenClaw runtime' });
+    }
+    const key = bossChat.ensureOpenClawSessionKey(threadId, owner.ownerKey, { openclawAgentId });
+    res.json({ ok: true, openclawSessionKey: key, openclawAgentId });
   });
   app.patch('/api/boss-chats/:id', (req, res) => {
     const threadId = String(req.params.id || '').trim();
@@ -409,7 +471,7 @@ function registerAntlerRoutes(app) {
       if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
       return res.json({
         ok: true,
-        thread: {
+        thread: bossChat.threadSummaries(thread.agentId, owner.ownerKey).find((t) => t.id === thread.id) || {
           id: thread.id,
           agentId: thread.agentId,
           title: thread.title,
@@ -420,7 +482,46 @@ function registerAntlerRoutes(app) {
         },
       });
     }
+    if (req.body?.title !== undefined) {
+      const thread = bossChat.setThreadTitle(threadId, owner.ownerKey, req.body.title);
+      if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
+      return res.json({ ok: true, thread: { id: thread.id, title: thread.title, updatedAt: thread.updatedAt } });
+    }
+    if (req.body?.openclawSessionKey !== undefined) {
+      const thread = bossChat.setThreadSessionKey(
+        threadId,
+        owner.ownerKey,
+        String(req.body.openclawSessionKey || '').trim(),
+      );
+      if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
+      return res.json({
+        ok: true,
+        thread: {
+          id: thread.id,
+          openclawSessionKey: thread.openclawSessionKey,
+          openclawAgentId: thread.openclawAgentId,
+          updatedAt: thread.updatedAt,
+        },
+      });
+    }
     return res.status(400).json({ ok: false, error: 'nothing to update' });
+  });
+  app.get('/api/boss-chats/by-session', (req, res) => {
+    const owner = resolveBossOwner(req);
+    const sessionKey = String(req.query.sessionKey || '').trim();
+    if (!sessionKey) return res.status(400).json({ ok: false, error: 'sessionKey required' });
+    const thread = bossChat.findThreadBySessionKey(owner.ownerKey, sessionKey);
+    if (!thread) return res.json({ ok: true, thread: null });
+    res.json({
+      ok: true,
+      thread: {
+        id: thread.id,
+        agentId: thread.agentId,
+        title: thread.title,
+        openclawSessionKey: thread.openclawSessionKey,
+        openclawAgentId: thread.openclawAgentId,
+      },
+    });
   });
   app.delete('/api/boss-chats/:id', (req, res) => {
     const owner = resolveBossOwner(req);
@@ -504,7 +605,10 @@ function registerAntlerRoutes(app) {
   // ── Config: user-created agents ───────────────────────────────────────────
   app.get('/api/config/agents/catalog', async (_req, res) => {
     try {
-      const templates = await ecsCatalog.catalogWithStatusMerged();
+      const hirePassword = require('./hire-password');
+      const templates = (await ecsCatalog.catalogWithStatusMerged()).map((t) =>
+        hirePassword.redactCatalogTemplate(t),
+      );
       res.json({ templates, source: ecsCatalog.ecsBaseUrl() ? 'ecs' : 'local' });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
@@ -512,9 +616,14 @@ function registerAntlerRoutes(app) {
   });
   app.post('/api/config/agents/hire', async (req, res) => {
     try {
-      const { templateId, name } = req.body || {};
+      const { templateId, name, hirePassword } = req.body || {};
       const bossToken = req.headers['x-boss-token'] || req.body?.token;
-      const result = await agentCatalog.hireFromTemplate({ templateId, name, bossToken });
+      const result = await agentCatalog.hireFromTemplate({
+        templateId,
+        name,
+        bossToken,
+        hirePassword,
+      });
       auth.refreshAllSessionCredits();
       res.json({
         ok: true,
@@ -525,7 +634,17 @@ function registerAntlerRoutes(app) {
       });
     } catch (e) {
       const status =
-        e.code === 'INSUFFICIENT_CREDITS' ? 409 : e.code === 'ALREADY_HIRED' ? 409 : e.code === 'UNKNOWN_TEMPLATE' ? 404 : 400;
+        e.code === 'INSUFFICIENT_CREDITS'
+          ? 409
+          : e.code === 'ALREADY_HIRED'
+            ? 409
+            : e.code === 'UNKNOWN_TEMPLATE'
+              ? 404
+              : e.code === 'HIRE_PASSWORD_REQUIRED' || e.code === 'INVALID_HIRE_PASSWORD'
+                ? 403
+                : e.code === 'HIRE_PASSWORD_UNAVAILABLE'
+                  ? 503
+                  : 400;
       res.status(status).json({
         ok: false,
         error: e.message,
@@ -617,6 +736,12 @@ function registerAntlerRoutes(app) {
       res.status(400).json({ ok: false, error: e.message });
     }
   });
+  app.get('/api/config/builtin-agents/:role/overview', (req, res) => {
+    const { buildBuiltinOverview } = require('./builtin-overview');
+    const out = buildBuiltinOverview(req.params.role, { office, registry });
+    if (!out) return res.status(404).json({ ok: false, error: 'Builtin agent not found' });
+    res.json(out);
+  });
   app.get('/api/config/templates/:id/review', (req, res) => {
     const review = registry.getAgentReview(registry.templateReviewKey(req.params.id));
     res.json({ ok: true, review });
@@ -678,20 +803,66 @@ function registerAntlerRoutes(app) {
       .filter((d) => d.agentId === a.id || d.agentId === `user:${a.id}`)
       .slice(0, 8);
     const oc = await openclaw.skillsList();
+    const allSkills = registry.listSkills();
+    const mcpsList = registry.listMcps();
+    const { buildHiredAgentOverview } = require('./agent-overview-build');
+
+    let catalog = null;
+    if (a.templateId || a.role) {
+      try {
+        const templates = await ecsCatalog.loadCatalogMerged();
+        const tid = a.templateId;
+        catalog =
+          templates.find(
+            (t) =>
+              t.id === tid ||
+              t.departmentId === tid ||
+              t.bundleTemplateId === tid ||
+              t.templateId === tid,
+          ) || null;
+        if (!catalog && tid) catalog = agentCatalog.getTemplate(tid);
+        if (!catalog && a.role) {
+          catalog =
+            templates.find((t) => t.role === a.role) ||
+            agentCatalog.getTemplate(a.role) ||
+            null;
+        }
+      } catch {
+        catalog =
+          (a.templateId && agentCatalog.getTemplate(a.templateId)) ||
+          (a.role && agentCatalog.getTemplate(a.role)) ||
+          null;
+      }
+    }
+
+    const built = buildHiredAgentOverview(a, {
+      catalog,
+      allSkills,
+      mcpsList,
+      agentCatalog,
+      liveNpc,
+    });
+
     res.json({
       ok: true,
       agent: redactAgent(a),
-      live: liveNpc
-        ? {
-            npcState: liveNpc.npcState,
-            bubbleText: liveNpc.bubbleText || '',
-            currentJob: liveNpc.currentJob || null,
-          }
-        : { npcState: 'resting', bubbleText: '', currentJob: null },
-      openclawSkills: a.openclawSkillNames || [],
+      live: built.live,
+      description: built.description,
+      examples: built.examples,
+      jobScope: built.jobScope,
+      skills: built.skills,
+      baseSkills: built.baseSkills,
+      additionalSkills: built.additionalSkills,
+      mcps: built.mcps,
+      baseMcps: built.baseMcps,
+      additionalMcps: built.additionalMcps,
+      additionalOpenclawSkills: built.additionalOpenclawSkills,
+      additionalCapabilities: built.additionalCapabilities,
+      openclawSkills: built.openclawSkills,
       knowledge: registry.listKnowledge(a.id),
       recentDeliverables,
       openclawAvailable: !!oc.available,
+      catalog: built.catalog,
     });
   });
   app.delete('/api/config/agents/:id', async (req, res) => {
@@ -1262,6 +1433,61 @@ function registerAntlerRoutes(app) {
     res.json({ ...materials.workspaceInfo(), ...result });
   });
 
+  // ── Web login accounts (encrypted local vault; boss-only) ─────────────────
+  app.get('/api/accounts', requireBossOnly, (_req, res) => {
+    res.json({ ok: true, accounts: webAccounts.listAccountsForBoss() });
+  });
+
+  app.get('/api/accounts/:alias/reveal', requireBossOnly, (req, res) => {
+    const secrets = webAccounts.revealAccount(req.params.alias);
+    if (!secrets) return res.status(404).json({ ok: false, error: 'account not found' });
+    res.json({ ok: true, ...secrets });
+  });
+
+  app.get('/api/accounts/:alias', requireBossOnly, (req, res) => {
+    const account = webAccounts.getAccountByAlias(req.params.alias);
+    if (!account) return res.status(404).json({ ok: false, error: 'account not found' });
+    res.json({ ok: true, account });
+  });
+
+  app.post('/api/accounts', requireBossOnly, (req, res) => {
+    try {
+      const account = webAccounts.createAccount(req.body || {});
+      res.json({ ok: true, account });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.patch('/api/accounts/:alias', requireBossOnly, (req, res) => {
+    try {
+      const account = webAccounts.updateAccount(req.params.alias, req.body || {});
+      res.json({ ok: true, account });
+    } catch (e) {
+      const status = /not found/i.test(e.message) ? 404 : 400;
+      res.status(status).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.delete('/api/accounts/:alias', requireBossOnly, (req, res) => {
+    try {
+      webAccounts.deleteAccount(req.params.alias);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(404).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/accounts/:alias/test', requireBossOnly, (req, res) => {
+    try {
+      const result = webAccounts.testAccount(req.params.alias);
+      res.json(result);
+    } catch (e) {
+      const status = /not found/i.test(e.message) ? 404 : 400;
+      res.status(status).json({ ok: false, error: e.message });
+    }
+  });
+
   // ── Boss instruction (optional targetAgentId for directed chat) ───────────
   app.post('/api/chat', async (req, res) => {
     const owner = resolveBossOwner(req);
@@ -1379,6 +1605,8 @@ function registerAntlerRoutes(app) {
 
 function attachAntlerOffice(httpServer) {
   attachPaBridge(httpServer);
+  const mcpPort = Number(process.env.ANTLEROFFICE_MCP_PORT) || 8931;
+  antlerofficeMcp.startStandaloneServer(mcpPort);
 }
 
 function attachGatewayOfficeSync(gateway) {

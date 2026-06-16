@@ -49,7 +49,7 @@ function resolveMcpRuntimeFromBindings(bindings) {
 }
 
 function formatMcpServersBlock(mcpServers) {
-  const list = Array.isArray(mcpServers) ? mcpServers.filter(Boolean) : [];
+  const list = Array.isArray(mcpServers) ? mcpServers.filter(Boolean).filter(mcpHasCredentials) : [];
   if (!list.length) return '';
 
   const lines = list.map((s) => {
@@ -73,7 +73,29 @@ function formatMcpServersBlock(mcpServers) {
   );
 }
 
+function mcpHasCredentials(server) {
+  if (!server) return false;
+  if (server.transport === 'http' && server.url) return true;
+  const envKeys =
+    server.env && typeof server.env === 'object' ? Object.keys(server.env).filter((k) => server.env[k]) : [];
+  if (envKeys.length) return true;
+  if (server.accounts?.some((a) => a.headers && Object.keys(a.headers).length)) return true;
+  return false;
+}
+
+function formatOpenClawBuiltinToolsBlock() {
+  return (
+    'OpenClaw built-in tools (always available on Gateway — use these first):\n' +
+    '- exec: run shell commands (e.g. git clone, curl, read files)\n' +
+    '- browser / web tools: fetch pages when exec is not enough\n' +
+    'For GitHub repos: clone or read the repo with exec, then summarize README and key folders. ' +
+    'If built-in tools fail, ask the boss for help — do not pretend the task is done.'
+  );
+}
+
 module.exports = {
   resolveMcpRuntimeFromBindings,
   formatMcpServersBlock,
+  mcpHasCredentials,
+  formatOpenClawBuiltinToolsBlock,
 };

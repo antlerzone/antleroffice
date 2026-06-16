@@ -17,6 +17,19 @@ function touch() {
   state.updatedAt = Date.now();
 }
 
+function notifyAgentActivity(agent) {
+  if (!agent) return;
+  try {
+    require('./office-events').notifyOfficeUpdate({
+      agentId: agent.id,
+      role: agent.role,
+      npcState: agent.npcState,
+    });
+  } catch {
+    /* office-events optional at import time */
+  }
+}
+
 function addAgent({
   id,
   label,
@@ -99,6 +112,15 @@ function getAgent(idOrRole) {
   );
 }
 
+/** OpenClaw Gateway agent id for a boss-chat office NPC, or null if not gateway-backed. */
+function resolveOpenClawAgentId(agentIdOrRole) {
+  const agent = getAgent(agentIdOrRole);
+  if (!agent || agent.external) return null;
+  if (agent.openclawAgentId) return agent.openclawAgentId;
+  if (agent.role === 'coo') return 'main';
+  return null;
+}
+
 function ensureRole(role, label, charSprite) {
   let a = state.agents.find((x) => x.role === role);
   if (!a) a = addAgent({ role, label, charSprite });
@@ -108,8 +130,13 @@ function ensureRole(role, label, charSprite) {
 function setAgent(idOrRole, patch) {
   const a = getAgent(idOrRole);
   if (!a) return null;
+  const prevState = a.npcState;
+  const prevBubble = a.bubbleText;
   Object.assign(a, patch);
   touch();
+  if (patch.npcState !== undefined || patch.bubbleText !== undefined || patch.currentJob !== undefined) {
+    if (a.npcState !== prevState || a.bubbleText !== prevBubble) notifyAgentActivity(a);
+  }
   return a;
 }
 
@@ -122,11 +149,11 @@ function removeAgent(id) {
 }
 
 function rest(idOrRole, bubbleText = '') {
-  return setAgent(idOrRole, { npcState: 'resting', bubbleText, currentJob: null });
+  return setAgent(idOrRole, { npcState: 'resting', bubbleText, currentJob: null, awaitingBossInput: false });
 }
 
 function work(idOrRole, bubbleText, currentJob = null) {
-  return setAgent(idOrRole, { npcState: 'working', bubbleText, currentJob });
+  return setAgent(idOrRole, { npcState: 'working', bubbleText, currentJob, awaitingBossInput: false });
 }
 
 // ── External OpenClaw agents (imported from other desktops) ────────────────
@@ -212,17 +239,15 @@ function snapshot({ agentId, threadId, ownerKey, ownerName } = {}) {
   const bossChat = require('./boss-chat-store');
   bossChat.migrateFromLegacy(state.chat);
 
-  let chat = state.chat;
-  let threads = [];
+  let chat = [];
   const key = ownerKey || 'local:boss';
+  const threads = bossChat.inboxSummaries(key, ownerName);
+  let activeThreadId = null;
 
   if (agentId) {
-    threads = bossChat.threadSummaries(agentId, key);
-    const resolvedThreadId = bossChat.resolveThreadId(agentId, threadId, key, ownerName);
-    if (resolvedThreadId) {
-      chat = bossChat.getMessages(resolvedThreadId);
-    } else {
-      chat = [];
+    activeThreadId = bossChat.resolveThreadId(agentId, threadId, key, ownerName);
+    if (activeThreadId) {
+      chat = bossChat.getMessages(activeThreadId);
     }
   }
 
@@ -232,7 +257,7 @@ function snapshot({ agentId, threadId, ownerKey, ownerName } = {}) {
     threads,
     ownerKey: key,
     ownerName: ownerName || null,
-    activeThreadId: agentId ? bossChat.resolveThreadId(agentId, threadId, key, ownerName) : null,
+    activeThreadId,
     selectedAgentId: state.selectedAgentId,
     updatedAt: state.updatedAt,
   };
@@ -245,6 +270,7 @@ module.exports = {
   loadUserAgents,
   setSelected,
   getAgent,
+  resolveOpenClawAgentId,
   ensureRole,
   setAgent,
   removeAgent,

@@ -85,6 +85,41 @@
       "rating": 4.8,
       "reviewCount": 64,
       "featured": false
+    },
+    {
+      "id": "human_resource",
+      "name": "AntlerOffice Human Resource",
+      "tagline": "Create SaaS NPC workers — catalog, bundles & departments",
+      "role": "human_resource",
+      "defaultSkinId": "amber",
+      "sprite": 5,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 12,
+      "currency": "credits",
+      "skillIds": ["create_saas_worker"],
+      "openclawSkillNames": ["antleroffice-hr-create-npc"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice"],
+      "highlights": [
+        "Create full SaaS NPC templates",
+        "Writes server/data + server/bundles",
+        "Git push server/ to deploy"
+      ],
+      "trustedBy": "1,200+",
+      "rating": 4.9,
+      "reviewCount": 86,
+      "featured": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/human_resource/bundle"
     }
   ]
 }

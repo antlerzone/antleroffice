@@ -36,6 +36,10 @@ import { renderSimpleMarkdown } from '@/utils/markdown'
 import { useEdgeTTS } from '@/composables/useEdgeTTS'
 import { useTTSSettings } from '@/composables/useTTSSettings'
 import type { AgentInstance, ChatMessage, ChatMessageContent, SessionsUsageSession, Skill } from '@/api/types'
+import {
+  OPENCLAW_SELECTED_SESSION_KEY,
+  normalizeOpenClawSessionKey,
+} from '@/utils/openclaw-session-key'
 
 const message = useMessage()
 const route = useRoute()
@@ -77,7 +81,6 @@ const roleFilterOptions = computed<SelectOption[]>(() => [
 
 const BOTTOM_GAP = 32
 const QUICK_REPLY_STORAGE_KEY = 'openclaw_chat_quick_replies_v1'
-const SESSION_KEY_STORAGE_KEY = 'openclaw_chat_selected_session_v1'
 let pendingForceScroll = false
 let pendingScroll = false
 let destroyed = false
@@ -1428,14 +1431,14 @@ const activeSlashSuggestion = computed(() => {
 const eventCleanups: Array<() => void> = []
 
 function ensureSessionKey(): string {
-  const normalized = sessionKeyInput.value.trim() || 'main'
+  const normalized = normalizeOpenClawSessionKey(sessionKeyInput.value.trim() || 'main')
   sessionKeyInput.value = normalized
   return normalized
 }
 
 function readStoredSessionKey(): string {
   try {
-    return localStorage.getItem(SESSION_KEY_STORAGE_KEY)?.trim() || ''
+    return normalizeOpenClawSessionKey(localStorage.getItem(OPENCLAW_SELECTED_SESSION_KEY)?.trim() || '')
   } catch (error) {
     console.warn('[ChatPage] 读取上次会话失败:', error)
     return ''
@@ -1443,17 +1446,17 @@ function readStoredSessionKey(): string {
 }
 
 function writeStoredSessionKey(key: string) {
-  const normalized = key.trim()
+  const normalized = normalizeOpenClawSessionKey(key.trim())
   if (!normalized) return
   try {
-    localStorage.setItem(SESSION_KEY_STORAGE_KEY, normalized)
+    localStorage.setItem(OPENCLAW_SELECTED_SESSION_KEY, normalized)
   } catch (error) {
     console.warn('[ChatPage] 保存上次会话失败:', error)
   }
 }
 
 async function loadHistoryForKey(rawKey: string, options?: { force?: boolean }) {
-  const key = rawKey.trim() || 'main'
+  const key = normalizeOpenClawSessionKey(rawKey.trim() || 'main')
   sessionKeyInput.value = key
   writeStoredSessionKey(key)
 
@@ -1479,7 +1482,7 @@ function normalizeSessionSelectValue(value: string | number | null | undefined):
 }
 
 function handleSessionKeyChange(value: string | number | null) {
-  const key = normalizeSessionSelectValue(value) || 'main'
+  const key = normalizeOpenClawSessionKey(normalizeSessionSelectValue(value) || 'main')
   sessionKeyInput.value = key
   void loadHistoryForKey(key, { force: true })
 }

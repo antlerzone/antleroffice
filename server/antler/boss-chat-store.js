@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const store = require('./store');
+const ocSession = require('./openclaw-session');
 
 let cache = null;
 
@@ -45,11 +46,38 @@ function threadOwnerKey(thread) {
   return thread.ownerKey || 'legacy:office';
 }
 
+function claimLegacyThreads(ownerKey, ownerName) {
+  const key = normalizeOwnerKey(ownerKey);
+  if (key === 'local:boss' || key === 'legacy:office') return;
+  const data = load();
+  let changed = false;
+  for (const thread of data.threads) {
+    const ok = threadOwnerKey(thread);
+    if (!thread.ownerKey || ok === 'legacy:office') {
+      thread.ownerKey = key;
+      if (ownerName) thread.ownerName = ownerName;
+      changed = true;
+    }
+  }
+  if (changed) persist();
+}
+
 function listThreads(agentId, ownerKey) {
   const key = normalizeOwnerKey(ownerKey);
   const data = load();
   return data.threads
     .filter((t) => t.agentId === agentId && threadOwnerKey(t) === key)
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+}
+
+function listInboxThreads(ownerKey) {
+  const key = normalizeOwnerKey(ownerKey);
+  const data = load();
+  return data.threads
+    .filter((t) => threadOwnerKey(t) === key)
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return b.updatedAt - a.updatedAt;
@@ -73,19 +101,74 @@ function ensureDefaultThread(agentId, ownerKey, ownerName) {
   return createThread(agentId, 'New chat', { ownerKey, ownerName });
 }
 
-function createThread(agentId, title = 'New chat', { ownerKey, ownerName } = {}) {
+function isDefaultThread(thread) {
+  const threads = listThreads(thread.agentId, threadOwnerKey(thread));
+  if (!threads.length) return true;
+  const oldest = [...threads].sort((a, b) => a.createdAt - b.createdAt)[0];
+  return oldest.id === thread.id;
+}
+
+function buildOpenClawSessionKey({ threadId, openclawAgentId = 'main', isDefault = false }) {
+  return ocSession.buildBossThreadSessionKey({ openclawAgentId, threadId, isDefault });
+}
+
+function ensureOpenClawSessionKey(threadId, ownerKey, { openclawAgentId } = {}) {
+  const thread = getThreadForOwner(threadId, ownerKey);
+  if (!thread) return null;
+  const agent = String(openclawAgentId || thread.openclawAgentId || 'main').trim() || 'main';
+  const wantKey = buildOpenClawSessionKey({
+    threadId: thread.id,
+    openclawAgentId: agent,
+    isDefault: isDefaultThread(thread),
+  });
+  const stale =
+    !thread.openclawSessionKey ||
+    thread.openclawAgentId !== agent ||
+    ocSession.isLegacyBossSessionKey(thread.openclawSessionKey) ||
+    thread.openclawSessionKey !== wantKey;
+  if (stale) {
+    thread.openclawAgentId = agent;
+    thread.openclawSessionKey = wantKey;
+    persist();
+  }
+  return thread.openclawSessionKey;
+}
+
+function createThread(agentId, title = 'New chat', { ownerKey, ownerName, openclawAgentId } = {}) {
   const data = load();
+  const owner = normalizeOwnerKey(ownerKey);
+  const existing = data.threads.filter(
+    (t) => t.agentId === agentId && threadOwnerKey(t) === owner,
+  );
+  const isDefault = existing.length === 0;
+  let resolved = openclawAgentId || null;
+  if (!resolved) {
+    try {
+      resolved = require('./office-state').resolveOpenClawAgentId(agentId);
+    } catch {
+      resolved = null;
+    }
+  }
   const thread = {
     id: uid('thread'),
     agentId,
-    ownerKey: normalizeOwnerKey(ownerKey),
+    ownerKey: owner,
     ownerName: ownerName || null,
     title: title || 'New chat',
     pinned: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     messages: [],
+    openclawAgentId: resolved,
+    openclawSessionKey: null,
   };
+  if (resolved) {
+    thread.openclawSessionKey = buildOpenClawSessionKey({
+      threadId: thread.id,
+      openclawAgentId: resolved,
+      isDefault,
+    });
+  }
   data.threads.push(thread);
   persist();
   return thread;
@@ -134,6 +217,41 @@ function setPinned(threadId, ownerKey, pinned) {
   return thread;
 }
 
+function setThreadSessionKey(threadId, ownerKey, openclawSessionKey) {
+  const thread = getThreadForOwner(threadId, ownerKey);
+  if (!thread) return null;
+  const key = String(openclawSessionKey || '').trim();
+  if (!key) return null;
+  thread.openclawSessionKey = key;
+  thread.updatedAt = Date.now();
+  persist();
+  return thread;
+}
+
+function setThreadTitle(threadId, ownerKey, title) {
+  const thread = getThreadForOwner(threadId, ownerKey);
+  if (!thread) return null;
+  const next = String(title || '').trim();
+  if (!next) return null;
+  thread.title = next;
+  thread.updatedAt = Date.now();
+  persist();
+  return thread;
+}
+
+function findThreadBySessionKey(ownerKey, sessionKey) {
+  const key = normalizeOwnerKey(ownerKey);
+  const normalized = ocSession.normalizeSessionKey(sessionKey);
+  const data = load();
+  return (
+    data.threads.find((t) => {
+      if (threadOwnerKey(t) !== key || !t.openclawSessionKey) return false;
+      const threadNorm = ocSession.normalizeSessionKey(t.openclawSessionKey, t.openclawAgentId || 'main');
+      return threadNorm === normalized || t.openclawSessionKey === sessionKey;
+    }) || null
+  );
+}
+
 function deleteThread(threadId, ownerKey) {
   const data = load();
   const idx = data.threads.findIndex(
@@ -177,24 +295,45 @@ function resolveThreadId(agentId, threadId, ownerKey, ownerName) {
   return createThread(agentId, 'New chat', { ownerKey: key, ownerName }).id;
 }
 
+function threadGatewayBacked(thread) {
+  try {
+    return !!require('./office-state').resolveOpenClawAgentId(thread.agentId);
+  } catch {
+    return false;
+  }
+}
+
+function threadSummaryRow(thread) {
+  const gatewayBacked = threadGatewayBacked(thread);
+  return {
+    id: thread.id,
+    agentId: thread.agentId,
+    ownerKey: threadOwnerKey(thread),
+    ownerName: thread.ownerName,
+    title: thread.title,
+    pinned: thread.pinned,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    messageCount: gatewayBacked ? null : (thread.messages || []).length,
+    gatewayBacked,
+    openclawSessionKey: thread.openclawSessionKey || null,
+    openclawAgentId: thread.openclawAgentId || null,
+  };
+}
+
 function threadSummaries(agentId, ownerKey) {
-  return listThreads(agentId, ownerKey).map(
-    ({ id, agentId: aid, ownerKey: ok, ownerName, title, pinned, createdAt, updatedAt, messages }) => ({
-      id,
-      agentId: aid,
-      ownerKey: ok,
-      ownerName,
-      title,
-      pinned,
-      createdAt,
-      updatedAt,
-      messageCount: messages.length,
-    }),
-  );
+  return listThreads(agentId, ownerKey).map(threadSummaryRow);
+}
+
+function inboxSummaries(ownerKey, ownerName) {
+  claimLegacyThreads(ownerKey, ownerName);
+  return listInboxThreads(ownerKey).map(threadSummaryRow);
 }
 
 module.exports = {
+  claimLegacyThreads,
   listThreads,
+  listInboxThreads,
   getThread,
   getThreadForOwner,
   ensureDefaultThread,
@@ -202,8 +341,14 @@ module.exports = {
   addMessage,
   getMessages,
   setPinned,
+  setThreadSessionKey,
+  setThreadTitle,
+  findThreadBySessionKey,
   deleteThread,
   migrateFromLegacy,
   resolveThreadId,
   threadSummaries,
+  inboxSummaries,
+  buildOpenClawSessionKey,
+  ensureOpenClawSessionKey,
 };

@@ -27,6 +27,7 @@ import {
   AnalyticsOutline,
   ColorPaletteOutline,
   LinkOutline,
+  KeyOutline,
   CheckmarkDoneOutline,
 } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
@@ -65,6 +66,7 @@ const iconMap: Record<string, unknown> = {
   AnalyticsOutline,
   ColorPaletteOutline,
   LinkOutline,
+  KeyOutline,
   CheckmarkDoneOutline,
 }
 

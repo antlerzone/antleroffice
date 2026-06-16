@@ -5,13 +5,26 @@
 const { spawnCmd } = require('./spawn-util');
 const store = require('./store');
 const registry = require('./registry-store');
-const { ensureBundledMcp } = require('./agent-catalog');
 const { resolveMcpRuntimeFromBindings } = require('./mcp-runtime-helper');
 const onboard = require('./onboard');
 
+function ensureBundledMcpRef() {
+  return require('./agent-catalog').ensureBundledMcp;
+}
+
 const PACK_VERSION = 1;
 
+const MCP_PORT = Number(process.env.ANTLEROFFICE_MCP_PORT) || 8931;
+
 const MCP_DEFS = {
+  'antleroffice-tools': {
+    slug: 'antleroffice-tools',
+    name: 'AntlerOffice Tools',
+    url: `http://127.0.0.1:${MCP_PORT}/mcp`,
+    transport: 'http',
+    suggestedAuthType: 'none',
+    skipProbeOnHire: true,
+  },
   playwright: {
     slug: 'playwright',
     name: 'Playwright Browser',
@@ -42,7 +55,7 @@ const MCP_DEFS = {
 };
 
 const ROLE_SLUGS = {
-  coo: ['perplexity', 'firecrawl'],
+  coo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   admin: ['perplexity', 'firecrawl'],
   it: ['playwright'],
 };
@@ -108,7 +121,7 @@ async function ensurePackMcp(slug, { apiKey, envKey } = {}) {
   if (apiKey && envKey) {
     def.env = { [envKey]: apiKey };
   }
-  const { mcp } = await ensureBundledMcp(def);
+  const { mcp } = await ensureBundledMcpRef()(def);
   if (mcp && apiKey && envKey) {
     registry.updateMcp(mcp.id, { env: { ...(mcp.env || {}), [envKey]: apiKey } });
     return registry.getMcp(mcp.id);
@@ -130,6 +143,19 @@ function installPlaywrightBrowsers() {
 
 function installPlaywrightChromium() {
   return onboard.startInstall('playwright-chromium', 'npx', ['playwright', 'install', 'chromium']);
+}
+
+async function ensureAntlerofficeToolsBinding() {
+  const mcp = await ensurePackMcp('antleroffice-tools');
+  if (!mcp) return null;
+
+  const pack = readPackSettings();
+  const slugToMcpId = { ...(pack.slugToMcpId || {}), 'antleroffice-tools': mcp.id };
+  writePackSettings({ slugToMcpId });
+
+  const cooBindings = getBuiltinRoleBindings('coo');
+  setBuiltinRoleBindings('coo', mergeBindings(cooBindings, [mcp.id]));
+  return mcp;
 }
 
 async function applyDefaultMcpPack({
@@ -181,6 +207,8 @@ async function applyDefaultMcpPack({
   }
 
   if (enableCoo) {
+    const mTools = await ensurePackMcp('antleroffice-tools');
+    if (mTools) slugToMcpId['antleroffice-tools'] = mTools.id;
     const ids = ROLE_SLUGS.coo.map((s) => slugToMcpId[s]).filter(Boolean);
     setBuiltinRoleBindings('coo', ids.map((mcpId) => ({ mcpId, accountIds: [] })));
   }
@@ -256,6 +284,7 @@ async function getStatus() {
 module.exports = {
   MCP_DEFS,
   ROLE_SLUGS,
+  ensureAntlerofficeToolsBinding,
   applyDefaultMcpPack,
   applyRoleDefaultsToAgent,
   getStatus,

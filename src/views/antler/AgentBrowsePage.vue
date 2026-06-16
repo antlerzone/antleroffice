@@ -16,7 +16,26 @@ import {
   unregisterPreviewsIn,
   SKIN_CANVAS_SIZE,
   AGENT_SKIN_CANVAS,
+  DETAIL_AGENT_CANVAS,
 } from '@/lib/skin-preview'
+import {
+  BROWSE_SECTIONS,
+  CATEGORY_TABS,
+  categoryLabel,
+  filterBrowseTemplates,
+  groupTemplatesByCategory,
+  type BrowseSection,
+  type CatalogCategory,
+  type MarketSection,
+} from '@/lib/agent-browse-catalog'
+import {
+  layoutToAgentColStyle,
+  layoutToSceneStyle,
+  layoutToStatsStyle,
+  loadNpcHireLayout,
+} from '@/lib/npc-hire-layout'
+import { drawModalBorderVignette } from '@/lib/npc-hire-vignette'
+import { looksLikeUuidSearch } from '@/lib/catalog-uuid'
 
 interface Skin {
   id: string
@@ -29,6 +48,13 @@ interface Template {
   name: string
   tagline?: string
   role?: string
+  category?: string
+  departmentId?: string
+  bundleTemplateId?: string | null
+  templateId?: string
+  marketSection?: MarketSection
+  sortOrder?: number
+  installable?: boolean
   salaryCreditsPerMonth?: number
   currency?: string
   hired?: boolean
@@ -45,11 +71,20 @@ interface Template {
   mcpNames?: string[]
   includesLabel?: string
   mcpHints?: string[]
+  trustedBy?: string
+  description?: string
+  examples?: string[]
+  catalogUuid?: string | null
+  visibility?: 'public' | 'hidden'
+  hidden?: boolean
+  requiresHirePassword?: boolean
 }
 
 const FAV_KEY = 'antleroffice.agentBrowseFavorites'
 const FILTER_KEY = 'antleroffice.agentBrowseFilters'
 const AGENT_BROWSE_VIEW_KEY = 'antleroffice.agentBrowseView'
+const LIST_PAGE_KEY = 'antleroffice.agentBrowseListPage'
+const LIST_PAGE_SIZES = [10, 20, 50, 100, 200] as const
 
 const api = useAntlerApi()
 const boss = useBossStore()
@@ -68,6 +103,8 @@ const viewMode = ref<'grid' | 'list'>(
 )
 
 const search = ref('')
+const browseSection = ref<BrowseSection>('department')
+const categoryFilter = ref<CatalogCategory | ''>('')
 const status = ref('')
 const role = ref('')
 const creditMin = ref('')
@@ -75,18 +112,47 @@ const creditMax = ref('')
 const ratingMin = ref('')
 const sort = ref('')
 const favoritesOnly = ref(false)
+const listPage = ref(1)
+const listPageSize = ref<number>(10)
 
 const detailOpen = ref(false)
+const npcHireSceneStyle = ref<Record<string, string>>({})
+const npcHireAgentColStyle = ref<Record<string, string>>({})
+const npcHireStatsStyle = ref<Record<string, string>>({})
 const detailTemplate = ref<Template | null>(null)
+const detailStageRef = ref<HTMLElement | null>(null)
+const detailCanvasRef = ref<HTMLCanvasElement | null>(null)
+const detailModalRef = ref<HTMLElement | null>(null)
+const vignetteCanvasRef = ref<HTMLCanvasElement | null>(null)
+let vignetteRaf = 0
+let vignetteResizeObserver: ResizeObserver | null = null
+
+function stopVignetteObserver() {
+  vignetteResizeObserver?.disconnect()
+  vignetteResizeObserver = null
+}
+
+function startVignetteObserver() {
+  stopVignetteObserver()
+  const modal = detailModalRef.value
+  if (!modal || typeof ResizeObserver === 'undefined') return
+  vignetteResizeObserver = new ResizeObserver(() => updateHireVignette())
+  vignetteResizeObserver.observe(modal)
+}
 const hireOpen = ref(false)
 const hireTemplate = ref<Template | null>(null)
 const hireName = ref('')
+const hirePassword = ref('')
 const hireError = ref('')
 
 function loadFilterPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}')
     if (typeof saved.search === 'string') search.value = saved.search
+    if (saved.browseSection === 'department' || saved.browseSection === 'leadership' || saved.browseSection === 'all') {
+      browseSection.value = saved.browseSection
+    }
+    if (typeof saved.categoryFilter === 'string') categoryFilter.value = saved.categoryFilter as CatalogCategory | ''
     if (typeof saved.status === 'string') status.value = saved.status
     if (typeof saved.role === 'string') role.value = saved.role
     if (saved.creditMin != null) creditMin.value = String(saved.creditMin)
@@ -102,6 +168,8 @@ function saveFilterPrefs() {
     FILTER_KEY,
     JSON.stringify({
       search: search.value,
+      browseSection: browseSection.value,
+      categoryFilter: categoryFilter.value,
       status: status.value,
       role: role.value,
       creditMin: creditMin.value,
@@ -111,6 +179,18 @@ function saveFilterPrefs() {
       favoritesOnly: favoritesOnly.value,
     }),
   )
+}
+
+function loadListPagePrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LIST_PAGE_KEY) || '{}')
+    const size = Number(saved.pageSize)
+    if ((LIST_PAGE_SIZES as readonly number[]).includes(size)) listPageSize.value = size
+  } catch { /* ignore */ }
+}
+
+function saveListPagePrefs() {
+  localStorage.setItem(LIST_PAGE_KEY, JSON.stringify({ pageSize: listPageSize.value }))
 }
 
 function loadFavorites(): string[] {
@@ -157,8 +237,7 @@ function templateHasSocial(t: Template) {
 }
 
 function templateHighlights(t: Template) {
-  if (t.highlights?.length) return t.highlights
-  return ['High-quality pixel art', 'Unique NPC design', 'Commercial use']
+  return t.highlights || []
 }
 
 function templateSkillTags(t: Template) {
@@ -176,8 +255,16 @@ const roles = computed(() =>
   [...new Set(templates.value.map((t) => t.role).filter(Boolean))].sort() as string[],
 )
 
+function templateSearchHaystack(t: Template) {
+  const { skinName } = templatePreviewSkin(t)
+  const skills = (t.skillNames || t.skillIds || []).join(' ')
+  return [t.name, t.tagline, t.role, skinName, skills, categoryLabel(t.category)].join(' ')
+}
+
 const filterCount = computed(() => {
   let n = 0
+  if (browseSection.value !== 'department') n++
+  if (categoryFilter.value) n++
   if (status.value) n++
   if (role.value) n++
   if (creditMin.value || creditMax.value) n++
@@ -187,47 +274,82 @@ const filterCount = computed(() => {
   return n
 })
 
-const filtered = computed(() => {
-  let out = [...templates.value]
-  const q = search.value.trim().toLowerCase()
-  if (q) {
-    out = out.filter((t) => {
-      const { skinName } = templatePreviewSkin(t)
-      const skills = (t.skillNames || t.skillIds || []).join(' ')
-      return [t.name, t.tagline, t.role, skinName, skills].join(' ').toLowerCase().includes(q)
-    })
-  }
-  if (status.value === 'available') out = out.filter((t) => !t.hired)
-  else if (status.value === 'hired') out = out.filter((t) => t.hired)
-  if (role.value) out = out.filter((t) => t.role === role.value)
-  if (creditMin.value) {
-    const min = Number(creditMin.value)
-    if (Number.isFinite(min)) out = out.filter((t) => (t.salaryCreditsPerMonth ?? 0) >= min)
-  }
-  if (creditMax.value) {
-    const max = Number(creditMax.value)
-    if (Number.isFinite(max)) out = out.filter((t) => (t.salaryCreditsPerMonth ?? 0) <= max)
-  }
-  if (favoritesOnly.value) {
-    const favs = new Set(loadFavorites())
-    out = out.filter((t) => favs.has(t.id))
-  }
-  if (ratingMin.value) {
-    const minR = Number(ratingMin.value)
-    if (Number.isFinite(minR)) {
-      out = out.filter((t) => {
-        const r = browseRating(t)
-        return r != null && r >= minR
-      })
-    }
-  }
-  if (sort.value === 'rating_desc') out.sort((a, b) => browseRating(b) - browseRating(a))
-  else if (sort.value === 'rating_asc') out.sort((a, b) => browseRating(a) - browseRating(b))
-  return out
+const filtered = computed(() =>
+  filterBrowseTemplates(templates.value, {
+    section: browseSection.value,
+    category: categoryFilter.value,
+    search: search.value,
+    status: status.value,
+    role: role.value,
+    creditMin: creditMin.value,
+    creditMax: creditMax.value,
+    ratingMin: ratingMin.value,
+    sort: sort.value,
+    favoritesOnly: favoritesOnly.value,
+    favoriteIds: new Set(loadFavorites()),
+    browseRating,
+    searchHaystack: templateSearchHaystack,
+    isUuidSearch: looksLikeUuidSearch,
+  }) as Template[],
+)
+
+const listTotal = computed(() => filtered.value.length)
+const listTotalPages = computed(() => Math.max(1, Math.ceil(listTotal.value / listPageSize.value)))
+const paginatedList = computed(() => {
+  const start = (listPage.value - 1) * listPageSize.value
+  return filtered.value.slice(start, start + listPageSize.value)
 })
+const listPageInfo = computed(() => {
+  if (!listTotal.value) return { start: 0, end: 0 }
+  return {
+    start: (listPage.value - 1) * listPageSize.value + 1,
+    end: Math.min(listTotal.value, listPage.value * listPageSize.value),
+  }
+})
+
+function onListPageChange(page: number) {
+  const next = Math.min(Math.max(1, page), listTotalPages.value)
+  if (next === listPage.value) return
+  listPage.value = next
+  void mountPreviews()
+}
+
+function onListPageSizeChange(size: number) {
+  if (!(LIST_PAGE_SIZES as readonly number[]).includes(size)) return
+  listPageSize.value = size
+  listPage.value = 1
+  saveListPagePrefs()
+  void mountPreviews()
+}
+
+const activeBrowseSection = computed(
+  () => BROWSE_SECTIONS.find((section) => section.id === browseSection.value) || BROWSE_SECTIONS[0],
+)
+
+const gridGroups = computed(() => {
+  if (categoryFilter.value || browseSection.value === 'leadership') {
+    return [{ category: '' as const, label: '', templates: filtered.value }]
+  }
+  return groupTemplatesByCategory(filtered.value)
+})
+
+function setBrowseSection(section: BrowseSection) {
+  browseSection.value = section
+  if (section === 'leadership') categoryFilter.value = ''
+  saveFilterPrefs()
+  void mountPreviews()
+}
+
+function setCategoryFilter(next: CatalogCategory | '') {
+  categoryFilter.value = next
+  saveFilterPrefs()
+  void mountPreviews()
+}
 
 function clearFilters() {
   search.value = ''
+  browseSection.value = 'department'
+  categoryFilter.value = ''
   status.value = ''
   role.value = ''
   creditMin.value = ''
@@ -266,19 +388,247 @@ async function load() {
   await mountPreviews()
 }
 
+function formatRole(role?: string) {
+  if (!role) return 'Office worker'
+  return role.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function detailHeroTitle(t: Template) {
+  const cleaned = t.name.replace(/^AntlerOffice\s+/i, '').trim()
+  return cleaned || formatRole(t.role)
+}
+
+function detailHeroSubtitle(t: Template) {
+  if (t.tagline) return t.tagline
+  return detailShowcaseTagline(t)
+}
+
+function detailShowcaseTagline(t: Template) {
+  const presets: Record<string, string> = {
+    'Create SaaS NPC workers — catalog, bundles & departments': 'Ready to manage your workforce',
+  }
+  if (t.tagline && presets[t.tagline]) return presets[t.tagline]
+  if (t.tagline && t.tagline.length <= 56 && !t.tagline.includes('server/')) return t.tagline
+  return `Your plug-and-play ${formatRole(t.role).toLowerCase()} assistant`
+}
+
+function detailAgentTitle(t: Template) {
+  const cleaned = t.name.replace(/^AntlerOffice\s+/i, '').trim()
+  if (cleaned.toLowerCase().endsWith(' agent')) return cleaned
+  if (cleaned) return `${cleaned} Agent`
+  return `${formatRole(t.role)} Agent`
+}
+
+function detailReviewStat(t: Template) {
+  const r = browseRating(t)
+  const count = t.reviewCount ?? 0
+  if (r == null && count === 0) {
+    return { value: 'New', suffix: '', foot: 'No reviews yet' }
+  }
+  return {
+    value: r != null ? String(r) : '—',
+    suffix: r != null ? '/ 5.0' : '',
+    foot: count > 0 ? `Based on ${count} review${count === 1 ? '' : 's'}` : 'No reviews yet',
+  }
+}
+
+function formatHireCount(t: Template) {
+  const n = t.hireCount ?? 0
+  if (n <= 0) return '—'
+  return `${n >= 1000 ? n.toLocaleString() : String(n)}+`
+}
+
+function officeHireCount(t: Template) {
+  const n = t.hireCount ?? 0
+  return n > 0 ? n : t.hired ? 1 : 0
+}
+
+function hireStatusLabel(t: Template) {
+  const n = officeHireCount(t)
+  if (!n) return 'Available'
+  if (n === 1) return 'On your team'
+  return `On your team · ×${n}`
+}
+
+function hireMenuLabel(t: Template) {
+  return t.hired ? 'Hire another' : 'Hire'
+}
+
+function defaultHireName(t: Template) {
+  const n = officeHireCount(t)
+  if (n <= 0) return t.name
+  return `${t.name} ${n + 1}`
+}
+
+const ROLE_SCOPE_PRESETS: Record<string, { icon: string; label: string; text: string }[]> = {
+  human_resource: [
+    {
+      icon: 'briefcase',
+      label: 'Office role',
+      text: 'Human Resource — Handles HR tasks and people operations.',
+    },
+    {
+      icon: 'gear',
+      label: 'Core skills',
+      text: 'Create SaaS Worker — Builds SaaS NPC workers with best practices.',
+    },
+    {
+      icon: 'wrench',
+      label: 'Integrated tools',
+      text: 'AntlerOffice Tools — Prebuilt tools for server, data and deployment.',
+    },
+  ],
+}
+
+const WHAT_YOU_GET_PRESETS: Record<string, string[]> = {
+  human_resource: [
+    'Full SaaS NPC worker template',
+    'Server / Data + Server / Tools',
+    'Git push server to deploy',
+    '1 Skill · 1 MCP included',
+  ],
+}
+
+function detailGlassTitle(t: Template) {
+  return t.name || `AntlerOffice ${detailHeroTitle(t)}`
+}
+
+function detailSalaryDisplay(t: Template) {
+  const amount = t.salaryCreditsPerMonth ?? 0
+  const unit = (t.currency || 'credits').toLowerCase()
+  return { amount, unit, period: 'month' }
+}
+
+function detailWhatYouGet(t: Template) {
+  const preset = WHAT_YOU_GET_PRESETS[t.role || ''] || WHAT_YOU_GET_PRESETS[t.id || '']
+  if (preset) return preset
+
+  const items = [...templateHighlights(t)]
+  const skills = templateSkillTags(t)
+  const mcps = t.mcpNames?.length ? t.mcpNames : (t.mcpHints || [])
+  if (skills.length || mcps.length) {
+    const parts: string[] = []
+    if (skills.length) parts.push(`${skills.length} Skill${skills.length === 1 ? '' : 's'}`)
+    if (mcps.length) parts.push(`${mcps.length} MCP${mcps.length === 1 ? '' : 's'}`)
+    if (parts.length) items.push(`${parts.join(' + ')} included`)
+  }
+  if (items.length) return items
+  return [
+    'Full SaaS NPC worker template',
+    'Ready-to-use workflows',
+    'One-click deployment',
+    'No coding required',
+  ]
+}
+
+function detailTipText(t: Template) {
+  const n = officeHireCount(t)
+  if (n === 1) return 'This agent is already on your team and working. Hire another copy if you need more capacity.'
+  if (n > 1) return `You have ${n} of this agent on your team. Hire another copy if you need more capacity.`
+  return 'Perfect for non-tech founders. Plug & play. No coding needed.'
+}
+
+function detailDescription(t: Template) {
+  const text = String(t.description || '').trim()
+  if (text) return text
+  if (t.tagline) return t.tagline
+  return `Your plug-and-play ${formatRole(t.role).toLowerCase()} assistant for everyday business tasks.`
+}
+
+function detailExamples(t: Template) {
+  const items = (t.examples || []).map((x) => String(x || '').trim()).filter(Boolean)
+  if (items.length) return items
+  return []
+}
+
+function isHiddenTemplate(t: Template) {
+  return t.visibility === 'hidden' || !!t.hidden || !!t.requiresHirePassword
+}
+
+function detailJobScopeCards(t: Template) {
+  const preset = ROLE_SCOPE_PRESETS[t.role || ''] || ROLE_SCOPE_PRESETS[t.id || '']
+  if (preset) {
+    return preset.map((card, i) => ({ key: `preset-${i}`, ...card }))
+  }
+  const skills = templateSkillTags(t)
+  const mcps = t.mcpNames?.length ? t.mcpNames : (t.mcpHints || [])
+  const role = formatRole(t.role)
+  return [
+    {
+      key: 'role',
+      icon: 'briefcase',
+      label: 'Office role',
+      text: `${role} — ${t.tagline || `Handles ${role.toLowerCase()} tasks and people operations.`}`,
+    },
+    {
+      key: 'skills',
+      icon: 'gear',
+      label: 'Core skills',
+      text: skills.length
+        ? `${skills[0]} — ${skills.slice(1).join(' · ') || 'Built-in specialist capabilities after hire.'}`
+        : `${role} — Built-in specialist capabilities after hire.`,
+    },
+    {
+      key: 'tools',
+      icon: 'wrench',
+      label: 'Integrated tools',
+      text: mcps.length
+        ? `${mcps[0]} — ${mcps.slice(1).join(' · ') || 'Prebuilt tools for your business workflows.'}`
+        : 'AntlerOffice Tools — Prebuilt tools for your business workflows.',
+    },
+  ]
+}
+
+function closeDetail() {
+  detailOpen.value = false
+}
+
+function updateHireVignette() {
+  cancelAnimationFrame(vignetteRaf)
+  vignetteRaf = requestAnimationFrame(() => {
+    const canvas = vignetteCanvasRef.value
+    const modal = detailModalRef.value
+    if (!canvas || !modal || !detailOpen.value) return
+    drawModalBorderVignette(canvas, modal.getBoundingClientRect())
+  })
+}
+
+function onVignetteResize() {
+  if (detailOpen.value) updateHireVignette()
+}
+
+function onDetailKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape' && detailOpen.value) closeDetail()
+}
+
+async function mountDetailPreview() {
+  await nextTick()
+  if (detailStageRef.value) unregisterPreviewsIn(detailStageRef.value)
+  const t = detailTemplate.value
+  if (!t) return
+  const { palette, hueShift } = templatePreviewSkin(t)
+  const canvas = detailCanvasRef.value
+  if (canvas) registerPreview({ canvas, palette, hueShift })
+  startSkinPreviews()
+}
+
 function openDetail(t: Template) {
   detailTemplate.value = t
   detailOpen.value = true
+  void nextTick(() => {
+    void mountDetailPreview()
+    updateHireVignette()
+  })
 }
 
 function openHire(t: Template) {
-  if (t.hired) return
   if (officeShare.isMemberClient) {
     message.warning('Hiring is only available on the host office.')
     return
   }
   hireTemplate.value = t
-  hireName.value = t.name
+  hireName.value = defaultHireName(t)
+  hirePassword.value = ''
   hireError.value = ''
   hireOpen.value = true
   detailOpen.value = false
@@ -298,7 +648,7 @@ async function confirmHire() {
     }>(
       'POST',
       '/api/config/agents/hire',
-      { templateId: t.id, name: hireName.value.trim() || t.name },
+      { templateId: t.id, name: hireName.value.trim() || t.name, hirePassword: hirePassword.value.trim() || undefined },
     )
     if (boss.session && r.creditBalance !== undefined) {
       boss.session.creditBalance = r.creditBalance
@@ -334,32 +684,102 @@ function onFavClick(t: Template, ev: Event) {
   if (favoritesOnly.value) void load()
 }
 
-watch([search, status, role, creditMin, creditMax, ratingMin, sort, favoritesOnly], () => {
+function onListHireClick(t: Template, ev: Event) {
+  ev.stopPropagation()
+  openHire(t)
+}
+
+watch(detailOpen, (open) => {
+  if (open) {
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', onDetailKeydown)
+    window.addEventListener('resize', onVignetteResize)
+    void nextTick(() => {
+      updateHireVignette()
+      startVignetteObserver()
+    })
+  } else {
+    document.body.style.overflow = ''
+    window.removeEventListener('keydown', onDetailKeydown)
+    window.removeEventListener('resize', onVignetteResize)
+    stopVignetteObserver()
+    cancelAnimationFrame(vignetteRaf)
+    if (detailStageRef.value) unregisterPreviewsIn(detailStageRef.value)
+  }
+})
+
+watch([search, browseSection, categoryFilter, status, role, creditMin, creditMax, ratingMin, sort, favoritesOnly], () => {
+  listPage.value = 1
   saveFilterPrefs()
   void mountPreviews()
+})
+watch(listTotalPages, (pages) => {
+  if (listPage.value > pages) listPage.value = pages
 })
 watch(viewMode, () => void mountPreviews())
 
 onMounted(() => {
   loadFilterPrefs()
+  loadListPagePrefs()
   load().catch(() => message.error('Could not load catalog'))
+  void loadNpcHireLayout().then((layout) => {
+    npcHireSceneStyle.value = layoutToSceneStyle(layout)
+    npcHireAgentColStyle.value = layoutToAgentColStyle(layout)
+    npcHireStatsStyle.value = layoutToStatsStyle(layout)
+  })
 })
-onUnmounted(() => stopSkinPreviews())
+onUnmounted(() => {
+  stopSkinPreviews()
+  document.body.style.overflow = ''
+  window.removeEventListener('keydown', onDetailKeydown)
+})
 </script>
 
 <template>
   <div :class="props.embedded ? 'agent-browse-embedded' : 'antler-v1-root'">
     <template v-if="!props.embedded">
       <h2 class="view-title">Hire an agent</h2>
-      <p class="hint">Browse ready-made NPC employees — same market as AntlerOffice 1.0.</p>
+      <p class="hint">Browse department bundles and leadership talent from the ECS catalog.</p>
     </template>
+
+    <div class="tabs agent-browse-section-tabs" role="tablist">
+      <button
+        v-for="section in BROWSE_SECTIONS"
+        :key="section.id"
+        type="button"
+        class="tab"
+        :class="{ active: browseSection === section.id }"
+        @click="setBrowseSection(section.id)"
+      >
+        {{ section.label }}
+      </button>
+    </div>
+    <p class="hint agent-browse-section-hint">{{ activeBrowseSection?.hint }}</p>
+
+    <div
+      v-if="browseSection !== 'leadership'"
+      class="seg agent-browse-category-seg"
+      role="tablist"
+      aria-label="Department category"
+    >
+      <button
+        v-for="cat in CATEGORY_TABS"
+        :key="cat.id || 'all'"
+        type="button"
+        class="seg-btn"
+        :class="{ active: categoryFilter === cat.id }"
+        @click="setCategoryFilter(cat.id)"
+      >
+        {{ cat.label }}
+      </button>
+    </div>
 
     <div class="channels-list-bar agent-browse-list-bar">
       <input
         v-model="search"
         type="search"
         class="channels-search"
-        placeholder="Search NPCs, skills, skins…"
+        placeholder="Search NPCs, skills… or paste UUID for hidden agents"
         autocomplete="off"
       />
       <button
@@ -394,6 +814,14 @@ onUnmounted(() => stopSkinPreviews())
 
     <div v-show="filterExpanded" class="channels-filter-panel is-open">
       <div class="channels-filter-fields">
+        <div class="channels-filter-item">
+          <label class="channels-filter-label">Category</label>
+          <select v-model="categoryFilter" class="channels-filter">
+            <option v-for="cat in CATEGORY_TABS" :key="cat.id || 'all'" :value="cat.id">
+              {{ cat.label }}
+            </option>
+          </select>
+        </div>
         <div class="channels-filter-item">
           <label class="channels-filter-label">Status</label>
           <select v-model="status" class="channels-filter">
@@ -451,21 +879,33 @@ onUnmounted(() => stopSkinPreviews())
     >
       <template v-if="viewMode === 'list' && filtered.length">
         <div class="agents-table-wrap">
-          <table class="agents-table">
+          <table class="agents-table agents-table--browse">
             <thead>
               <tr>
                 <th class="agent-td-fav" />
-                <th>Skin</th>
+                <th class="agent-th-skin">Skin</th>
                 <th>Name</th>
+                <th>Department</th>
                 <th>Salary</th>
                 <th>Rating</th>
                 <th>Skills</th>
                 <th>Status</th>
-                <th class="agent-th-actions">Actions</th>
+                <th class="agent-th-actions">Hire</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="t in filtered" :key="t.id">
+              <tr
+                v-for="t in paginatedList"
+                :key="t.id"
+                class="agent-browse-row"
+                :class="{ 'agent-browse-row--on-team': t.hired }"
+                tabindex="0"
+                role="button"
+                :aria-label="`View ${t.name} details`"
+                @click="openDetail(t)"
+                @keydown.enter="openDetail(t)"
+                @keydown.space.prevent="openDetail(t)"
+              >
                 <td class="agent-td-fav">
                   <button
                     type="button"
@@ -491,10 +931,16 @@ onUnmounted(() => stopSkinPreviews())
                   </div>
                 </td>
                 <td class="agent-td-name">
-                  <strong>{{ t.name }}</strong>
+                  <div class="agent-td-name-inner">
+                    <strong>{{ t.name }}</strong>
+                    <span v-if="t.hired" class="tag on agent-on-team-pill">Working</span>
+                  </div>
                   <div class="hint browse-list-sub">
                     {{ templatePreviewSkin(t).skinName }} · {{ t.tagline }}
                   </div>
+                </td>
+                <td>
+                  <span class="tag">{{ categoryLabel(t.category) }}</span>
                 </td>
                 <td>
                   <strong>{{ t.salaryCreditsPerMonth ?? 0 }}</strong>
@@ -507,38 +953,91 @@ onUnmounted(() => stopSkinPreviews())
                   </div>
                 </td>
                 <td>
-                  <span v-if="t.hired" class="tag on">Hired</span>
+                  <span v-if="t.hired" class="tag on agent-on-team-status">{{ hireStatusLabel(t) }}</span>
                   <span v-else class="tag">Available</span>
                 </td>
                 <td class="agent-td-actions">
-                  <button type="button" class="btn ghost sm" @click="openDetail(t)">Details</button>
-                  <button
-                    v-if="!t.hired"
-                    type="button"
-                    class="btn sm"
-                    :disabled="hiring === t.id"
-                    @click="openHire(t)"
-                  >
-                    Hire
-                  </button>
+                  <div class="agent-td-actions-inner">
+                    <button
+                      type="button"
+                      class="btn sm agent-browse-hire-btn"
+                      :class="{ secondary: t.hired }"
+                      :disabled="hiring === t.id"
+                      @click="onListHireClick(t, $event)"
+                    >
+                      Hire
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        <div v-if="listTotal" class="agent-browse-list-footer channels-pagination">
+          <span class="channels-page-info">
+            Showing {{ listPageInfo.start }}–{{ listPageInfo.end }} of {{ listTotal }}
+          </span>
+          <div class="channels-page-btns">
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="listPage <= 1"
+              @click="onListPageChange(listPage - 1)"
+            >
+              Prev
+            </button>
+            <button
+              v-for="p in Math.min(listTotalPages, 5)"
+              :key="p"
+              type="button"
+              class="btn ghost sm"
+              :class="{ active: p === listPage }"
+              :disabled="p === listPage"
+              @click="onListPageChange(p)"
+            >
+              {{ p }}
+            </button>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="listPage >= listTotalPages"
+              @click="onListPageChange(listPage + 1)"
+            >
+              Next
+            </button>
+          </div>
+          <label class="channels-page-size">
+            Show
+            <select
+              :value="listPageSize"
+              @change="onListPageSizeChange(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="n in LIST_PAGE_SIZES" :key="n" :value="n">{{ n }}</option>
+            </select>
+            per page
+          </label>
+        </div>
       </template>
 
       <template v-else-if="viewMode === 'grid' && filtered.length">
-        <article
-          v-for="t in filtered"
-          :key="t.id"
-          class="npc-market-card"
-        >
+        <template v-for="group in gridGroups" :key="group.category || 'all'">
+          <h3 v-if="gridGroups.length > 1" class="agent-browse-group-title">{{ group.label }}</h3>
+          <article
+            v-for="t in group.templates"
+            :key="t.id"
+            class="npc-market-card"
+            :class="{ 'npc-market-card--on-team': t.hired }"
+          >
           <div class="npc-market-preview">
+            <span v-if="t.hired" class="npc-market-on-team-badge">
+              <span class="npc-market-on-team-dot" aria-hidden="true" />
+              {{ officeHireCount(t) > 1 ? `Working · ×${officeHireCount(t)}` : 'On your team' }}
+            </span>
             <span class="npc-market-skin-pill">
               <span class="npc-market-skin-dot" aria-hidden="true" />
               {{ templatePreviewSkin(t).skinName }}
             </span>
+            <span class="npc-market-dept-pill">{{ categoryLabel(t.category) }}</span>
             <button
               type="button"
               class="npc-market-fav"
@@ -580,9 +1079,15 @@ onUnmounted(() => stopSkinPreviews())
               </ul>
             </div>
             <div class="npc-market-actions">
-              <span v-if="t.hired" class="tag on npc-market-hired">Hired</span>
-              <button v-else type="button" class="btn npc-market-hire" :disabled="hiring === t.id" @click="openHire(t)">
-                ▣ Hire
+              <span v-if="t.hired" class="tag on npc-market-hired">{{ hireStatusLabel(t) }}</span>
+              <button
+                type="button"
+                class="btn npc-market-hire"
+                :class="{ secondary: t.hired }"
+                :disabled="hiring === t.id"
+                @click="openHire(t)"
+              >
+                {{ t.hired ? '⊕ Hire another' : '▣ Hire' }}
               </button>
               <button type="button" class="btn ghost npc-market-details" @click="openDetail(t)">ⓘ Details</button>
             </div>
@@ -598,6 +1103,7 @@ onUnmounted(() => stopSkinPreviews())
             </div>
           </div>
         </article>
+        </template>
       </template>
 
       <p v-else-if="templates.length && !filtered.length" class="hint">
@@ -607,53 +1113,189 @@ onUnmounted(() => stopSkinPreviews())
       <p v-else class="hint">No NPC templates available yet.</p>
     </div>
 
-    <NModal v-model:show="detailOpen" preset="card" :title="detailTemplate?.name || 'NPC'" style="max-width: 480px">
-      <template v-if="detailTemplate">
-        <p class="npc-market-tagline">{{ detailTemplate.tagline }}</p>
-        <dl class="agent-browse-detail-list">
-          <div class="agent-browse-detail-row">
-            <dt>Salary</dt>
-            <dd>{{ detailTemplate.salaryCreditsPerMonth ?? 0 }} {{ detailTemplate.currency || 'credits' }}/mo</dd>
-          </div>
-          <div class="agent-browse-detail-row">
-            <dt>Rating</dt>
-            <dd>
-              <template v-if="(detailTemplate.reviewCount ?? 0) > 0">
-                ★ {{ formatRating(detailTemplate) }} ({{ detailTemplate.reviewCount }} reviews)
-              </template>
-              <template v-else>No reviews yet</template>
-              <span v-if="(detailTemplate.hireCount ?? 0) > 0">
-                · {{ detailTemplate.hireCount }} hired in this office
-              </span>
-            </dd>
-          </div>
-          <div class="agent-browse-detail-row">
-            <dt>Status</dt>
-            <dd>{{ detailTemplate.hired ? 'Hired' : 'Available' }}</dd>
-          </div>
-        </dl>
-        <ul class="npc-market-features npc-market-features-modal">
-          <li v-for="(h, i) in templateHighlights(detailTemplate)" :key="i">
-            <span class="npc-market-check">✓</span>{{ h }}
-          </li>
-        </ul>
-      </template>
-      <template #footer>
-        <NButton @click="detailOpen = false">Close</NButton>
-        <NButton
-          v-if="detailTemplate && !detailTemplate.hired"
-          type="primary"
-          @click="openHire(detailTemplate)"
+    <Teleport to="body">
+      <Transition name="agent-resume-fade">
+        <section
+          v-if="detailOpen && detailTemplate"
+          class="npc-hire-page"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`${detailAgentTitle(detailTemplate)} hire`"
+          @click.self="closeDetail"
         >
-          Hire
-        </NButton>
-      </template>
-    </NModal>
+          <button type="button" class="npc-hire-backdrop" aria-label="Close" @click="closeDetail">
+            <canvas ref="vignetteCanvasRef" class="npc-hire-vignette-canvas" aria-hidden="true" />
+          </button>
+          <div ref="detailModalRef" class="npc-hire-modal">
+            <div class="npc-hire-scene npc-hire-scene--modal" :style="npcHireSceneStyle" aria-hidden="true">
+              <div class="npc-hire-bg npc-hire-bg--scene" />
+              <div class="npc-hire-vignette npc-hire-vignette--modal" />
+            </div>
+            <div class="npc-hire-content">
+              <div class="npc-hire-col npc-hire-col--left" :style="npcHireAgentColStyle">
+                <div class="npc-hire-left">
+                  <header class="npc-hire-copy">
+                    <span class="npc-hire-brand">AntlerOffice</span>
+                    <h2 class="npc-hire-title">{{ detailHeroTitle(detailTemplate) }}</h2>
+                    <p class="npc-hire-subtitle">{{ detailHeroSubtitle(detailTemplate) }}</p>
+                  </header>
 
-    <NModal v-model:show="hireOpen" preset="card" :title="hireTemplate ? `Hire ${hireTemplate.name}` : 'Hire'" style="max-width: 440px">
+                  <div class="npc-hire-showcase">
+                    <div ref="detailStageRef" class="npc-hire-character">
+                      <canvas
+                        ref="detailCanvasRef"
+                        :width="DETAIL_AGENT_CANVAS"
+                        :height="DETAIL_AGENT_CANVAS"
+                        role="img"
+                        :aria-label="`${detailAgentTitle(detailTemplate)} character`"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="npc-hire-stats" :style="npcHireStatsStyle">
+                  <div class="npc-hire-stat">
+                    <h4 class="npc-hire-stat-title">Reviews</h4>
+                    <div class="npc-hire-stat-body">
+                      <span class="npc-hire-stat-icon star" aria-hidden="true" />
+                      <p class="npc-hire-stat-value">
+                        <strong>{{ detailReviewStat(detailTemplate).value }}</strong>
+                        <em v-if="detailReviewStat(detailTemplate).suffix">{{
+                          detailReviewStat(detailTemplate).suffix
+                        }}</em>
+                      </p>
+                    </div>
+                    <p class="npc-hire-stat-foot">{{ detailReviewStat(detailTemplate).foot }}</p>
+                  </div>
+                  <div class="npc-hire-stat">
+                    <h4 class="npc-hire-stat-title">Downloads</h4>
+                    <div class="npc-hire-stat-body">
+                      <span class="npc-hire-stat-icon download" aria-hidden="true" />
+                      <p class="npc-hire-stat-value">
+                        <strong>{{ formatHireCount(detailTemplate) }}</strong>
+                      </p>
+                    </div>
+                    <p class="npc-hire-stat-foot">Total downloads</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="npc-hire-col npc-hire-col--right">
+                <div class="npc-hire-right">
+                  <div class="npc-hire-glass">
+                    <header class="npc-hire-glass-head">
+                      <h3 class="npc-hire-glass-title">{{ detailGlassTitle(detailTemplate) }}</h3>
+                      <div class="npc-hire-salary">
+                        <span class="npc-hire-coin" aria-hidden="true">◎</span>
+                        <strong>{{ detailSalaryDisplay(detailTemplate).amount }}</strong>
+                        <span class="npc-hire-salary-unit">
+                          {{ detailSalaryDisplay(detailTemplate).unit }} / {{ detailSalaryDisplay(detailTemplate).period }}
+                        </span>
+                        <em class="npc-hire-salary-label">Salary</em>
+                      </div>
+                      <div class="npc-hire-divider" aria-hidden="true"><span /></div>
+                    </header>
+
+                    <p v-if="detailTemplate.hired" class="npc-hire-on-team-banner">
+                      <span class="npc-hire-on-team-dot" aria-hidden="true" />
+                      {{ hireStatusLabel(detailTemplate) }} — already working in your office.
+                    </p>
+
+                    <p v-if="isHiddenTemplate(detailTemplate)" class="hint npc-hire-hidden-banner">
+                      Hidden agent — paste this UUID in Browse search:
+                      <code class="npc-hire-uuid">{{ detailTemplate.catalogUuid }}</code>
+                    </p>
+
+                    <div class="npc-hire-glass-body">
+                      <section class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">What This Agent Does</h4>
+                        <p class="npc-hire-scope-text">{{ detailDescription(detailTemplate) }}</p>
+                      </section>
+
+                      <section v-if="detailExamples(detailTemplate).length" class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">Examples</h4>
+                        <ul class="npc-hire-checklist">
+                          <li v-for="(ex, i) in detailExamples(detailTemplate)" :key="`ex-${i}`">
+                            <span aria-hidden="true">•</span>{{ ex }}
+                          </li>
+                        </ul>
+                      </section>
+
+                      <section class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">Job Scope</h4>
+                        <div class="npc-hire-scope-list">
+                          <article
+                            v-for="card in detailJobScopeCards(detailTemplate)"
+                            :key="card.key"
+                            class="npc-hire-scope-item"
+                          >
+                            <span class="npc-hire-scope-icon" :class="card.icon" aria-hidden="true" />
+                            <div class="npc-hire-scope-copy">
+                              <span class="npc-hire-scope-label">{{ card.label }}</span>
+                              <p class="npc-hire-scope-text">{{ card.text }}</p>
+                            </div>
+                          </article>
+                        </div>
+                      </section>
+
+                      <section class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">What You Get</h4>
+                        <ul class="npc-hire-checklist">
+                          <li v-for="(item, i) in detailWhatYouGet(detailTemplate)" :key="`get-${i}`">
+                            <span aria-hidden="true">✓</span>{{ item }}
+                          </li>
+                        </ul>
+                      </section>
+
+                      <div class="npc-hire-tip">
+                        <span class="npc-hire-tip-icon" aria-hidden="true">💡</span>
+                        <p>{{ detailTipText(detailTemplate) }}</p>
+                      </div>
+                    </div>
+
+                    <footer class="npc-hire-glass-footer">
+                      <button
+                        type="button"
+                        class="npc-hire-btn primary"
+                        @click="openHire(detailTemplate)"
+                      >
+                        <span class="npc-hire-btn-icon" aria-hidden="true">⊕</span>
+                        {{ detailTemplate.hired ? 'Hire another' : 'Hire Agent' }}
+                      </button>
+                      <button type="button" class="npc-hire-btn secondary" @click="closeDetail">
+                        Cancel
+                      </button>
+                    </footer>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </Transition>
+    </Teleport>
+
+    <NModal
+      v-model:show="hireOpen"
+      preset="card"
+      :title="hireTemplate ? (hireTemplate.hired ? `Hire another ${hireTemplate.name}` : `Hire ${hireTemplate.name}`) : 'Hire'"
+      style="max-width: 440px"
+    >
       <template v-if="hireTemplate">
+        <p v-if="hireTemplate.hired" class="hint agent-hire-again-note">
+          You already have {{ officeHireCount(hireTemplate) }} on your team. Each hire is a separate worker with its own salary.
+        </p>
         <label class="channels-filter-label">Display name</label>
         <NInput v-model:value="hireName" style="margin: 8px 0 12px" />
+        <template v-if="hireTemplate.requiresHirePassword || hireTemplate.hidden">
+          <label class="channels-filter-label">Hire password</label>
+          <NInput
+            v-model:value="hirePassword"
+            type="password"
+            placeholder="Required for hidden agents"
+            style="margin: 8px 0 12px"
+          />
+        </template>
         <dl class="agent-browse-detail-list">
           <div class="agent-browse-detail-row">
             <dt>First month</dt>
@@ -682,6 +1324,11 @@ onUnmounted(() => stopSkinPreviews())
 .hint {
   opacity: 0.75;
 }
+
+.agent-hire-again-note {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
 .includes-label {
   margin: 6px 0 0;
   font-size: 12px;
@@ -690,6 +1337,18 @@ onUnmounted(() => stopSkinPreviews())
 .apply-error {
   color: #e88080;
   font-size: 13px;
+}
+.npc-hire-hidden-banner {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 193, 7, 0.12);
+  font-size: 13px;
+}
+.npc-hire-uuid {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  word-break: break-all;
 }
 .tag.on {
   display: inline-block;

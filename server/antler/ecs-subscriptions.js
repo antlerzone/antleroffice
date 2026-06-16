@@ -44,6 +44,7 @@ async function notifyHire({
   localAgentId,
   agentName,
   desktopId,
+  hirePassword,
 } = {}) {
   return ecsFetch('/api/subscriptions/hire', {
     ecsToken,
@@ -54,6 +55,7 @@ async function notifyHire({
       localAgentId,
       agentName,
       desktopId: desktopId || ecssync.desktopId(),
+      hirePassword,
     },
   });
 }

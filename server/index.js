@@ -19,6 +19,7 @@ import { createRequire } from 'module'
 
 const require = createRequire(import.meta.url)
 const { registerAntlerRoutes, attachAntlerOffice, attachGatewayOfficeSync } = require('./antler/register.cjs')
+const openclawBridge = require('./antler/openclaw-config')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -4095,6 +4096,16 @@ server.listen(envConfig.PORT, () => {
   if (!HERMES_CLI_PATH) {
     console.log('WARNING: Hermes CLI not found. Install hermes-agent or set HERMES_CLI_PATH in .env')
   }
+
+  openclawBridge.gatewayStart().then((r) => {
+    if (r.probe?.running) {
+      console.log(`[OpenClaw] Gateway ready at ${r.probe.url || envConfig.OPENCLAW_WS_URL}`)
+    } else {
+      console.log(`[OpenClaw] Gateway not reachable — COO tasks may use local fallback (${r.probe?.error || 'unknown'})`)
+    }
+  }).catch((err) => {
+    console.log(`[OpenClaw] Gateway start skipped: ${err.message}`)
+  })
 
   try {
     const runningTasks = db.prepare('SELECT id FROM backup_records WHERE status = ?').all('running')

@@ -1,10 +1,9 @@
-// OpenClaw executor. OpenClaw does the real reasoning + execution using the
-// user's own API key (configured through AntlerOffice's UI). We hand it the
-// task plus the context AntlerOffice gathered (memory + knowledge) and return
-// its plain-text result. CLI-first; optional gateway HTTP if configured.
+// OpenClaw executor. Prefer the real Gateway (chat.send + tools); fall back to
+// embedded CLI (`openclaw agent --local`) when the gateway is unreachable.
 
 const oc = require('../openclaw-config');
 const store = require('../store');
+const gatewayChat = require('./openclaw-gateway-chat');
 
 async function tryGateway(rt, message) {
   if (!rt.baseUrl) return null;
@@ -17,16 +16,16 @@ async function tryGateway(rt, message) {
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
     const text = data?.text || data?.result || data?.message || '';
-    if (text) return { ok: true, text: String(text).trim(), provider: 'openclaw' };
+    if (text) return { ok: true, text: String(text).trim(), provider: 'openclaw-gateway' };
   } catch {
-    /* gateway not reachable -> fall back to CLI */
+    /* gateway HTTP not reachable */
   }
   return null;
 }
 
 // Returns { ok, text, provider } on success, or { ok:false, available } so the
 // caller can fall back to demo when OpenClaw isn't installed/reachable.
-async function run({ instruction, system, agentId }) {
+async function run({ instruction, system, agentId, threadId, ownerKey } = {}) {
   const rt = store.readSettings().runtimes?.openclaw || {};
   const message = system ? `Context:\n${system}\n\n---\nTask: ${instruction}` : instruction;
 
@@ -35,16 +34,26 @@ async function run({ instruction, system, agentId }) {
     if (viaHttp) return viaHttp;
   }
 
-  // Always run embedded (`--local`): the `openclaw agent` gateway WS is flaky
-  // (intermittent 1006 closures) and embedded reads the same auth store. Each
-  // hired NPC runs as its own OpenClaw agent; the built-in COO uses the default.
+  // Real OpenClaw Gateway — same path as the main Chat UI (tools, exec, browser…).
+  const viaGw = await gatewayChat.run({
+    instruction,
+    system,
+    agentId: agentId || rt.agentId || 'main',
+    threadId,
+    ownerKey,
+  });
+  if (viaGw.ok && viaGw.text) return viaGw;
+
+  // Fallback: embedded local turn (no live gateway).
   const r = await oc.runAgent(message, { local: true, agentId });
-  if (r.available && r.ok && r.text) return { ok: true, text: r.text, provider: 'openclaw' };
+  if (r.available && r.ok && r.text) {
+    return { ok: true, text: r.text, provider: viaGw.error ? 'openclaw-local (gateway down)' : 'openclaw-local' };
+  }
   const authError =
     /incorrect api key|invalid api key|invalid_api_key|unauthorized|no auth|missing api key|\b401\b(?!\s*[.,\d])/i.test(
-      r.error || '',
+      r.error || viaGw.error || '',
     );
-  return { ok: false, available: !!r.available, authError, error: r.error };
+  return { ok: false, available: !!r.available, authError, error: r.error || viaGw.error };
 }
 
 module.exports = { run };

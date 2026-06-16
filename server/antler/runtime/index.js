@@ -12,10 +12,12 @@ const materials = require('../materials.cjs');
 
 // agent: { id, role, runtime, userAgentId }. memoryKey scopes memory + knowledge
 // to a user-created agent when present, else the department role.
-async function runTask({ agent = {}, instruction, system = '', mcpServers = [] }) {
+async function runTask({ agent = {}, instruction, system = '', mcpServers = [], threadId, ownerKey } = {}) {
   const memoryKey = agent.userAgentId || agent.role || agent.id || 'shared';
-  const { formatMcpServersBlock } = require('../mcp-runtime-helper');
+  const { formatMcpServersBlock, formatOpenClawBuiltinToolsBlock } = require('../mcp-runtime-helper');
+  const { bossInputEscalationBlock } = require('../agent-outcome');
   const mcpBlock = formatMcpServersBlock(mcpServers);
+  const builtinTools = agent.role === 'coo' || agent.id === 'coo' ? formatOpenClawBuiltinToolsBlock() : '';
 
   // 1) Gather context: relevant long-term memory + retrieved knowledge chunks.
   const mem = hermes.getContext(memoryKey, instruction);
@@ -23,6 +25,8 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [] }
   const materialsRoot = materials.getRootPath();
   const fullSystem = [
     system,
+    bossInputEscalationBlock(),
+    builtinTools,
     mcpBlock,
     mem && `Relevant memory:\n${mem}`,
     knowledge && `Relevant knowledge:\n${knowledge}`,
@@ -34,15 +38,29 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [] }
   // 2) Execute. Try OpenClaw unless the NPC is explicitly pinned to demo.
   let result = null;
   let note = '';
+  let needsInput = false;
   if (agent.runtime !== 'demo') {
-    const r = await openclaw.run({ instruction, system: fullSystem, agentId: agent.openclawAgentId });
-    if (r.ok) result = { text: r.text, provider: r.provider };
-    else if (r.available) {
-      // OpenClaw is installed but the run failed — be honest about why instead
-      // of pretending no key is set. Most common: an invalid/expired API key.
-      note = r.authError
-        ? 'OpenClaw API key was rejected (401). Update it in Settings → Integrations, then try again.'
-        : `OpenClaw could not complete the run (${String(r.error || 'unknown').slice(0, 80)}). Showing a placeholder.`;
+    const r = await openclaw.run({
+      instruction,
+      system: fullSystem,
+      agentId: agent.openclawAgentId,
+      threadId,
+      ownerKey,
+    });
+    if (r.ok) {
+      result = { text: r.text, provider: r.provider };
+      needsInput = !!r.needsBossInput;
+    } else if (r.available) {
+      const { needsBossInput, bossInputAskMessage } = require('../agent-outcome');
+      if (r.authError || r.needsBossInput) {
+        result = {
+          text: bossInputAskMessage({ agentLabel: agent.label || agent.role || 'Agent', provider: 'openclaw' }),
+          provider: 'openclaw',
+        };
+        needsInput = true;
+      } else {
+        note = `OpenClaw could not complete the run (${String(r.error || 'unknown').slice(0, 80)}). Showing a placeholder.`;
+      }
     }
   }
   if (!result) {
@@ -50,13 +68,16 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [] }
     result = { text: r.text, provider: r.provider };
   }
 
+  const { needsBossInput: detectBossInput } = require('../agent-outcome');
+  if (!needsInput) needsInput = detectBossInput(result.text, { authError: false });
+
   // 3) Remember the outcome so the agent learns across tasks/restarts.
   hermes.record(memoryKey, {
     kind: 'episode',
     text: `Task: ${instruction}\nResult: ${String(result.text).slice(0, 400)}`,
   });
 
-  return result;
+  return { ...result, needsBossInput: needsInput };
 }
 
 module.exports = { runTask };

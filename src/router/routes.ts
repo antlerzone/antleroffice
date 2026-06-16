@@ -64,10 +64,29 @@ export const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'routes.integrations', icon: 'LinkOutline', gateway: 'openclaw', tier: 'boss' },
       },
       {
+        path: 'accounts',
+        name: 'WebAccounts',
+        component: () => import('@/views/antler/AccountsPage.vue'),
+        meta: { titleKey: 'routes.webAccounts', icon: 'KeyOutline', gateway: 'openclaw', tier: 'boss' },
+      },
+      {
         path: 'agents',
         name: 'AntlerAgents',
         component: () => import('@/views/antler/AntlerAgentsPage.vue'),
         meta: { titleKey: 'routes.agents', icon: 'PeopleOutline', gateway: 'openclaw', tier: 'boss' },
+      },
+      {
+        path: 'dev/npc-hire-layout',
+        name: 'NpcHireLayoutSandbox',
+        component: () => import('@/views/dev/NpcHireLayoutSandbox.vue'),
+        meta: {
+          title: 'NPC Hire Layout',
+          icon: 'MoveOutline',
+          gateway: 'openclaw',
+          tier: 'boss',
+          hidden: true,
+          fullBleed: true,
+        },
       },
       {
         path: 'skills',

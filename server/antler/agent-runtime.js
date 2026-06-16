@@ -8,6 +8,11 @@ const registry = require('./registry-store');
 const runtime = require('./runtime');
 const mcpTasklist = require('./mcp-tasklist');
 const defaultMcpPack = require('./default-mcp-pack');
+const {
+  needsBossInput,
+  formatUnconfiguredMcpAskBlock,
+  bossInputAskMessage,
+} = require('./agent-outcome');
 
 const bossChat = require('./boss-chat-store');
 
@@ -74,6 +79,18 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
 
   const resolvedAgentId = targetAgentId || 'coo';
   const userKey = ownerKey || 'local:boss';
+
+  if (mode === 'agent' || mode === 'plan') {
+    const gwTarget = office.resolveOpenClawAgentId(resolvedAgentId);
+    if (gwTarget) {
+      return {
+        ok: false,
+        error:
+          'This agent uses OpenClaw Gateway chat. Open Boss Chat and send your message there (Agent or Plan mode).',
+      };
+    }
+  }
+
   const queueKey = `${userKey}:${resolvedAgentId}`;
   const activeThreadId = bossChat.resolveThreadId(resolvedAgentId, threadId, userKey, authorName);
   const authorMeta = { authorName: authorName || 'Boss' };
@@ -96,6 +113,12 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
     if (targetAgentId) {
       const agent = office.getAgent(targetAgentId);
       if (!agent) throw new Error('Agent not found');
+      // Direct COO chat must use runAsCoo — it carries the COO system prompt and
+      // builtin MCP pack (web research). directToAgent treats COO like a generic NPC.
+      if (agent.id === 'coo' || agent.role === 'coo') {
+        await runAsCoo({ instruction, shortTask, planning, rawTask: raw, threadId: activeThreadId, ownerKey: userKey });
+        return { routedTo: agent.role, agentId: agent.id };
+      }
       await directToAgent({
         instruction,
         agent,
@@ -183,8 +206,8 @@ function mcpContextForStep(step, mcpServers) {
   );
 }
 
-async function runAgentTask({ agent, instruction, system, mcpServers = [] }) {
-  return runtime.runTask({ agent, instruction, system, mcpServers });
+async function runAgentTask({ agent, instruction, system, mcpServers = [], threadId, ownerKey } = {}) {
+  return runtime.runTask({ agent, instruction, system, mcpServers, threadId, ownerKey });
 }
 
 async function runTaskSteps({ agent, steps, baseSystem, mcpServers, shortTask, planning, rawTask }) {
@@ -235,7 +258,11 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
   office.work(agent.id, 'Working on it…', { label: shortTask, step: 'Thinking', progress: 1, total: 2 });
 
   const notes = skills.readSharedNotes();
-  const baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  let baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  if (agent.role === 'human_resource') {
+    const catalogBlock = await saasNpcBlock();
+    if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
+  }
 
   const regAgent = registryAgentForOfficeAgent(agent);
   const { mcpBindings, mcpServers } = regAgent
@@ -274,17 +301,56 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
           instruction: step.accountLabel ? `[${step.accountLabel}] ${step.instruction}` : step.instruction,
           system,
           mcpServers,
+          threadId,
         });
       })();
 
-  const { text, provider } = await taskP;
+  const { text, provider, needsBossInput: waitingOnBoss } = await taskP;
 
   const file = saveDeliverable(agent.role || 'agent', rawTask || instruction, text);
   if (planning) {
     recordDeliverable(agent, rawTask || instruction, file, { kind: 'plan_complete' });
   }
+  finalizeAgentTurn({
+    agent,
+    text,
+    provider,
+    threadId,
+    planning,
+    needsBossInput: waitingOnBoss,
+  });
+}
+
+function finalizeAgentTurn({
+  agent,
+  text,
+  provider,
+  threadId,
+  planning = false,
+  needsBossInput: waitingOnBoss = false,
+}) {
+  const label = agent.label || agent.role || 'Agent';
   chat(agent.role, text, threadId);
-  chat('system', `${agent.label} finished — ${planning ? 'plan saved' : 'done'} (via ${provider}).`, threadId);
+
+  const waiting = waitingOnBoss || needsBossInput(text);
+  if (planning) {
+    chat('system', `${label} saved your plan — see Complete Job.`, threadId);
+    office.rest(agent.id, 'Done ✓');
+    return;
+  }
+
+  if (waiting) {
+    chat('system', bossInputAskMessage({ agentLabel: label, provider }), threadId);
+    office.setAgent(agent.id, {
+      npcState: 'working',
+      bubbleText: 'Waiting for your key…',
+      currentJob: { label: 'Needs input', step: 'Waiting', progress: 2, total: 2 },
+      awaitingBossInput: true,
+    });
+    return;
+  }
+
+  chat('system', `${label} finished — done (via ${provider || 'openclaw'}).`, threadId);
   office.rest(agent.id, 'Done ✓');
 }
 
@@ -327,36 +393,89 @@ function skillFor(dept) {
   );
 }
 
+async function saasNpcBlock() {
+  try {
+    const base = (
+      process.env.ECS_BASE_URL ||
+      process.env.ECS_SERVER_URL ||
+      'http://localhost:3030'
+    ).replace(/\/+$/, '');
+    const headers = { Accept: 'application/json' };
+    const token = process.env.ECS_ADMIN_TOKEN;
+    if (token) headers['x-admin-token'] = token;
+    const res = await fetch(`${base}/api/admin/catalog/workers`, {
+      headers,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const workers = Array.isArray(data.workers) ? data.workers : [];
+    const lines = workers.map(
+      (w) =>
+        `- ${w.id} (template: ${w.templateId}) — ${w.name} — ${w.salaryCreditsPerMonth} credits/mo — installable: ${w.installable ? 'yes' : 'no'}`,
+    );
+    return (
+      `SaaS worker catalog (ECS ${base}):\n${lines.join('\n') || '(empty)'}\n\n` +
+      'Use AntlerOffice Tools MCP: `list_saas_workers`, `get_saas_worker`, `create_saas_worker`. Confirm with the boss before creating.'
+    );
+  } catch {
+    return '';
+  }
+}
+
 // The COO · OpenClaw answers the boss directly (chat / general requests, or any
 // task with no hired specialist). It's the built-in OpenClaw agent, so this is a
 // plain reply — no new NPC is created.
-async function runAsCoo({ instruction, shortTask, planning = false, rawTask = '', threadId = null }) {
+async function runAsCoo({ instruction, shortTask, planning = false, rawTask = '', threadId = null, ownerKey = null }) {
   const coo = office.getAgent('coo') || { id: 'coo', role: 'coo', label: 'COO · OpenClaw' };
   const cooName = coo.label || 'COO · OpenClaw';
-  office.work('coo', 'Thinking…', { label: shortTask, step: 'Thinking', progress: 1, total: 2 });
+  office.work('coo', 'OpenClaw working…', { label: shortTask, step: 'Gateway', progress: 1, total: 2 });
 
   const notes = skills.readSharedNotes();
+  const webAccounts = require('./web-accounts-store');
+  const accountsBlock = webAccounts.formatAgentBlock();
   const system =
     `You are ${cooName}, the boss's right-hand operator inside AntlerOffice. ` +
     `Reply to the boss directly, helpfully and concisely. For small talk, just chat back. ` +
+    `When the boss shares a URL or asks you to review something (GitHub repo, docs, product), ` +
+    `research it with OpenClaw built-in tools (exec, browser) and give a substantive summary. ` +
     `If a request truly needs a specialist the office hasn't hired yet, say so and suggest hiring one.` +
-    `\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+    `When the boss shares website login credentials (username/password), ask for a display name if not provided, then use AntlerOffice Tools MCP ` +
+    '`save_web_account` (display_name required) to store them — confirm with display name/alias only, never repeat the password in chat.' +
+    `\n\nShared office knowledge:\n${notes || '(none yet)'}` +
+    (accountsBlock ? `\n\n${accountsBlock}` : '');
 
-  const { mcpServers } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
+  const { mcpHasCredentials } = require('./mcp-runtime-helper');
+  const mcpServers = (allMcp || []).filter(mcpHasCredentials);
+  const unconfiguredMcpBlock = formatUnconfiguredMcpAskBlock(allMcp);
+  const fullSystem = unconfiguredMcpBlock ? `${system}\n\n${unconfiguredMcpBlock}` : system;
 
   // Start the model call immediately; overlap it with the brief "thinking" beat.
-  const taskP = runtime.runTask({ agent: coo, instruction, system, mcpServers });
+  const taskP = runtime.runTask({
+    agent: coo,
+    instruction,
+    system: fullSystem,
+    mcpServers,
+    threadId,
+    ownerKey,
+  });
   await sleep(500);
-  office.setAgent('coo', { bubbleText: 'Replying…', currentJob: { label: shortTask, step: 'Replying', progress: 2, total: 2 } });
-  const { text } = await taskP;
+  office.setAgent('coo', { bubbleText: 'OpenClaw running…', currentJob: { label: shortTask, step: 'Tools', progress: 2, total: 2 } });
+  const { text, provider, needsBossInput: waitingOnBoss } = await taskP;
 
-  chat('coo', text, threadId);
   if (planning) {
     const file = saveDeliverable('coo', rawTask || instruction, text);
     recordDeliverable(coo, rawTask || instruction, file, { kind: 'plan_complete' });
-    chat('system', `${cooName} saved your plan — see Complete Job.`, threadId);
   }
-  office.rest('coo', 'Done ✓');
+  finalizeAgentTurn({
+    agent: coo,
+    text,
+    provider,
+    threadId,
+    planning,
+    needsBossInput: waitingOnBoss,
+  });
 }
 
 function saveDeliverable(skillId, instruction, text) {
@@ -372,4 +491,12 @@ function saveDeliverable(skillId, instruction, text) {
   return file;
 }
 
-module.exports = { handleInstruction };
+function savePlanDeliverable({ agentIdOrRole = 'coo', task, result }) {
+  const agent = office.getAgent(agentIdOrRole) || office.getAgent('coo');
+  const skillId = agent?.role || 'coo';
+  const file = saveDeliverable(skillId, task, result);
+  if (agent) recordDeliverable(agent, task, file, { kind: 'plan_complete' });
+  return file;
+}
+
+module.exports = { handleInstruction, savePlanDeliverable };

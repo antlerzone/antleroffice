@@ -9,7 +9,7 @@ const openclaw = require('./openclaw-config');
 const office = require('./office-state');
 const mcpProbe = require('./mcp-probe');
 const ecsBundle = require('./ecs-bundle');
-const ecsCatalog = require('./ecs-catalog');
+const auth = require('./auth');
 const defaultMcpPack = require('./default-mcp-pack');
 
 function catalogPath() {
@@ -224,22 +224,20 @@ async function resolveTemplate(templateId) {
   return templates.find((t) => t.id === templateId) || getTemplate(templateId);
 }
 
-async function hireFromTemplate({ templateId, name, bossToken } = {}) {
+async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = {}) {
   const template = await resolveTemplate(templateId);
   if (!template) {
     const err = new Error('Unknown NPC template.');
     err.code = 'UNKNOWN_TEMPLATE';
     throw err;
   }
-  if (isTemplateHired(templateId)) {
-    const err = new Error('This NPC is already hired.');
-    err.code = 'ALREADY_HIRED';
-    throw err;
-  }
 
   const ecsSubscriptions = require('./ecs-subscriptions');
   const ecsToken = bossToken ? ecsSubscriptions.ecsTokenFromBossToken(bossToken) : null;
   const useEcsBilling = ecsSubscriptions.isEcsBillingEnabled(bossToken);
+
+  const hirePasswordMod = require('./hire-password');
+  await hirePasswordMod.verifyHirePassword(template, hirePassword, { deferToEcs: useEcsBilling });
 
   const salary = Number(template.salaryCreditsPerMonth) || 0;
   if (!useEcsBilling && salary > 0 && billing.getBalance() < salary) {
@@ -252,7 +250,7 @@ async function hireFromTemplate({ templateId, name, bossToken } = {}) {
 
   const bundleKey = template.bundleTemplateId || template.id;
   let bundleInfo = null;
-  if (ecsCatalog.ecsBaseUrl() || template.bundleUrl) {
+  if (auth.ecsBaseUrl() || template.bundleUrl) {
     bundleInfo = await ecsBundle.downloadAndInstall({ ...template, id: bundleKey });
     if (!bundleInfo.ok && !bundleInfo.skipped) {
       throw new Error('Could not install agent bundle from ECS');
@@ -316,6 +314,9 @@ async function hireFromTemplate({ templateId, name, bossToken } = {}) {
     lastSalaryPaidAt: null,
     payrollStatus: salary > 0 ? 'active' : null,
     ecsSubscriptionId: null,
+    baselineSkillIds: [...skillIds],
+    baselineOpenclawSkillNames: [...(template.openclawSkillNames || [])],
+    baselineMcpIds: [...mcpIds],
   });
 
   if (useEcsBilling) {
@@ -325,6 +326,7 @@ async function hireFromTemplate({ templateId, name, bossToken } = {}) {
       templateId: template.id,
       localAgentId: agent.id,
       agentName: displayName,
+      hirePassword,
     });
     if (!ecsResult.ok) {
       registry.removeAgent(agent.id);

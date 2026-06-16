@@ -44,11 +44,28 @@ import type { ChatMessage, ChatMessageContent, AgentInstance, Skill, SessionsUsa
 const props = withDefaults(
   defineProps<{
     title?: string
+    /** When set, bypasses officeStore session picker — used by Boss Chat embed */
+    externalSessionKey?: string
+    /** Compact layout for embedded panels (Boss Chat) */
+    compact?: boolean
+    /** Boss Chat plan mode — wrap outbound user text as a planning prompt */
+    planMode?: boolean
   }>(),
   {
     title: '',
+    externalSessionKey: '',
+    compact: false,
+    planMode: false,
   }
 )
+
+const PLAN_MODE_PROMPT_PREFIX =
+  'Produce a clear, step-by-step PLAN to accomplish the task below. Do NOT execute it or generate the final deliverable — only outline the approach, the steps, and anything you\'d need.\n\nTask: '
+
+function formatOutboundMessage(content: string) {
+  if (!props.planMode) return content
+  return `${PLAN_MODE_PROMPT_PREFIX}${content}`
+}
 
 const message = useMessage()
 const { t, locale } = useI18n()
@@ -227,7 +244,11 @@ async function fetchSessionTokenUsage(rawKey: string) {
 
 const selectedAgent = computed(() => officeStore.selectedAgent)
 const selectedSession = computed(() => officeStore.selectedSession)
-const selectedSessionKey = computed(() => officeStore.selectedSessionKey)
+const selectedSessionKey = computed(() => {
+  const external = props.externalSessionKey?.trim()
+  if (external) return external
+  return officeStore.selectedSessionKey
+})
 const executionInProgress = computed(() => officeStore.executionInProgress)
 const activeTasks = computed(() => officeStore.activeTasks)
 
@@ -1989,7 +2010,7 @@ async function handleSend() {
   try {
     const sessionKey = selectedSessionKey.value || (selectedAgent.value ? `${selectedAgent.value.id}:main` : 'main')
     chatStore.setSessionKey(sessionKey)
-    await chatStore.sendMessage(content)
+    await chatStore.sendMessage(formatOutboundMessage(content))
     void fetchSessionTokenUsage(sessionKey)
     draft.value = ''
     await nextTick()
@@ -2116,11 +2137,31 @@ watch(selectedSessionKey, async (newSessionKey) => {
     requestScrollToBottom({ force: true, expanded: true })
   }
 })
+
+watch(
+  () => props.externalSessionKey,
+  async (key) => {
+    const trimmed = key?.trim()
+    if (!trimmed) return
+    chatStore.setSessionKey(trimmed)
+    await chatStore.fetchHistory(trimmed)
+    await nextTick()
+    autoFollowBottom.value = true
+    requestScrollToBottom({ force: true })
+    requestScrollToBottom({ force: true, expanded: true })
+  },
+)
 </script>
 
 <template>
-  <NCard :title="panelTitle" size="small" embedded class="chat-panel-card">
-    <template #header-extra>
+  <NCard
+    :title="compact ? undefined : panelTitle"
+    size="small"
+    embedded
+    class="chat-panel-card"
+    :class="{ 'chat-panel-card--compact': compact }"
+  >
+    <template v-if="!compact" #header-extra>
       <NSpace :size="8" align="center">
         <div v-if="sessionTokenMetricTags.length" class="chat-token-metrics">
           <NTag
@@ -3042,6 +3083,22 @@ watch(selectedSessionKey, async (newSessionKey) => {
 </template>
 
 <style scoped>
+.chat-panel-card--compact {
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  flex-shrink: 1;
+}
+
+.chat-panel-card--compact :deep(.n-card__content) {
+  padding-top: 8px !important;
+}
+
+.chat-panel-card--compact .chat-panel {
+  min-height: 0;
+  flex: 1;
+}
+
 .chat-panel-card {
   height: 1432px;
   flex-shrink: 0;

@@ -659,6 +659,11 @@ function addAgent(def = {}) {
     payrollStatus: def.payrollStatus || null,
     fireAt: typeof def.fireAt === 'number' ? def.fireAt : null,
     ecsSubscriptionId: def.ecsSubscriptionId || null,
+    baselineSkillIds: Array.isArray(def.baselineSkillIds) ? def.baselineSkillIds : null,
+    baselineOpenclawSkillNames: Array.isArray(def.baselineOpenclawSkillNames)
+      ? def.baselineOpenclawSkillNames
+      : null,
+    baselineMcpIds: Array.isArray(def.baselineMcpIds) ? def.baselineMcpIds : null,
     createdAt: Date.now(),
   };
   agents.push(item);
@@ -690,6 +695,9 @@ function updateAgent(id, patch = {}) {
     'payrollStatus',
     'fireAt',
     'ecsSubscriptionId',
+    'baselineSkillIds',
+    'baselineOpenclawSkillNames',
+    'baselineMcpIds',
   ]) {
     if (patch[k] !== undefined) a[k] = patch[k];
   }

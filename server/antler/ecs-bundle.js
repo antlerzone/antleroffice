@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const store = require('./store');
-const ecsCatalog = require('./ecs-catalog');
+const auth = require('./auth');
 
 function bundlesRoot() {
   return path.join(store.getDataDir(), 'bundles');
@@ -22,7 +22,7 @@ function readLocalManifest(templateId) {
 }
 
 function resolveBundleUrl(template) {
-  const base = ecsCatalog.ecsBaseUrl();
+  const base = auth.ecsBaseUrl();
   if (!base || !template?.id) return null;
   const rel = template.bundleUrl || `/api/catalog/agents/${template.id}/bundle`;
   if (rel.startsWith('http://') || rel.startsWith('https://')) return rel;

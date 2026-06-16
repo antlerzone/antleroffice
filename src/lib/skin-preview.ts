@@ -13,6 +13,8 @@ const POSE_MAX_MS = 5200
 
 export const SKIN_CANVAS_SIZE = 128
 export const AGENT_SKIN_CANVAS = 72
+export const DETAIL_AGENT_CANVAS = 420
+export const RESUME_THUMB_CANVAS = 72
 
 type PreviewEntry = {
   canvas: HTMLCanvasElement
@@ -68,16 +70,21 @@ export async function loadCharacterImages(count = 6): Promise<HTMLImageElement[]
 }
 
 function layoutSprite(canvas: HTMLCanvasElement) {
+  const isDetail = canvas.width >= 360
+  const scaleCap = isDetail ? 20 : canvas.width >= 240 ? 9 : canvas.width >= 120 ? 5 : 4
+  const sidePad = isDetail ? 16 : 8
+  const topPad = isDetail ? 10 : 6
+  const bottomPad = isDetail ? 22 : 6
+
   const scale = Math.min(
-    (canvas.width - 16) / FRAME_W,
-    (canvas.height - 12) / FRAME_H,
-    4,
+    (canvas.width - sidePad * 2) / FRAME_W,
+    (canvas.height - topPad - bottomPad) / FRAME_H,
+    scaleCap,
   )
   const dw = FRAME_W * scale
   const dh = FRAME_H * scale
   const dx = (canvas.width - dw) / 2
-  const footY = canvas.height * 0.72
-  const dy = footY - dh + TILE * scale * 0.5
+  const dy = Math.max(topPad, canvas.height - bottomPad - dh)
   return { dw, dh, dx, dy }
 }
 

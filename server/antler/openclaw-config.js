@@ -76,6 +76,71 @@ function isWhatsAppLinked(accountId = 'default') {
   }
 }
 
+function removePathSafe(targetPath) {
+  try {
+    if (!targetPath || !fs.existsSync(targetPath)) return false;
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeWhatsAppCredentials(accountId = 'default') {
+  const creds = whatsappCredsPath(accountId);
+  return removePathSafe(path.dirname(creds));
+}
+
+function removeChannelConfigAccount(provider, account = 'default') {
+  const ch = String(provider || '').trim().toLowerCase();
+  const accountId = normalizeAccountId(account);
+  if (!ch || !fs.existsSync(configPath())) return false;
+
+  try {
+    const cfg = readJsonFile(configPath());
+    const channel = cfg?.channels?.[ch];
+    if (!channel) return false;
+
+    let changed = false;
+    if (channel.accounts && typeof channel.accounts === 'object' && channel.accounts[accountId]) {
+      delete channel.accounts[accountId];
+      changed = true;
+      if (Object.keys(channel.accounts).length === 0) delete channel.accounts;
+    }
+
+    if (accountId === 'default') {
+      for (const key of [
+        'account',
+        'name',
+        'phone',
+        'linked',
+        'connected',
+        'instructionMode',
+        'dmPolicy',
+        'allowFrom',
+        'groupPolicy',
+        'groupAllowFrom',
+        'instructionRepairPending',
+      ]) {
+        if (Object.prototype.hasOwnProperty.call(channel, key)) {
+          delete channel[key];
+          changed = true;
+        }
+      }
+    }
+
+    if (Object.keys(channel).length === 0) {
+      delete cfg.channels[ch];
+      changed = true;
+    }
+
+    if (changed) writeJsonFile(configPath(), cfg);
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
 function accountStatusLineFromBlob(blob = '', provider, accountId = 'default') {
   const id = normalizeAccountId(accountId);
   const prov = String(provider || '').trim();
@@ -157,25 +222,25 @@ async function whatsappFinalizeLink(accountId = 'default', name) {
 }
 
 function repairWhatsAppConfig(wa = {}) {
-  const next = { ...wa };
+  const next = channelInstruction.repairWhatsAppChannelConfig({ ...wa });
 
   if (next.instructionMode) {
-    return channelInstruction.repairWhatsAppInstructionAccount(next);
-  }
-
-  const allowFrom = Array.isArray(next.allowFrom) ? next.allowFrom.filter(Boolean) : [];
-  if (next.dmPolicy === 'allowlist' && allowFrom.length === 0) next.dmPolicy = 'pairing';
-  if (next.dmPolicy === 'open' && !allowFrom.includes('*')) next.allowFrom = ['*'];
-  else next.allowFrom = allowFrom;
-  const groupAllowFrom = Array.isArray(next.groupAllowFrom) ? next.groupAllowFrom.filter(Boolean) : [];
-  if (next.groupPolicy === 'allowlist' && allowFrom.length === 0 && groupAllowFrom.length === 0) {
-    next.groupPolicy = 'open';
+    Object.assign(next, channelInstruction.repairWhatsAppInstructionAccount(next, 'default'));
+  } else {
+    const allowFrom = Array.isArray(next.allowFrom) ? next.allowFrom.filter(Boolean) : [];
+    if (next.dmPolicy === 'allowlist' && allowFrom.length === 0) next.dmPolicy = 'pairing';
+    if (next.dmPolicy === 'open' && !allowFrom.includes('*')) next.allowFrom = ['*'];
+    else next.allowFrom = allowFrom;
+    const groupAllowFrom = Array.isArray(next.groupAllowFrom) ? next.groupAllowFrom.filter(Boolean) : [];
+    if (next.groupPolicy === 'allowlist' && allowFrom.length === 0 && groupAllowFrom.length === 0) {
+      next.groupPolicy = 'open';
+    }
   }
 
   if (next.accounts && typeof next.accounts === 'object') {
     for (const [id, acct] of Object.entries(next.accounts)) {
       next.accounts[id] = acct?.instructionMode
-        ? channelInstruction.repairWhatsAppInstructionAccount(acct)
+        ? channelInstruction.repairWhatsAppInstructionAccount(acct, id)
         : acct;
     }
   }
@@ -194,6 +259,7 @@ async function finalizeWhatsAppInstructionMode(accountId = 'default', { phone } 
     `whatsapp instruction mode account=${account}`,
     `self-only allowFrom=${(applied.allowFrom || []).slice(0, 2).join(',')}…`,
   );
+  if (!applied.changed) return applied;
   invalidate();
   try {
     await gatewayRestart();
@@ -750,7 +816,11 @@ async function whatsappLinkStatus({ accountId = 'default' } = {}) {
       phone = null;
     }
   }
-  const instruction = channelInstruction.instructionModeFromConfig(account);
+  let instruction = channelInstruction.instructionModeFromConfig(account);
+  if (linked && phone && instruction.enabled) {
+    await finalizeWhatsAppInstructionMode(account, { phone });
+    instruction = channelInstruction.instructionModeFromConfig(account);
+  }
   return {
     available: await isAvailable(),
     account,
@@ -1008,6 +1078,11 @@ async function channelsList() {
         }
         const instruction = channelInstruction.instructionModeFromConfig(accountId);
         entry.instructionMode = instruction.enabled;
+        // OpenClaw may report a default WhatsApp account even after credentials
+        // and config were removed. Do not show that placeholder as connected.
+        if (!entry.phone && !entry.instructionMode && !channelAccountNameFromConfig(cfg, provider, accountId)) {
+          continue;
+        }
       }
       channels.push(entry);
     }
@@ -1061,8 +1136,8 @@ async function gatewayCall(method, params = {}, { timeoutMs = 30000 } = {}) {
   if (params && Object.keys(params).length) args.push('--params', JSON.stringify(params));
   const r = await exec(args, { timeoutMs: timeoutMs + 10000 });
   const data = parseLooseJson(r.stdout || '');
-  if (data && (data.qrDataUrl || data.message || data.connected !== undefined)) {
-    return { ok: !!data.qrDataUrl, available: true, ...data };
+  if (data && typeof data === 'object') {
+    return { ok: r.ok || !data.error, available: true, ...data };
   }
   const err = (r.stderr || r.error || '').trim();
   return { ok: false, available: true, error: err.slice(0, 400) || 'gateway call failed' };
@@ -1090,11 +1165,32 @@ async function whatsappLogout({ accountId = 'default' } = {}) {
   const r = await exec(['channels', 'logout', '--channel', 'whatsapp', '--account', account], { timeoutMs: 30000 });
   const out = `${r.stdout || ''}\n${r.stderr || ''}`.trim();
   const cleared = /cleared whatsapp/i.test(out);
-  if (cleared || r.ok) return { ok: true, available: true, account, cleared, message: out.slice(-200) };
+  const removedCreds = removeWhatsAppCredentials(account);
+  const removedConfig = removeChannelConfigAccount('whatsapp', account);
+  invalidate();
+  if (cleared || r.ok || removedCreds || removedConfig) {
+    try {
+      await gatewayRestart();
+    } catch {
+      /* best-effort: config/credentials are already removed */
+    }
+    return {
+      ok: true,
+      available: true,
+      account,
+      cleared: cleared || removedCreds,
+      removedConfig,
+      message: out.slice(-200),
+    };
+  }
   try {
     const wa = require('./whatsapp-login');
     await wa.logout({ accountId: account });
-    return { ok: true, available: true, account, cleared: true };
+    removeWhatsAppCredentials(account);
+    removeChannelConfigAccount('whatsapp', account);
+    invalidate();
+    await gatewayRestart().catch(() => {});
+    return { ok: true, available: true, account, cleared: true, removedConfig: true };
   } catch (e) {
     return { ok: false, available: true, account, error: (r.stderr || r.error || e.message || '').slice(0, 300) };
   }
@@ -1362,8 +1458,29 @@ async function channelsRemove(provider, account = 'default') {
     .toLowerCase();
   if (!ch) return { ok: false, available: true, error: 'missing channel' };
   const accountId = normalizeAccountId(account);
+  if (ch === 'whatsapp') {
+    const loggedOut = await whatsappLogout({ accountId });
+    const args = ['channels', 'remove', '--channel', ch, '--account', accountId, '--delete'];
+    const r = await exec(args, { timeoutMs: 30000 });
+    const removedConfig = removeChannelConfigAccount(ch, accountId);
+    const removedCreds = removeWhatsAppCredentials(accountId);
+    invalidate();
+    await gatewayRestart().catch(() => {});
+    return {
+      ok: !!(loggedOut.ok || r.ok || removedConfig || removedCreds),
+      available: true,
+      removed: !!(loggedOut.ok || r.ok || removedConfig || removedCreds),
+      account: accountId,
+      loggedOut,
+      removedConfig,
+      removedCreds,
+      error:
+        loggedOut.ok || r.ok || removedConfig || removedCreds
+          ? undefined
+          : (r.stderr || r.error || loggedOut.error || '').slice(0, 300),
+    };
+  }
   const args = ['channels', 'remove', '--channel', ch, '--account', accountId];
-  if (ch === 'whatsapp') args.push('--delete');
   const r = await exec(args, { timeoutMs: 30000 });
   invalidate();
   return {

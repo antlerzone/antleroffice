@@ -6,8 +6,6 @@ import { useI18n } from 'vue-i18n'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useHermesConnectionStore } from '@/stores/hermes/connection'
 import { ConnectionState } from '@/api/types'
-import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
-import { faGithub } from '@fortawesome/free-brands-svg-icons'
 
 const message = useMessage()
 
@@ -169,14 +167,6 @@ function handleCustomUpdate() {
 
 <template>
   <NSpace :size="8" align="center">
-    <a
-      href="https://github.com/itq5/OpenClaw-Admin"
-      target="_blank"
-      rel="noopener noreferrer"
-      style="display: flex; align-items: center; color: inherit; text-decoration: none;"
-    >
-      <FontAwesomeIcon :icon="faGithub" style="font-size: 16px;" />
-    </a>
     <NTag
       v-if="wsStore.gatewayVersion"
       size="small"

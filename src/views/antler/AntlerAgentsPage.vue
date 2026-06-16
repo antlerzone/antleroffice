@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AgentBrowsePage from '@/views/antler/AgentBrowsePage.vue'
+import AgentResumeModal from '@/components/antler/AgentResumeModal.vue'
 import { NDropdown, NModal, NButton, NInput, useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { formatTokenCount, useAntlerAgentTokens } from '@/composables/useAntlerAgentTokens'
@@ -38,6 +39,7 @@ interface UserAgent {
   hiredAt?: number | null
   payrollStatus?: string | null
   fireAt?: number | null
+  templateId?: string | null
 }
 
 interface McpAccount {
@@ -108,6 +110,9 @@ const renameModalAgent = ref<UserAgent | null>(null)
 const renameName = ref('')
 const renameBusy = ref(false)
 const renameError = ref('')
+const resumeOpen = ref(false)
+const resumeAgent = ref<UserAgent | null>(null)
+const resumeBuiltinRole = ref<string | null>(null)
 const gridRef = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const previewMap = new Map<string, ReturnType<typeof registerPreview>>()
@@ -430,9 +435,48 @@ async function saveRename() {
   }
 }
 
+function builtinMenuOptions(): DropdownOption[] {
+  return [{ label: 'View overview', key: 'view' }]
+}
+
+function openOverview(agent: UserAgent) {
+  resumeBuiltinRole.value = null
+  resumeAgent.value = agent
+  resumeOpen.value = true
+}
+
+function openBuiltinOverview(npc: BuiltinNpc) {
+  resumeBuiltinRole.value = npc.role
+  resumeAgent.value = {
+    id: npc.id,
+    name: npc.label,
+    role: npc.role,
+    runtime: npc.runtime || 'openclaw',
+    sprite: npc.charSprite,
+    hueShift: npc.hueShift,
+    salaryCreditsPerMonth: null,
+    hiredAt: null,
+  }
+  resumeOpen.value = true
+}
+
+function onBuiltinMenu(key: string, npc: BuiltinNpc) {
+  if (key === 'view') openBuiltinOverview(npc)
+}
+
+function resumeSkinMeta() {
+  if (!resumeAgent.value) return { palette: 0, hueShift: 0 }
+  if (resumeBuiltinRole.value) {
+    const b = builtins.value.find((n) => n.role === resumeBuiltinRole.value)
+    if (b) return builtinSkinMeta(b)
+    return { palette: resumeAgent.value.sprite ?? 0, hueShift: resumeAgent.value.hueShift ?? 0, name: 'Built-in' }
+  }
+  return agentSkinMeta(resumeAgent.value)
+}
+
 function onUserMenu(key: string, agent: UserAgent) {
   if (key === 'fire') confirmFire(agent)
-  else if (key === 'view') void router.push({ name: 'PixelOffice' })
+  else if (key === 'view') openOverview(agent)
   else if (key === 'rename') openRename(agent)
   else if (key === 'skin') void router.push({ name: 'AntlerSkins', query: { agent: agent.id } })
   else if (key === 'review') void openReview(agent)
@@ -440,6 +484,13 @@ function onUserMenu(key: string, agent: UserAgent) {
 }
 
 const hasRows = computed(() => builtins.value.length > 0 || agents.value.length > 0)
+
+watch(
+  () => resumeOpen.value,
+  (open) => {
+    if (!open) resumeBuiltinRole.value = null
+  },
+)
 
 watch(viewMode, () => void mountPreviews())
 watch(
@@ -564,7 +615,17 @@ onUnmounted(() => stopSkinPreviews())
                 <td class="agent-td-muted">—</td>
                 <td class="agent-td-muted">—</td>
                 <td class="agent-td-muted">{{ tokenLabel(b.openclawAgentId, b.role) }}</td>
-                <td class="agent-td-actions">—</td>
+                <td class="agent-td-actions">
+                  <div class="agent-td-actions-inner">
+                    <NDropdown
+                      trigger="click"
+                      :options="builtinMenuOptions()"
+                      @select="(key) => onBuiltinMenu(String(key), b)"
+                    >
+                      <button type="button" class="btn ghost sm agent-actions-btn">Actions ▾</button>
+                    </NDropdown>
+                  </div>
+                </td>
               </tr>
               <tr v-for="a in agents" :key="a.id">
                 <td class="agent-td-skin">
@@ -657,6 +718,25 @@ onUnmounted(() => stopSkinPreviews())
                   Tokens: {{ tokenLabel(b.openclawAgentId, b.role) }}
                 </li>
               </ul>
+            </div>
+            <div class="npc-market-actions agent-mine-actions">
+              <NDropdown
+                trigger="click"
+                :options="builtinMenuOptions()"
+                @select="(key) => onBuiltinMenu(String(key), b)"
+              >
+                <button type="button" class="btn ghost npc-market-details">Actions ▾</button>
+              </NDropdown>
+            </div>
+            <div class="npc-market-footer">
+              <span class="npc-market-trust">
+                Tokens: <strong>{{ tokenLabel(b.openclawAgentId, b.role) }}</strong>
+              </span>
+              <span class="agent-mine-status">
+                <span class="pill" :class="{ ok: b.npcState === 'working' }">
+                  {{ b.npcState === 'working' ? 'Working' : 'Idle' }}
+                </span>
+              </span>
             </div>
           </div>
         </article>
@@ -847,6 +927,16 @@ onUnmounted(() => stopSkinPreviews())
         <NButton type="primary" :loading="mcpModalBusy" @click="saveMcpBindings">Save</NButton>
       </template>
     </NModal>
+
+    <AgentResumeModal
+      v-model:show="resumeOpen"
+      :agent="resumeAgent"
+      :builtin-role="resumeBuiltinRole"
+      :palette="resumeSkinMeta().palette"
+      :hue-shift="resumeSkinMeta().hueShift"
+      :skills="skills"
+      :mcps="mcps"
+    />
   </div>
 </template>
 

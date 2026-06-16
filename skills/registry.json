@@ -29,6 +29,11 @@
       "id": "admin",
       "name": "Admin",
       "system": "You are an admin assistant agent. Organise the request into clear action items, draft any documents or schedules needed, and keep it tidy."
+    },
+    {
+      "id": "create_saas_worker",
+      "name": "Create SaaS Worker",
+      "system": "You are AntlerOffice Human Resource. Create SaaS NPC templates on the ECS server via AntlerOffice Tools MCP — not local office hires."
     }
   ]
 }

@@ -87,16 +87,63 @@ function writeWhatsAppAccountConfig(wa, accountId, patch) {
   wa.accounts[id] = { ...(wa.accounts[id] || {}), ...patch };
 }
 
-function repairWhatsAppInstructionAccount(acct = {}) {
-  if (!acct.instructionMode) return acct;
-  const allowFrom = Array.isArray(acct.allowFrom) ? acct.allowFrom.filter(Boolean) : [];
+function buildInstructionModePatch(accountId = 'default', { phone: phoneHint, existingAllowFrom = [] } = {}) {
+  const phone = phoneHint || linkedPhoneForAccount(accountId);
+  const allowFrom = Array.isArray(existingAllowFrom) ? existingAllowFrom.filter(Boolean) : [];
+  const selfAllowFrom = phone ? whatsappAllowFromVariants(phone) : [];
+  const nextAllowFrom = [...new Set([...allowFrom, ...selfAllowFrom])];
+
+  // Fail closed while the linked phone is not available yet. This prevents
+  // OpenClaw's default WhatsApp pairing policy from replying to outside DMs.
+  if (!nextAllowFrom.length) {
+    return {
+      instructionMode: true,
+      dmPolicy: 'disabled',
+      allowFrom: [],
+      groupPolicy: 'disabled',
+      groupAllowFrom: [],
+      instructionRepairPending: true,
+    };
+  }
+
   return {
-    ...acct,
+    instructionMode: true,
     dmPolicy: 'allowlist',
-    allowFrom,
+    allowFrom: nextAllowFrom,
     groupPolicy: 'disabled',
     groupAllowFrom: [],
+    instructionRepairPending: false,
   };
+}
+
+function repairWhatsAppInstructionAccount(acct = {}, accountId = 'default') {
+  if (!acct.instructionMode) return acct;
+  const patch = buildInstructionModePatch(accountId, {
+    existingAllowFrom: acct.allowFrom,
+  });
+  return {
+    ...acct,
+    ...patch,
+  };
+}
+
+function repairWhatsAppChannelConfig(wa = {}) {
+  const next = { ...wa };
+
+  if (next.instructionMode) {
+    Object.assign(next, repairWhatsAppInstructionAccount(next, 'default'));
+  }
+
+  if (next.accounts && typeof next.accounts === 'object') {
+    next.accounts = { ...next.accounts };
+    for (const [id, acct] of Object.entries(next.accounts)) {
+      next.accounts[id] = acct?.instructionMode
+        ? repairWhatsAppInstructionAccount(acct, id)
+        : acct;
+    }
+  }
+
+  return next;
 }
 
 function linkedPhoneForAccount(accountId = 'default') {
@@ -142,16 +189,21 @@ function applyWhatsAppInstructionMode(accountId = 'default', { phone: phoneHint 
   const cfg = readJsonFile(cfgPath);
   cfg.channels = cfg.channels || {};
   cfg.channels.whatsapp = cfg.channels.whatsapp || {};
+  const before = JSON.stringify(cfg.channels.whatsapp);
 
-  writeWhatsAppAccountConfig(cfg.channels.whatsapp, account, {
-    instructionMode: true,
-    dmPolicy: 'allowlist',
-    allowFrom,
-    groupPolicy: 'disabled',
-    groupAllowFrom: [],
-  });
+  writeWhatsAppAccountConfig(
+    cfg.channels.whatsapp,
+    account,
+    buildInstructionModePatch(account, {
+      phone,
+      existingAllowFrom: allowFrom,
+    }),
+  );
 
-  writeJsonFile(cfgPath, cfg);
+  cfg.channels.whatsapp = repairWhatsAppChannelConfig(cfg.channels.whatsapp);
+  const after = JSON.stringify(cfg.channels.whatsapp);
+
+  if (before !== after) writeJsonFile(cfgPath, cfg);
 
   return {
     ok: true,
@@ -159,6 +211,7 @@ function applyWhatsAppInstructionMode(accountId = 'default', { phone: phoneHint 
     phone,
     allowFrom,
     instructionMode: true,
+    changed: before !== after,
     hint: 'Only self-chat messages from this number become instructions. Other numbers are ignored.',
   };
 }
@@ -166,6 +219,7 @@ function applyWhatsAppInstructionMode(accountId = 'default', { phone: phoneHint 
 module.exports = {
   whatsappAllowFromVariants,
   repairWhatsAppInstructionAccount,
+  repairWhatsAppChannelConfig,
   linkedPhoneForAccount,
   instructionModeFromConfig,
   applyWhatsAppInstructionMode,

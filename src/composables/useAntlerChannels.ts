@@ -298,12 +298,18 @@ export function useAntlerChannels() {
         api.get<{ accounts?: Record<string, WaStatus> }>('/api/channels/whatsapp/statuses').catch(() => ({})),
       ])
       available.value = !!data.available
-      rawChannels.value = (data.channels || []).map((c) => ({
-        ...c,
-        account: c.account || 'default',
-      }))
       agents.value = agentsRes.agents || []
       waStatusMap.value = (waStatuses as { accounts?: Record<string, WaStatus> }).accounts || {}
+      rawChannels.value = (data.channels || [])
+        .map((c) => ({
+          ...c,
+          account: c.account || 'default',
+        }))
+        .filter((c) => {
+          if (c.provider !== 'whatsapp') return true
+          const st = waStatusMap.value[c.account || 'default'] || {}
+          return !!(st.linked || st.connected || st.incomplete || st.sessionInvalid || c.phone || c.instructionMode)
+        })
       gatewayUp.value = !!(status as { gateway?: boolean }).gateway
       if (!gatewayUp.value && available.value) void ensureGateway()
 

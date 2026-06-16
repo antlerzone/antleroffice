@@ -64,6 +64,14 @@ const DEPARTMENTS = [
     routable: true,
     match: /(it|agent|automation|script|build|code|crawler|technical)/i,
   },
+  {
+    role: 'human_resource',
+    label: 'AntlerOffice Human Resource',
+    charSprite: 2,
+    skillId: 'create_saas_worker',
+    routable: true,
+    match: /(create npc|创建.*worker|上架|catalog|saas|new template|worker template|human resource|\bhr\b)/i,
+  },
 ];
 
 function byRole(role) {
