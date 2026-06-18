@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent } from 'naive-ui'
 import AppHeader from '@/components/layout/AppHeader.vue'
@@ -10,20 +10,39 @@ import MemberModeBanner from '@/components/antler/MemberModeBanner.vue'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useHermesConnectionStore } from '@/stores/hermes/connection'
 import { useBossStore } from '@/stores/boss'
+import { useAiSetupStore } from '@/stores/aiSetup'
+import { useAntlerApi } from '@/composables/useAntlerApi'
+import { useLocalGateway } from '@/composables/useLocalGateway'
 
 const collapsed = ref(false)
 const wsStore = useWebSocketStore()
 const connStore = useHermesConnectionStore()
 const bossStore = useBossStore()
+const aiSetup = useAiSetupStore()
+const api = useAntlerApi()
+const localGateway = useLocalGateway()
 const route = useRoute()
 const router = useRouter()
 const showOnboarding = ref(false)
 
-const ONBOARDED_KEY = 'antleroffice2.onboarded'
-
 const isOpenClaw = computed(() => connStore.currentGateway === 'openclaw')
 
 const showBossChat = computed(() => route.meta.public !== true)
+
+const showAiSetupModal = computed(() => showOnboarding.value || aiSetup.showModal)
+
+async function refreshSetupState(force = false) {
+  try {
+    const st = await api.get<{ needsAiSetup?: boolean; showSetupWizard?: boolean }>('/api/onboard/state')
+    if (force || route.query.setup === '1') {
+      showOnboarding.value = !!st.needsAiSetup
+    } else if (st.showSetupWizard) {
+      showOnboarding.value = true
+    }
+  } catch {
+    if (route.query.setup === '1') showOnboarding.value = true
+  }
+}
 
 onMounted(async () => {
   const ok = await bossStore.ensureSession().catch(() => false)
@@ -31,11 +50,19 @@ onMounted(async () => {
     void router.replace({ name: 'BossLogin', query: { redirect: route.fullPath } })
     return
   }
-  if (!localStorage.getItem(ONBOARDED_KEY)) {
-    showOnboarding.value = true
-  }
+  await refreshSetupState(true)
   if (isOpenClaw.value) {
-    wsStore.connect()
+    localGateway.startBackground()
+    await wsStore.connect()
+    // Self-heal header badge when SSE auth lags but gateway is already up.
+    const sync = () => {
+      void wsStore.ws.syncGatewayState().then(() => {
+        if (wsStore.state !== wsStore.ws.state) wsStore.state = wsStore.ws.state
+      })
+    }
+    sync()
+    setTimeout(sync, 2000)
+    setTimeout(sync, 5000)
   } else {
     connStore.connect()
   }
@@ -48,9 +75,21 @@ onMounted(async () => {
 })
 
 function onOnboardingDone() {
-  localStorage.setItem(ONBOARDED_KEY, '1')
   showOnboarding.value = false
+  aiSetup.close()
+  if (route.query.setup) {
+    const q = { ...route.query }
+    delete q.setup
+    void router.replace({ path: route.path, query: q })
+  }
 }
+
+watch(
+  () => aiSetup.showModal,
+  (open) => {
+    if (open) showOnboarding.value = true
+  },
+)
 
 watch(isOpenClaw, (val) => {
   if (val) {
@@ -66,10 +105,6 @@ watch(isOpenClaw, (val) => {
   if (routeGateway && routeGateway !== currentGateway) {
     router.push(val ? { name: 'PixelOffice' } : '/hermes/chat')
   }
-})
-
-onUnmounted(() => {
-  wsStore.disconnect()
 })
 </script>
 
@@ -104,15 +139,15 @@ onUnmounted(() => {
       >
         <MemberModeBanner v-if="!route.meta.fullBleed" />
         <div class="page-container" :class="{ 'page-container--bleed': route.meta.fullBleed }">
-          <RouterView v-slot="{ Component }">
+          <RouterView v-slot="{ Component, route: childRoute }">
             <transition name="fade" mode="out-in">
-              <component :is="Component" />
+              <component :is="Component" :key="childRoute.fullPath" />
             </transition>
           </RouterView>
         </div>
       </NLayoutContent>
     </NLayout>
-    <OnboardingWizard :show="showOnboarding" @close="onOnboardingDone" @done="onOnboardingDone" />
+    <OnboardingWizard :show="showAiSetupModal" @close="onOnboardingDone" @done="onOnboardingDone" />
     <BossChatMessenger v-if="showBossChat" />
   </NLayout>
 </template>

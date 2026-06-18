@@ -95,7 +95,7 @@ function onPageSizeChange(size: number) {
     </p>
 
     <div v-if="!available && !loading" class="hint warn-box">
-      OpenClaw isn't available yet. Connect OpenClaw in Integrations first.
+      OpenClaw isn't available yet. Connect OpenClaw and add model keys under Models first.
     </div>
 
     <template v-else>

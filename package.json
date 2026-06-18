@@ -1,6 +1,7 @@
 {
   "name": "antleroffice2",
-  "productName": "AntlerOffice 2.0",
+  "productName": "AntlerOffice",
+  "main": "electron/main.cjs",
   "private": true,
   "version": "2.0.0",
   "license": "MIT",
@@ -9,9 +10,16 @@
     "dev": "vite",
     "dev:server": "node --watch --env-file=.env server/index.js",
     "dev:all": "concurrently -n \"frontend,backend\" -c \"blue,green\" \"vite\" \"node --watch --env-file=.env server/index.js\"",
+    "dev:electron": "node scripts/kill-port.cjs 3020 && concurrently -n \"frontend,backend,electron\" -c \"blue,green,magenta\" \"vite\" \"node --watch --env-file=.env server/index.js\" \"cross-env ELECTRON_DEV=1 electron .\"",
     "build": "vue-tsc -b && vite build",
+    "build:app": "vite build",
+    "build:icon": "node scripts/generate-icon.cjs",
+    "installer:postinstall": "node scripts/installer-postinstall.cjs",
+    "build:win": "npm run build:icon && npm run build:app && electron-builder --win --x64",
+    "postinstall": "electron-builder install-app-deps",
     "preview": "vite preview",
     "start": "node --env-file=.env server/index.js",
+    "electron": "electron .",
     "verify:plan1": "node server/antler/verify-plan1.js",
     "verify:plan234": "node server/antler/verify-plan234.js"
   },
@@ -63,15 +71,66 @@
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.8.1",
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^35.7.5",
+    "electron-builder": "^25.1.8",
+    "electron-updater": "^6.8.9",
     "esbuild": "^0.28.0",
     "eventsource": "^4.1.0",
     "happy-dom": "^20.7.0",
     "playwright": "^1.58.2",
+    "png-to-ico": "^3.0.1",
     "prebuild-install": "^7.1.2",
+    "sharp": "^0.35.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.1",
     "vite-plugin-static-copy": "^4.0.0",
     "vitest": "^4.0.18",
     "vue-tsc": "^3.1.5"
+  },
+  "build": {
+    "appId": "com.antlerzone.antleroffice",
+    "productName": "AntlerOffice",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "server/**/*",
+      "electron/**/*",
+      "public/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/antleroffice-logo-black.png",
+      "artifactName": "AntlerOffice-Setup-${version}-x64.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AntlerOffice"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "antlerzone",
+        "repo": "antleroffice"
+      }
+    ]
   }
 }

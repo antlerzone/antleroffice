@@ -68,6 +68,7 @@ export class ApiClient {
       this.eventSource.onopen = () => {
         console.log('[ApiClient] EventSource opened')
         this.reconnectAttempts = 0
+        void this.syncGatewayState()
       }
 
       this.eventSource.onmessage = (event: MessageEvent) => {
@@ -77,6 +78,7 @@ export class ApiClient {
       this.eventSource.onerror = (error) => {
         console.error('[ApiClient] EventSource error:', error)
         console.error('[ApiClient] EventSource readyState:', this.eventSource?.readyState)
+        void this.syncGatewayState()
         this.handleDisconnect()
       }
     } catch (e) {
@@ -102,17 +104,24 @@ export class ApiClient {
             this._state = ConnectionState.CONNECTED
             this.emit('stateChange', ConnectionState.CONNECTED)
             this.emit('connected', { version: message.version, updateAvailable: message.updateAvailable })
-          } else if (message.state === 'disconnected' || message.state === 'failed') {
-            if (this._state === ConnectionState.CONNECTED) {
-              this._state = ConnectionState.RECONNECTING
-              this.emit('stateChange', ConnectionState.RECONNECTING)
-            }
           } else if (message.state === 'connecting') {
-            this._state = ConnectionState.CONNECTING
-            this.emit('stateChange', ConnectionState.CONNECTING)
-          }
-          if (message.version || message.updateAvailable) {
-            this.emit('connected', { version: message.version, updateAvailable: message.updateAvailable })
+            // Keep CONNECTED until server reports disconnected — avoids flicker/stuck UI during handshake retries.
+            if (this._state !== ConnectionState.CONNECTED) {
+              this._state = ConnectionState.CONNECTING
+              this.emit('stateChange', ConnectionState.CONNECTING)
+            }
+          } else if (message.state === 'disconnected' || message.state === 'failed') {
+            const nextState =
+              this._state === ConnectionState.CONNECTED
+                ? ConnectionState.RECONNECTING
+                : ConnectionState.DISCONNECTED
+            if (this._state !== nextState) {
+              this._state = nextState
+              this.emit('stateChange', nextState)
+            }
+            if (message.state === 'failed') {
+              this.emit('failed', 'Gateway connection failed')
+            }
           }
           break
 
@@ -224,13 +233,36 @@ export class ApiClient {
     return result.payload as T
   }
 
-  async health(): Promise<{ ok: boolean; gateway: string; clients: number }> {
+  async health(): Promise<{ ok: boolean; gateway: string; gatewayVersion?: string | null; clients: number }> {
     const url = this.config.baseUrl
       ? `${this.config.baseUrl}/api/health`
       : '/api/health'
 
     const response = await fetch(url)
     return response.json()
+  }
+
+  async syncGatewayState(): Promise<void> {
+    try {
+      const health = await this.health()
+      if (health.gateway === 'connected') {
+        if (this._state !== ConnectionState.CONNECTED) {
+          this._state = ConnectionState.CONNECTED
+          this.emit('stateChange', ConnectionState.CONNECTED)
+        }
+        if (health.gatewayVersion) {
+          this.emit('connected', { version: health.gatewayVersion })
+        }
+      } else if (
+        health.gateway === 'disconnected' &&
+        (this._state === ConnectionState.CONNECTING || this._state === ConnectionState.RECONNECTING)
+      ) {
+        this._state = ConnectionState.DISCONNECTED
+        this.emit('stateChange', ConnectionState.DISCONNECTED)
+      }
+    } catch (e) {
+      console.warn('[ApiClient] syncGatewayState failed:', e)
+    }
   }
 
   on(event: string, handler: EventHandler): () => void {

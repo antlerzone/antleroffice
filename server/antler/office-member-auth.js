@@ -54,7 +54,7 @@ async function attachOfficeMember(req) {
 function enforceOfficeAccess(req, res, next) {
   if (!req.path.startsWith('/api/')) return next();
 
-  const skip = ['/api/boss/auth', '/api/office/share', '/api/auth', '/api/debug'].some((p) =>
+  const skip = ['/api/boss/auth', '/api/office/share', '/api/auth', '/api/ecs', '/api/debug'].some((p) =>
     req.path.startsWith(p),
   );
   if (skip) return next();

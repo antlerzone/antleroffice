@@ -60,20 +60,33 @@ const DEFAULT_SETTINGS = {
     openclaw: { mode: 'cli', cmd: 'openclaw', baseUrl: 'http://127.0.0.1:18789', agentId: 'main', local: true },
     hermes: { mode: 'cli', cmd: 'hermes', baseUrl: '' },
   },
-  // Mirror local office state to the ECS/website backend (read-only mirror).
-  // Reuses auth.baseUrl as the target; no-op while that is empty.
-  sync: { enabled: false, intervalMs: 30000 },
+  // On-demand ECS mirror (poll /api/sync/pending when website requests a snapshot).
+  sync: { enabled: true, intervalMs: 0 },
+  selectedOfficeId: null,
+  activeDesktopId: null,
   // Non-technical users never see JSON/CLI. Turning this on reveals raw logs.
   advanced: { showRawOutput: false },
   // Shared materials library — boss-visible folder OpenClaw can read/write.
   materials: { rootPath: '' },
-  // Default MCP pack (Playwright / Perplexity / Firecrawl) — opt-in from onboarding.
+  // Default MCP pack (Playwright / Perplexity / Firecrawl) — applied by installer or server auto-setup.
   defaultMcpPack: {
     enabled: false,
     version: 0,
     installedAt: null,
     slugToMcpId: {},
     roles: { coo: true, admin: true, it: true },
+  },
+  // First-run UX — persisted in ~/.antleroffice2/settings.json (survives login/logout).
+  onboarding: {
+    stackReady: false,
+    installerComplete: false,
+    aiConfigured: false,
+    aiSkipped: false,
+  },
+  // Boss-facing labels — shown in org chart, boss chat, portal, ECS heartbeat.
+  office: {
+    bossDisplayName: '',
+    desktopDisplayName: '',
   },
 };
 
@@ -115,6 +128,14 @@ function mergeDefaults(s) {
   if (s.advanced) out.advanced = { ...out.advanced, ...s.advanced };
   if (s.materials) out.materials = { ...out.materials, ...s.materials };
   if (s.defaultMcpPack) out.defaultMcpPack = { ...out.defaultMcpPack, ...s.defaultMcpPack };
+  if (s.onboarding) out.onboarding = { ...out.onboarding, ...s.onboarding };
+  if (s.office) out.office = { ...out.office, ...s.office };
+  if (typeof s.selectedOfficeId === 'string' || s.selectedOfficeId === null) {
+    out.selectedOfficeId = s.selectedOfficeId;
+  }
+  if (typeof s.activeDesktopId === 'string' || s.activeDesktopId === null) {
+    out.activeDesktopId = s.activeDesktopId;
+  }
   return out;
 }
 

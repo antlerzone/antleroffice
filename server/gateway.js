@@ -9,12 +9,13 @@ const APP_VERSION = JSON.parse(
 ).version || ''
 
 export class OpenClawGateway extends EventEmitter {
-  constructor(url, authToken, authPassword, logLevel = 'INFO') {
+  constructor(url, authToken, authPassword, logLevel = 'INFO', wsOptions = {}) {
     super()
     this.url = url
     this.authToken = authToken
     this.authPassword = authPassword
     this.logLevel = logLevel
+    this.wsOptions = wsOptions
     this.isDebug = logLevel === 'DEBUG'
     this.ws = null
     this.isConnected = false
@@ -39,7 +40,9 @@ export class OpenClawGateway extends EventEmitter {
     }
 
     const authParam = this.authToken || this.authPassword || ''
-    const wsUrl = authParam ? `${this.url}?auth=${authParam}` : this.url
+    const wsUrl = authParam && !String(this.url).includes('/relay/desktop/')
+      ? `${this.url}${this.url.includes('?') ? '&' : '?'}auth=${authParam}`
+      : this.url
     
     this.debug('Connecting to:', this.url)
     this.debug('Auth configured:', {
@@ -50,7 +53,8 @@ export class OpenClawGateway extends EventEmitter {
     })
     
     try {
-      this.ws = new WebSocket(wsUrl)
+      const wsOpts = this.wsOptions?.headers ? { headers: this.wsOptions.headers } : undefined
+      this.ws = new WebSocket(wsUrl, wsOpts)
       
       this.ws.on('open', () => {
         this.debug('WebSocket opened, preparing connect frame...')

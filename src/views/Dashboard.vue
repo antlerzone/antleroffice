@@ -104,6 +104,11 @@ const connectionType = computed<'success' | 'warning' | 'error' | 'default'>(() 
   return 'default'
 })
 
+const connectionPulsing = computed(() => {
+  if (isHermes.value) return !hermesConnStore.hermesConnected
+  return wsStore.state === 'connecting' || wsStore.state === 'reconnecting'
+})
+
 const lastUpdatedText = computed(() => {
   if (!lastUpdatedAt.value) return t('pages.dashboard.lastUpdated.none')
   return t('pages.dashboard.lastUpdated.text', { time: formatRelativeTime(lastUpdatedAt.value) })
@@ -816,7 +821,9 @@ function viewModels() {
             </div>
           </div>
           <NSpace :size="8" wrap>
-            <NTag :type="connectionType" round :bordered="false">{{ connectionLabel }}</NTag>
+            <NTag :type="connectionType" round :bordered="false" :class="{ 'dashboard-connection-tag--pulse': connectionPulsing }">
+              {{ connectionLabel }}
+            </NTag>
             <NTag type="info" round :bordered="false">{{ usageCoverageText }}</NTag>
             <NTag round :bordered="false">{{ lastUpdatedText }}</NTag>
           </NSpace>
@@ -1397,6 +1404,19 @@ function viewModels() {
 @media (max-width: 560px) {
   .kpi-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+:deep(.dashboard-connection-tag--pulse) {
+  animation: dashboard-connection-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes dashboard-connection-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
   }
 }
 </style>

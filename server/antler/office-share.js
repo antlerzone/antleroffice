@@ -33,7 +33,7 @@ async function enableShare({ name, bossAccessToken } = {}) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${bossAccessToken}`,
     },
-    body: JSON.stringify({ name: name || 'Antler Office' }),
+    body: JSON.stringify({ name: name || 'AntlerOffice' }),
     signal: AbortSignal.timeout(10000),
   });
   const data = await res.json().catch(() => ({}));

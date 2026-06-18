@@ -3437,6 +3437,17 @@ async function handleSend() {
     flex: 1;
     min-height: 0;
     align-content: stretch;
+    display: grid !important;
+    grid-template-columns: 460px 1fr !important;
+    grid-template-rows: 1fr !important;
+  }
+
+  .chat-grid--collapsed {
+    grid-template-columns: 1fr !important;
+  }
+
+  .chat-grid > div {
+    grid-row: 1 !important;
   }
 
   .chat-grid-side,
@@ -3444,6 +3455,20 @@ async function handleSend() {
     min-height: 0;
     display: flex;
     position: relative;
+  }
+
+  .chat-grid-side {
+    max-width: 460px;
+    flex-shrink: 0;
+  }
+
+  .chat-grid-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .chat-bubble {
+    max-width: min(1600px, 92%);
   }
 
   /* 折叠按钮样式 */
@@ -4435,34 +4460,6 @@ async function handleSend() {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
-}
-
-body.wide-mode .chat-grid {
-  display: grid !important;
-  grid-template-columns: 460px 1fr !important;
-  grid-template-rows: 1fr !important;
-}
-
-body.wide-mode .chat-grid--collapsed {
-  grid-template-columns: 1fr !important;
-}
-
-body.wide-mode .chat-grid > div {
-  grid-row: 1 !important;
-}
-
-body.wide-mode .chat-grid-side {
-  max-width: 460px;
-  flex-shrink: 0;
-}
-
-body.wide-mode .chat-grid-main {
-  flex: 1;
-  min-width: 0;
-}
-
-body.wide-mode .chat-bubble {
-  max-width: min(1600px, 92%);
 }
 
 @media (max-width: 1200px) {

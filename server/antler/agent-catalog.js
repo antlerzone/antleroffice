@@ -317,6 +317,7 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
     baselineSkillIds: [...skillIds],
     baselineOpenclawSkillNames: [...(template.openclawSkillNames || [])],
     baselineMcpIds: [...mcpIds],
+    homeWorkerId: template.role || template.id,
   });
 
   if (useEcsBilling) {

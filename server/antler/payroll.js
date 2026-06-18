@@ -27,7 +27,7 @@ function syncOfficePayroll(agent) {
   if (agent.payrollStatus === 'suspended') {
     office.setAgent(npcId, {
       npcState: 'resting',
-      bubbleText: 'Salary unpaid — recharge credits to resume.',
+      bubbleText: '老子不干了 · No money no work',
     });
   }
 }

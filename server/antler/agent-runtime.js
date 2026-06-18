@@ -15,6 +15,7 @@ const {
 } = require('./agent-outcome');
 
 const bossChat = require('./boss-chat-store');
+const taskMeter = require('./task-meter');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -328,9 +329,16 @@ function finalizeAgentTurn({
   threadId,
   planning = false,
   needsBossInput: waitingOnBoss = false,
+  taskScope = 'home',
+  tokens = 0,
 }) {
   const label = agent.label || agent.role || 'Agent';
   chat(agent.role, text, threadId);
+
+  if (agent.id) {
+    const regAgent = registry.getAgent(agent.id) || agent;
+    void taskMeter.meterTaskRun(regAgent, { tokens }).catch(() => {});
+  }
 
   const waiting = waitingOnBoss || needsBossInput(text);
   if (planning) {

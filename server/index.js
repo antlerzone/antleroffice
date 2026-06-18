@@ -19,12 +19,19 @@ import { createRequire } from 'module'
 
 const require = createRequire(import.meta.url)
 const { registerAntlerRoutes, attachAntlerOffice, attachGatewayOfficeSync } = require('./antler/register.cjs')
+const { ensurePackagedEcsEnv, syncStoreAuthFromEnv } = require('./antler/ecs-auto-config.cjs')
 const openclawBridge = require('./antler/openclaw-config')
+const antlerAuth = require('./antler/auth.js')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 const envPath = join(__dirname, '../.env')
+
+const ecsEnvBootstrap = ensurePackagedEcsEnv(envPath)
+if (ecsEnvBootstrap.updated) {
+  console.log('[ECS] Auto-configured .env for', ecsEnvBootstrap.packaged ? 'packaged app' : 'first run', ecsEnvBootstrap.keys || '')
+}
 
 function loadEnvConfig() {
   if (!existsSync(envPath)) {
@@ -239,40 +246,81 @@ setInterval(cleanupOrphanedHermesCliSessions, 5 * 60 * 1000)
 
 let gatewayVersion = null
 let updateInfo = null
-
-gateway.on('connected', () => {
-  console.log('[Gateway] Connected to OpenClaw')
-})
-
-gateway.on('version', (info) => {
-  debug('Gateway version info:', info)
-  updateInfo = info
-  gatewayVersion = info.currentVersion
-  broadcastSSE({ type: 'gatewayState', state: 'connected', version: info.currentVersion, updateAvailable: info })
-})
-
-gateway.on('disconnected', () => {
-  console.log('[Gateway] Disconnected from OpenClaw')
-  gatewayVersion = null
-  broadcastSSE({ type: 'gatewayState', state: 'disconnected' })
-})
-
-gateway.on('error', (err) => {
-  console.error('[Gateway] Error:', err.message)
-  debug('Error stack:', err.stack)
-})
-
-gateway.on('event', (event, payload) => {
-  debug('Gateway event:', event, 'payload keys:', payload ? Object.keys(payload) : null)
-  broadcastSSE({ type: 'event', event, payload })
-})
-
-gateway.on('stateChange', (state) => {
-  debug('Gateway state changed to:', state)
-  broadcastSSE({ type: 'gatewayState', state })
-})
-
 let detachGatewayOfficeSync = null
+
+function attachGatewayHandlers(gw) {
+  gw.on('connected', () => {
+    console.log('[Gateway] Connected to OpenClaw')
+  })
+  gw.on('version', (info) => {
+    debug('Gateway version info:', info)
+    updateInfo = info
+    gatewayVersion = info.currentVersion
+    broadcastSSE({ type: 'gatewayState', state: 'connected', version: info.currentVersion, updateAvailable: info })
+  })
+  gw.on('disconnected', () => {
+    console.log('[Gateway] Disconnected from OpenClaw')
+    gatewayVersion = null
+    broadcastSSE({ type: 'gatewayState', state: 'disconnected' })
+  })
+  gw.on('error', (err) => {
+    console.error('[Gateway] Error:', err.message)
+    debug('Error stack:', err.stack)
+  })
+  gw.on('event', (event, payload) => {
+    debug('Gateway event:', event, 'payload keys:', payload ? Object.keys(payload) : null)
+    broadcastSSE({ type: 'event', event, payload })
+  })
+  gw.on('stateChange', (state) => {
+    debug('Gateway state changed to:', state)
+    broadcastSSE({ type: 'gatewayState', state })
+  })
+}
+
+attachGatewayHandlers(gateway)
+
+async function reconnectOpenClawGateway({ wsUrl, token = '', password = '', ecsToken = '' } = {}) {
+  if (!wsUrl) throw new Error('wsUrl required')
+
+  const isRelay = String(wsUrl).includes('/relay/desktop/')
+  const wsOptions = isRelay && ecsToken
+    ? { headers: { Authorization: `Bearer ${ecsToken}` } }
+    : {}
+
+  const existingContent = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+  const existing = parseEnvFile(existingContent)
+  const nextToken = isRelay ? '' : (token || '')
+  const nextPassword = isRelay ? '' : (password || '')
+  const changed =
+    existing.OPENCLAW_WS_URL !== wsUrl ||
+    (existing.OPENCLAW_AUTH_TOKEN || '') !== nextToken ||
+    (existing.OPENCLAW_AUTH_PASSWORD || '') !== nextPassword
+
+  if (changed) {
+    existing.OPENCLAW_WS_URL = wsUrl
+    existing.OPENCLAW_AUTH_TOKEN = nextToken
+    existing.OPENCLAW_AUTH_PASSWORD = nextPassword
+    writeFileSync(envPath, stringifyEnvFile(existing), 'utf-8')
+  }
+  envConfig = loadEnvConfig()
+
+  const targetWs = wsUrl
+  const targetToken = isRelay ? '' : envConfig.OPENCLAW_AUTH_TOKEN
+  const targetPassword = isRelay ? '' : envConfig.OPENCLAW_AUTH_PASSWORD
+  console.log('[Gateway] Reconnecting to', targetWs)
+  gateway.disconnect()
+  gateway = new OpenClawGateway(
+    targetWs,
+    targetToken,
+    targetPassword,
+    envConfig.LOG_LEVEL,
+    wsOptions,
+  )
+  attachGatewayHandlers(gateway)
+  if (typeof detachGatewayOfficeSync === 'function') detachGatewayOfficeSync()
+  detachGatewayOfficeSync = attachGatewayOfficeSync(gateway)
+  gateway.connect()
+}
 
 debug('Connecting to Gateway at:', envConfig.OPENCLAW_WS_URL)
 gateway.connect()
@@ -298,14 +346,20 @@ function checkAuth(req) {
   if (!token && req.query && req.query.token) {
     token = req.query.token
   }
-  if (!token) return false
-  const session = sessions.get(token)
-  if (!session) return false
-  if (session.expires < Date.now()) {
-    sessions.delete(token)
-    return false
+  if (!token && req.headers['x-boss-token']) {
+    token = String(req.headers['x-boss-token'])
   }
-  return true
+  if (!token) return false
+
+  const legacy = sessions.get(token)
+  if (legacy) {
+    if (legacy.expires >= Date.now()) return true
+    sessions.delete(token)
+  }
+
+  if (antlerAuth.session(String(token))) return true
+
+  return false
 }
 
 function authMiddleware(req, res, next) {
@@ -400,7 +454,7 @@ app.get('/api/config', authMiddleware, (req, res) => {
   }
 })
 
-app.post('/api/config', authMiddleware, (req, res) => {
+app.post('/api/config', authMiddleware, async (req, res) => {
   try {
     const { AUTH_USERNAME, AUTH_PASSWORD, OPENCLAW_WS_URL, OPENCLAW_AUTH_TOKEN, OPENCLAW_AUTH_PASSWORD } = req.body
     
@@ -425,29 +479,11 @@ app.post('/api/config', authMiddleware, (req, res) => {
     
     if (wsUrlChanged || tokenChanged || passwordChanged) {
       console.log('[Config] Gateway config changed, reconnecting...')
-      gateway.disconnect()
-      gateway = new OpenClawGateway(envConfig.OPENCLAW_WS_URL, envConfig.OPENCLAW_AUTH_TOKEN, envConfig.OPENCLAW_AUTH_PASSWORD)
-      
-      gateway.on('connected', (info) => {
-        console.log('[Gateway] Connected to OpenClaw:', info?.server?.version)
-        broadcastSSE({ type: 'gatewayState', state: 'connected' })
+      await reconnectOpenClawGateway({
+        wsUrl: envConfig.OPENCLAW_WS_URL,
+        token: envConfig.OPENCLAW_AUTH_TOKEN,
+        password: envConfig.OPENCLAW_AUTH_PASSWORD,
       })
-      gateway.on('disconnected', () => {
-        console.log('[Gateway] Disconnected from OpenClaw')
-        broadcastSSE({ type: 'gatewayState', state: 'disconnected' })
-      })
-      gateway.on('error', (err) => {
-        console.error('[Gateway] Error:', err.message)
-      })
-      gateway.on('event', (event, payload) => {
-        broadcastSSE({ type: 'event', event, payload })
-      })
-      gateway.on('stateChange', (state) => {
-        broadcastSSE({ type: 'gatewayState', state })
-      })
-      if (typeof detachGatewayOfficeSync === 'function') detachGatewayOfficeSync()
-      detachGatewayOfficeSync = attachGatewayOfficeSync(gateway)
-      gateway.connect()
     }
     
     console.log('[Config] Configuration reloaded')
@@ -461,6 +497,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     gateway: gateway.isConnected ? 'connected' : 'disconnected',
+    gatewayVersion: gateway.isConnected ? gatewayVersion : null,
     clients: sseClients.size,
   })
 })
@@ -1245,7 +1282,11 @@ app.get('/api/events', authMiddleware, (req, res) => {
 
   res.write(`data: ${JSON.stringify({ type: 'connected', clientId })}\n\n`)
 
-  const initialState = gateway.isConnected ? 'connected' : 'disconnected'
+  const initialState = gateway.isConnected
+    ? 'connected'
+    : gateway.ws?.readyState === 1
+      ? 'connecting'
+      : 'disconnected'
   debug('[SSE] Sending initial state to client:', clientId, 'state:', initialState, 'gatewayVersion:', gatewayVersion)
   res.write(`data: ${JSON.stringify({ 
     type: 'gatewayState', 
@@ -4053,7 +4094,8 @@ if (existsSync(officePaPath)) {
   app.use('/office-pa', express.static(officePaPath))
 }
 
-registerAntlerRoutes(app)
+registerAntlerRoutes(app, { reconnectGateway: reconnectOpenClawGateway })
+syncStoreAuthFromEnv()
 attachAntlerOffice(server)
 detachGatewayOfficeSync = attachGatewayOfficeSync(gateway)
 

@@ -2,7 +2,10 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AgentBrowsePage from '@/views/antler/AgentBrowsePage.vue'
+import OfficeOrgChart from '@/components/antler/OfficeOrgChart.vue'
 import AgentResumeModal from '@/components/antler/AgentResumeModal.vue'
+import AgentUsageBars from '@/components/antler/AgentUsageBars.vue'
+import AgentHireCompareCard from '@/components/antler/AgentHireCompareCard.vue'
 import { NDropdown, NModal, NButton, NInput, useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { formatTokenCount, useAntlerAgentTokens } from '@/composables/useAntlerAgentTokens'
@@ -77,7 +80,7 @@ interface Skill {
 
 const AGENT_VIEW_KEY = 'antleroffice.agentView'
 
-type AgentTab = 'mine' | 'browse'
+type AgentTab = 'mine' | 'browse' | 'hierarchy'
 
 const api = useAntlerApi()
 const route = useRoute()
@@ -86,11 +89,18 @@ const message = useMessage()
 const dialog = useDialog()
 const { lookupTokens, refreshTokenUsage, connected } = useAntlerAgentTokens()
 
-const agentTab = ref<AgentTab>(route.query.tab === 'browse' ? 'browse' : 'mine')
+function tabFromQuery(t: unknown): AgentTab {
+  if (t === 'browse') return 'browse'
+  if (t === 'hierarchy') return 'hierarchy'
+  return 'mine'
+}
+
+const agentTab = ref<AgentTab>(tabFromQuery(route.query.tab))
 const viewMode = ref<'list' | 'grid'>(
   localStorage.getItem(AGENT_VIEW_KEY) === 'grid' ? 'grid' : 'list',
 )
 const agents = ref<UserAgent[]>([])
+const officeSnapshot = ref<BuiltinNpc[]>([])
 const builtins = ref<BuiltinNpc[]>([])
 const skins = ref<Skin[]>([])
 const skills = ref<Skill[]>([])
@@ -100,6 +110,11 @@ const mcpModalAgent = ref<UserAgent | null>(null)
 const mcpBindingsForm = ref<{ mcpId: string; accountIds: string[] }[]>([])
 const mcpModalBusy = ref(false)
 const mcpModalError = ref('')
+const entitlementModalOpen = ref(false)
+const entitlementWarnings = ref<
+  Array<{ item: string; scope: string; otWorkerId?: string; otCreditsPerTask?: number }>
+>([])
+const entitlementCompare = ref({ otPerTask: 15, monthlySalary: 199, workerName: '' })
 const reviewModalOpen = ref(false)
 const reviewModalAgent = ref<UserAgent | null>(null)
 const reviewStars = ref(0)
@@ -125,10 +140,11 @@ function setView(mode: 'list' | 'grid') {
 
 function setAgentTab(tab: AgentTab) {
   if (agentTab.value === 'browse' && tab !== 'browse') stopSkinPreviews()
+  if (agentTab.value === 'mine' && tab !== 'mine') stopSkinPreviews()
   agentTab.value = tab
   void router.replace({
     name: 'AntlerAgents',
-    query: tab === 'browse' ? { tab: 'browse' } : {},
+    query: tab === 'mine' ? {} : { tab },
   })
   if (tab === 'mine') void nextTick(() => mountPreviews())
 }
@@ -208,6 +224,7 @@ async function loadAll() {
   ])
   agents.value = agentsRes.agents || []
   const snap = snapRes.agents || []
+  officeSnapshot.value = snap
   builtins.value = snap.filter((a) => !a.userAgentId && !a.external)
   skins.value = skinsRes.skins || []
   skills.value = skillsRes.skills || []
@@ -324,7 +341,9 @@ async function saveMcpBindings() {
   mcpModalBusy.value = true
   try {
     const mcpBindings = mcpBindingsForm.value.filter((b) => b.mcpId)
-    await api.send('PUT', `/api/config/agents/${mcpModalAgent.value.id}`, { mcpBindings })
+    const res = await api.send<{
+      entitlementWarnings?: Array<{ otCreditsPerTask?: number; otWorkerId?: string; item: string }>
+    }>('PUT', `/api/config/agents/${mcpModalAgent.value.id}`, { mcpBindings })
     const hit = agents.value.find((a) => a.id === mcpModalAgent.value?.id)
     if (hit) {
       hit.mcpBindings = mcpBindings
@@ -332,6 +351,16 @@ async function saveMcpBindings() {
     }
     mcpModalOpen.value = false
     message.success('MCP accounts updated')
+    if (res.entitlementWarnings?.length) {
+      const w = res.entitlementWarnings[0]
+      entitlementWarnings.value = res.entitlementWarnings
+      entitlementCompare.value = {
+        otPerTask: w.otCreditsPerTask ?? 15,
+        monthlySalary: hit?.salaryCreditsPerMonth ?? 199,
+        workerName: w.otWorkerId || 'specialist',
+      }
+      entitlementModalOpen.value = true
+    }
   } catch (e) {
     mcpModalError.value = e instanceof Error ? e.message : 'Could not save MCP bindings'
   } finally {
@@ -496,7 +525,7 @@ watch(viewMode, () => void mountPreviews())
 watch(
   () => route.query.tab,
   (t) => {
-    agentTab.value = t === 'browse' ? 'browse' : 'mine'
+    agentTab.value = tabFromQuery(t)
   },
 )
 
@@ -526,6 +555,14 @@ onUnmounted(() => stopSkinPreviews())
         @click="setAgentTab('browse')"
       >
         Browse
+      </button>
+      <button
+        type="button"
+        class="tab"
+        :class="{ active: agentTab === 'hierarchy' }"
+        @click="setAgentTab('hierarchy')"
+      >
+        Hierarchy
       </button>
     </div>
 
@@ -764,6 +801,7 @@ onUnmounted(() => stopSkinPreviews())
               <span class="npc-market-tagline-icon">◆</span>
               {{ a.role }} · {{ a.runtime }}
             </div>
+            <AgentUsageBars v-if="a.templateId" :agent-id="a.id" />
             <div class="npc-market-info">
               <div v-if="a.salaryCreditsPerMonth" class="npc-market-price">
                 <div class="npc-market-price-icon">◎</div>
@@ -823,6 +861,10 @@ onUnmounted(() => stopSkinPreviews())
         </p>
       </div>
       <AgentBrowsePage embedded @hired="onHired" />
+    </div>
+
+    <div v-if="agentTab === 'hierarchy'" class="skilltab">
+      <OfficeOrgChart :snapshot="officeSnapshot" :user-agents="agents" />
     </div>
 
     <NModal
@@ -925,6 +967,21 @@ onUnmounted(() => stopSkinPreviews())
       <template #footer>
         <NButton @click="mcpModalOpen = false">Cancel</NButton>
         <NButton type="primary" :loading="mcpModalBusy" @click="saveMcpBindings">Save</NButton>
+      </template>
+    </NModal>
+
+    <NModal v-model:show="entitlementModalOpen" preset="card" title="Cross-worker binding" style="max-width: 520px">
+      <p class="hint">Some bindings are outside this agent&apos;s home worker scope — OT credits apply per task.</p>
+      <ul class="entitlement-list">
+        <li v-for="w in entitlementWarnings" :key="w.item">{{ w.item }} → OT</li>
+      </ul>
+      <AgentHireCompareCard
+        :ot-per-task="entitlementCompare.otPerTask"
+        :monthly-salary="entitlementCompare.monthlySalary"
+        :worker-name="entitlementCompare.workerName"
+      />
+      <template #footer>
+        <NButton type="primary" @click="entitlementModalOpen = false">Got it</NButton>
       </template>
     </NModal>
 

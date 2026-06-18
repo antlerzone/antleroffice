@@ -78,6 +78,16 @@ function listLedger(limit = 50) {
   return readBilling().ledger.slice(0, limit);
 }
 
+function listLedgerAll() {
+  return readBilling().ledger;
+}
+
+function listLedgerByPeriod(period) {
+  const { periodToRangeMs } = require('./period-sg.cjs');
+  const { startMs, endMs } = periodToRangeMs(period);
+  return readBilling().ledger.filter((r) => r.at >= startMs && r.at <= endMs);
+}
+
 function setBalance(balance, meta = {}) {
   const n = Number(balance);
   if (!Number.isFinite(n) || n < 0) throw new Error('Invalid balance.');
@@ -95,5 +105,7 @@ module.exports = {
   addCredits,
   setBalance,
   listLedger,
+  listLedgerAll,
+  listLedgerByPeriod,
   DEFAULT_BALANCE,
 };

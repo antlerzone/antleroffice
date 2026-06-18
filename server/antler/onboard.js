@@ -5,6 +5,9 @@
 const { spawnCmd } = require('./spawn-util');
 const store = require('./store');
 const oc = require('./openclaw-config');
+const defaultMcpPack = require('./default-mcp-pack');
+
+let mcpAutoApplyStarted = false;
 
 // Rolling log buffer + current install state (polled by the UI).
 const logBuf = [];
@@ -159,17 +162,130 @@ async function setOpenClawKey({ provider = 'openai', apiKey = '', model = '' } =
     const v = await oc.verifyKey();
     if (v.ok) {
       log(`✓ Key works — OpenClaw can run tasks now.`);
+      markAiConfigured();
       return { ok: true, available: true, verified: true };
     }
     log(v.authError ? `✗ Key rejected (looks invalid). Double-check and paste again.` : `Saved, but a test run failed: ${v.error || 'unknown'}.`);
+    markAiConfigured();
     return { ok: true, available: true, verified: false, authError: !!v.authError, error: v.error };
   }
   // Persist into AntlerOffice settings so it's used as env/demo until install.
   const s = store.readSettings();
   s.providers[provider] = { ...(s.providers[provider] || {}), apiKey, ...(model ? { model } : {}) };
   store.writeSettings(s);
+  markAiConfigured();
   log(`OpenClaw not installed yet — saved ${provider} key in AntlerOffice settings for now.`);
   return { ok: true, available: false };
 }
 
-module.exports = { detect, install, startInstall, isInstalling, getLog, setOpenClawKey };
+async function hasAnyAiKey() {
+  if (await oc.isAvailable()) {
+    const ms = await oc.modelsStatus();
+    const providers = ms.status?.auth?.providers || [];
+    return providers.some((p) => (p.profiles?.labels || []).length > 0);
+  }
+  const s = store.readSettings();
+  return Object.values(s.providers || {}).some((p) => String(p?.apiKey || '').trim());
+}
+
+function readOnboarding() {
+  return store.readSettings().onboarding || {};
+}
+
+function writeOnboarding(patch) {
+  const s = store.readSettings();
+  s.onboarding = { ...(s.onboarding || {}), ...patch };
+  store.writeSettings(s);
+  return s.onboarding;
+}
+
+function markAiConfigured() {
+  return writeOnboarding({ aiConfigured: true, aiSkipped: false });
+}
+
+function markAiSkipped() {
+  return writeOnboarding({ aiSkipped: true });
+}
+
+async function ensureMcpPackFromInstaller() {
+  const pack = readPackSettingsSafe();
+  if (pack.enabled) return { applied: false, reason: 'already-enabled' };
+  const runtimes = await detect();
+  if (!runtimes.openclaw?.installed) return { applied: false, reason: 'openclaw-missing' };
+  const result = await defaultMcpPack.applyDefaultMcpPack({
+    enableCoo: true,
+    enableAdmin: true,
+    enableIt: true,
+    installPlaywright: true,
+  });
+  writeOnboarding({ stackReady: true, installerComplete: true });
+  return { applied: true, result };
+}
+
+function readPackSettingsSafe() {
+  const s = store.readSettings();
+  return s.defaultMcpPack || { enabled: false };
+}
+
+function scheduleMcpAutoApply() {
+  if (mcpAutoApplyStarted) return;
+  mcpAutoApplyStarted = true;
+  void ensureMcpPackFromInstaller().catch(() => {});
+}
+
+async function getAppState() {
+  scheduleMcpAutoApply();
+  const [runtimes, packStatus, hasKey] = await Promise.all([
+    detect(),
+    defaultMcpPack.getStatus(),
+    hasAnyAiKey(),
+  ]);
+  const onboarding = readOnboarding();
+  const openclawReady = !!runtimes.openclaw?.installed;
+  const mcpReady = !!packStatus.pack?.enabled;
+  const stackReady = openclawReady && mcpReady;
+  const aiConfigured = !!onboarding.aiConfigured || hasKey;
+  const aiSkipped = !!onboarding.aiSkipped;
+  const needsAiSetup = !aiConfigured && !aiSkipped;
+
+  if (stackReady && !onboarding.stackReady) {
+    writeOnboarding({ stackReady: true });
+  }
+  if (hasKey && !onboarding.aiConfigured) {
+    writeOnboarding({ aiConfigured: true });
+  }
+
+  return {
+    ok: true,
+    runtimes,
+    stackReady,
+    openclawReady,
+    mcpReady,
+    aiConfigured,
+    aiSkipped,
+    needsAiSetup,
+    showSetupWizard: needsAiSetup,
+    defaultMcpPack: packStatus.pack,
+  };
+}
+
+async function markInstallerComplete() {
+  const result = await ensureMcpPackFromInstaller();
+  writeOnboarding({ stackReady: true, installerComplete: true });
+  return { ok: true, ...result };
+}
+
+module.exports = {
+  detect,
+  install,
+  startInstall,
+  isInstalling,
+  getLog,
+  setOpenClawKey,
+  getAppState,
+  hasAnyAiKey,
+  markAiConfigured,
+  markAiSkipped,
+  markInstallerComplete,
+  ensureMcpPackFromInstaller,
+};

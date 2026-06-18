@@ -75,13 +75,32 @@ async function notifyFire({ ecsToken, subscriptionId, localAgentId } = {}) {
   });
 }
 
-async function payrollHeartbeat({ ecsToken, agents = [] } = {}) {
+async function payrollHeartbeat({
+  ecsToken,
+  officeId,
+  agents = [],
+  gatewayWsUrl,
+  gatewayAuthToken,
+  gatewayAuthPassword,
+  displayName,
+  hostname,
+  platform,
+  antlerVersion,
+} = {}) {
   return ecsFetch('/api/desktop/payroll-heartbeat', {
     ecsToken,
     method: 'POST',
     body: {
+      officeId,
       desktopId: ecssync.desktopId(),
       agents,
+      gatewayWsUrl,
+      gatewayAuthToken,
+      gatewayAuthPassword,
+      displayName,
+      hostname,
+      platform,
+      antlerVersion,
     },
   });
 }
@@ -96,6 +115,7 @@ function isEcsBillingEnabled(bossToken) {
 
 module.exports = {
   ecsBaseUrl,
+  ecsFetch,
   notifyHire,
   notifyFire,
   payrollHeartbeat,

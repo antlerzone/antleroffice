@@ -9,9 +9,19 @@ export const routes: RouteRecordRaw[] = [
   },
   {
     path: '/boss/login',
-    name: 'BossLogin',
-    component: () => import('@/views/antler/BossLoginPage.vue'),
-    meta: { titleKey: 'routes.bossLogin', public: true },
+    redirect: { name: 'Login' },
+  },
+  {
+    path: '/auth/desktop-complete',
+    name: 'AuthDesktopComplete',
+    component: () => import('@/views/AuthDesktopComplete.vue'),
+    meta: { titleKey: 'routes.login', public: true },
+  },
+  {
+    path: '/portal',
+    name: 'Portal',
+    component: () => import('@/views/antler/PortalPage.vue'),
+    meta: { titleKey: 'routes.portal', ecsPortal: true },
   },
   {
     path: '/',
@@ -20,7 +30,7 @@ export const routes: RouteRecordRaw[] = [
     children: [
       {
         path: '',
-        redirect: { name: 'PixelOffice' },
+        redirect: { name: 'Portal' },
       },
       // ── AntlerOffice 2.0 boss menu ────────────────────────────────────────
       {
@@ -31,9 +41,19 @@ export const routes: RouteRecordRaw[] = [
       },
       {
         path: 'home',
-        name: 'BossDashboard',
-        component: () => import('@/views/antler/BossDashboardPage.vue'),
-        meta: { titleKey: 'routes.bossHome', icon: 'GridOutline', gateway: 'openclaw', tier: 'boss' },
+        redirect: { name: 'Portal' },
+        meta: { hidden: true },
+      },
+      {
+        path: 'payslip',
+        name: 'Payslip',
+        component: () => import('@/views/antler/PayslipPage.vue'),
+        meta: { titleKey: 'routes.payslip', icon: 'ReceiptOutline', gateway: 'openclaw', tier: 'boss' },
+      },
+      {
+        path: 'home/payslip',
+        redirect: { name: 'Payslip' },
+        meta: { hidden: true },
       },
       {
         path: 'hire',
@@ -59,9 +79,8 @@ export const routes: RouteRecordRaw[] = [
       },
       {
         path: 'integrations',
-        name: 'Integrations',
-        component: () => import('@/views/antler/IntegrationsPage.vue'),
-        meta: { titleKey: 'routes.integrations', icon: 'LinkOutline', gateway: 'openclaw', tier: 'boss' },
+        redirect: { name: 'Models' },
+        meta: { hidden: true },
       },
       {
         path: 'accounts',
@@ -101,6 +120,17 @@ export const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'routes.materials', icon: 'FolderOpenOutline', gateway: 'openclaw', tier: 'boss' },
       },
       {
+        path: 'office-settings',
+        redirect: { name: 'Settings' },
+        meta: { hidden: true },
+      },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/antler/AntlerOfficeSettingsPage.vue'),
+        meta: { titleKey: 'routes.settings', icon: 'SettingsOutline', gateway: 'openclaw', tier: 'boss' },
+      },
+      {
         path: 'jobs',
         name: 'AntlerCompleteJob',
         component: () => import('@/views/antler/AntlerCompleteJobPage.vue'),
@@ -118,6 +148,11 @@ export const routes: RouteRecordRaw[] = [
         name: 'AdminDashboard',
         component: () => import('@/views/Dashboard.vue'),
         meta: { titleKey: 'routes.adminDashboard', icon: 'AnalyticsOutline', gateway: 'openclaw', tier: 'advanced' },
+      },
+      {
+        path: 'admin/gateway',
+        redirect: { name: 'Settings' },
+        meta: { hidden: true },
       },
       {
         path: 'chat',
@@ -158,7 +193,7 @@ export const routes: RouteRecordRaw[] = [
         path: 'models',
         name: 'Models',
         component: () => import('@/views/models/ModelsPage.vue'),
-        meta: { titleKey: 'routes.models', icon: 'SparklesOutline', gateway: 'openclaw', tier: 'advanced' },
+        meta: { titleKey: 'routes.models', icon: 'SparklesOutline', gateway: 'openclaw', tier: 'boss' },
       },
       {
         path: 'config',
@@ -186,13 +221,13 @@ export const routes: RouteRecordRaw[] = [
         path: 'terminal',
         name: 'Terminal',
         component: () => import('@/views/terminal/TerminalPage.vue'),
-        meta: { titleKey: 'routes.terminal', icon: 'TerminalOutline', gateway: 'openclaw', tier: 'advanced' },
+        meta: { titleKey: 'routes.terminal', icon: 'TerminalOutline', gateway: 'openclaw', tier: 'advanced', hidden: true },
       },
       {
         path: 'remote-desktop',
         name: 'RemoteDesktop',
         component: () => import('@/views/remote-desktop/RemoteDesktopPage.vue'),
-        meta: { titleKey: 'routes.remoteDesktop', icon: 'DesktopOutline', gateway: 'openclaw', tier: 'advanced' },
+        meta: { titleKey: 'routes.remoteDesktop', icon: 'DesktopOutline', gateway: 'openclaw', tier: 'advanced', hidden: true },
       },
       {
         path: 'files',
@@ -287,13 +322,13 @@ export const routes: RouteRecordRaw[] = [
         path: 'hermes/terminal',
         name: 'HermesTerminal',
         component: () => import('@/views/hermes/HermesTerminalPage.vue'),
-        meta: { titleKey: 'routes.hermesTerminal', icon: 'TerminalOutline', gateway: 'hermes', tier: 'advanced' },
+        meta: { titleKey: 'routes.hermesTerminal', icon: 'TerminalOutline', gateway: 'hermes', tier: 'advanced', hidden: true },
       },
       {
         path: 'hermes/remote-desktop',
         name: 'HermesRemoteDesktop',
         component: () => import('@/views/hermes/HermesRemoteDesktopPage.vue'),
-        meta: { titleKey: 'routes.hermesRemoteDesktop', icon: 'DesktopOutline', gateway: 'hermes', tier: 'advanced' },
+        meta: { titleKey: 'routes.hermesRemoteDesktop', icon: 'DesktopOutline', gateway: 'hermes', tier: 'advanced', hidden: true },
       },
       {
         path: 'hermes/files',
@@ -306,12 +341,6 @@ export const routes: RouteRecordRaw[] = [
         name: 'HermesSystem',
         component: () => import('@/views/hermes/HermesSystemPage.vue'),
         meta: { titleKey: 'routes.hermesSystem', icon: 'SettingsOutline', gateway: 'hermes', tier: 'advanced' },
-      },
-      {
-        path: 'settings',
-        name: 'Settings',
-        component: () => import('@/views/settings/SettingsPage.vue'),
-        meta: { titleKey: 'routes.settings', icon: 'CogOutline', gateway: 'openclaw', tier: 'advanced' },
       },
     ],
   },

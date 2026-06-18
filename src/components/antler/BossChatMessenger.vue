@@ -14,6 +14,7 @@ import {
 } from '@vicons/ionicons5'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useBossStore } from '@/stores/boss'
+import { useAiSetupStore } from '@/stores/aiSetup'
 import { useOfficeShareStore } from '@/stores/officeShare'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useChatStore } from '@/stores/chat'
@@ -90,6 +91,7 @@ interface OfficeSnapshot {
 
 const api = useAntlerApi()
 const boss = useBossStore()
+const aiSetup = useAiSetupStore()
 const officeShare = useOfficeShareStore()
 const wsStore = useWebSocketStore()
 const chatStore = useChatStore()
@@ -723,7 +725,9 @@ async function sendBossChat() {
     await nextTick()
     scrollChatIfNeeded(true)
   } catch (e) {
-    message.error(e instanceof Error ? e.message : 'Could not send')
+    if (!aiSetup.maybePromptFromError(e)) {
+      message.error(e instanceof Error ? e.message : 'Could not send')
+    }
   } finally {
     sending.value = false
   }

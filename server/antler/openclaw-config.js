@@ -629,6 +629,73 @@ async function setKey(provider, apiKey, { agentId } = {}) {
   }
 }
 
+async function deleteKey(provider, { profileId, agentId } = {}) {
+  if (!(await isAvailable())) return { ok: false, available: false };
+  const prov = String(provider || '').trim();
+  if (!prov) return { ok: false, available: true, error: 'missing provider' };
+
+  let storePath;
+  try {
+    const st = await modelsStatus();
+    storePath = st.status?.auth?.storePath;
+  } catch {
+    /* fall through */
+  }
+  const id = agentId || store.readSettings().runtimes?.openclaw?.agentId || 'main';
+  if (!storePath) storePath = path.join(os.homedir(), '.openclaw', 'agents', id, 'agent', 'auth-profiles.json');
+
+  const pid = profileId || `${prov}:default`;
+  let removedProfile = false;
+  let removedConfigKey = false;
+
+  try {
+    let data = { version: 1, profiles: {}, lastGood: {}, usageStats: {} };
+    try {
+      data = readJsonFile(storePath) || data;
+    } catch {
+      /* new file */
+    }
+    data.profiles = data.profiles || {};
+    if (data.profiles[pid]) {
+      delete data.profiles[pid];
+      removedProfile = true;
+    }
+    if (data.lastGood?.[prov] === pid) delete data.lastGood[prov];
+    if (data.usageStats?.[pid]) delete data.usageStats[pid];
+    if (removedProfile) writeJsonFile(storePath, data);
+
+    try {
+      const cfgPath = configPath();
+      const cfg = readJsonFile(cfgPath);
+      if (cfg.auth?.profiles?.[pid]) {
+        delete cfg.auth.profiles[pid];
+        removedConfigKey = true;
+      }
+      if (cfg.auth?.order?.[prov]) {
+        cfg.auth.order[prov] = (cfg.auth.order[prov] || []).filter((entry) => entry !== pid);
+        if (cfg.auth.order[prov].length === 0) delete cfg.auth.order[prov];
+      }
+      const providerCfg = cfg.models?.providers?.[prov];
+      if (providerCfg && typeof providerCfg === 'object' && providerCfg.apiKey) {
+        delete providerCfg.apiKey;
+        removedConfigKey = true;
+      }
+      if (removedConfigKey || removedProfile) writeJsonFile(cfgPath, cfg);
+    } catch {
+      /* config cleanup best-effort */
+    }
+
+    if (!removedProfile && !removedConfigKey) {
+      return { ok: false, available: true, error: 'no key found for provider' };
+    }
+
+    invalidate();
+    return { ok: true, available: true };
+  } catch (e) {
+    return { ok: false, available: true, error: e.message };
+  }
+}
+
 async function setModel(ref) {
   if (!(await isAvailable())) return { ok: false, available: false };
   const r = await exec(['models', 'set', ref]);
@@ -1588,6 +1655,7 @@ module.exports = {
   setConfig,
   listAgents,
   setKey,
+  deleteKey,
   setModel,
   modelsStatus,
   gatewayStatus,

@@ -20,18 +20,26 @@ const officeMemberAuth = require('./office-member-auth');
 const officeEvents = require('./office-events');
 const openclaw = require('./openclaw-config');
 const debugLog = require('./debug-log');
+const portalDesktops = require('./portal-desktops.cjs');
+const desktopRelay = require('./desktop-relay-client.cjs');
+const appUpdater = require('./app-updater.cjs');
 const billing = require('./billing');
 const payroll = require('./payroll');
 const agentCatalog = require('./agent-catalog');
+const payslip = require('./payslip.cjs');
+const agentUsageStore = require('./agent-usage-store');
+const workerEntitlements = require('./worker-entitlements');
+const taskMeter = require('./task-meter');
 const mcpProbe = require('./mcp-probe');
 const mcpOAuth = require('./mcp-oauth');
 const { handleInstruction, savePlanDeliverable } = require('./agent-runtime');
 const bossChat = require('./boss-chat-store');
 const antlerofficeMcp = require('./antleroffice-mcp');
 const webAccounts = require('./web-accounts-store');
+const materials = require('./materials.cjs');
 const { attachPaBridge, getOfficePresence } = require('./pa-bridge');
 const gatewayOfficeAdapter = require('./gateway-office-adapter');
-const materials = require('./materials.cjs');
+const ecsPortalAuth = require('./ecs-portal-auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -91,13 +99,13 @@ function resolveBossOwner(req) {
     if (s?.user?.id) {
       return {
         ownerKey: `user:${s.user.id}`,
-        ownerName: s.user.name || s.user.email || 'Boss',
+        ownerName: resolveBossDisplayName(s),
       };
     }
     if (s?.user?.email) {
       return {
         ownerKey: `email:${s.user.email}`,
-        ownerName: s.user.name || s.user.email,
+        ownerName: resolveBossDisplayName(s),
       };
     }
   }
@@ -107,7 +115,7 @@ function resolveBossOwner(req) {
       ownerName: req.officeMember.name || 'Member',
     };
   }
-  return { ownerKey: 'local:boss', ownerName: 'Boss' };
+  return { ownerKey: 'local:boss', ownerName: resolveBossDisplayName(null) };
 }
 
 function requireBossOnly(req, res, next) {
@@ -117,8 +125,29 @@ function requireBossOnly(req, res, next) {
   next();
 }
 
-function registerAntlerRoutes(app) {
+function requireBossOnlyRoute(req, res) {
+  if (req.officeMember && req.officeMember.role !== 'owner') {
+    res.status(403).json({ ok: false, error: 'Boss only' });
+    return false;
+  }
+  return true;
+}
+
+function resolveEcsBillingContext(req) {
+  const token = req.headers['x-boss-token'] || (req.body || {}).bossToken;
+  const s = token ? auth.session(String(token)) : null;
+  const settings = store.readSettings();
+  const officeId = settings.selectedOfficeId || s?.offices?.[0]?.id || null;
+  return {
+    ecsToken: s?.ecsAccessToken || null,
+    officeId,
+    session: s,
+  };
+}
+
+function registerAntlerRoutes(app, hooks = {}) {
   store.setDataDir();
+  materials.ensureDefaultMaterialsRoot();
   antlerofficeMcp.attachMcpRoutes(app);
   defaultMcpPack.ensureAntlerofficeToolsBinding().catch((e) => {
     console.warn('[AntlerOffice] antleroffice-tools MCP bind:', e.message);
@@ -237,7 +266,11 @@ function registerAntlerRoutes(app) {
     if (!s) return { ok: false, error: 'no_session' };
 
     if (s.ecsAccessToken) {
+      ecssync.rememberEcsToken(s.ecsAccessToken);
       await auth.refreshSessionFromEcs(s);
+      const settings = store.readSettings();
+      const officeId =
+        settings.selectedOfficeId || (s.offices && s.offices[0]?.id) || null;
       const agents = registry.listAgents()
         .filter((a) => a.templateId)
         .map((a) => ({
@@ -249,9 +282,20 @@ function registerAntlerRoutes(app) {
           nextSalaryDueAt: a.nextSalaryDueAt,
           fireAt: a.fireAt,
         }));
+      desktopRelay.startFromBossSession(s);
+      const relayUrl = desktopRelay.getPublicGatewayUrl();
+      const pkgVersion = require('../../package.json').version;
       const ecsResult = await ecsSubscriptions.payrollHeartbeat({
         ecsToken: s.ecsAccessToken,
+        officeId,
         agents,
+        gatewayWsUrl: relayUrl || process.env.OPENCLAW_WS_URL || 'ws://127.0.0.1:18789',
+        gatewayAuthToken: process.env.OPENCLAW_AUTH_TOKEN || '',
+        gatewayAuthPassword: process.env.OPENCLAW_AUTH_PASSWORD || '',
+        displayName: resolveDesktopDisplayName(),
+        hostname: require('node:os').hostname(),
+        platform: process.platform,
+        antlerVersion: pkgVersion,
       });
       if (ecsResult.ok) {
         if (typeof ecsResult.creditBalance === 'number') {
@@ -272,8 +316,72 @@ function registerAntlerRoutes(app) {
   // Remove imported agents whose desktop stopped sending heartbeats (offline).
   setInterval(() => office.pruneExternal(30000), 10000).unref();
 
-  // Start the ECS mirror (no-op until sync is enabled + auth.baseUrl is set).
+  // Start on-demand ECS sync polling when ECS is configured.
   ecssync.refresh();
+
+  portalDesktops.registerPortalDesktopRoutes(app, hooks);
+
+  const pkgVersion = require('../../package.json').version;
+
+  app.get('/api/app/version', (_req, res) => {
+    res.json({
+      ok: true,
+      version: pkgVersion,
+      productName: 'AntlerOffice',
+      relayConnected: desktopRelay.isRelayConnected(),
+      relayGatewayUrl: desktopRelay.getPublicGatewayUrl(),
+    });
+  });
+
+  app.get('/api/app/update/status', (_req, res) => {
+    res.json({ ok: true, currentVersion: pkgVersion, schedule: appUpdater.readSchedule() });
+  });
+
+  app.post('/api/app/update/schedule', (req, res) => {
+    try {
+      const { version, scheduledAt, preApproved } = req.body || {};
+      const schedule = appUpdater.writeSchedule({
+        pendingVersion: version || null,
+        scheduledAt: scheduledAt ? new Date(scheduledAt).getTime() : null,
+        preApproved: !!preApproved,
+        skippedVersion: null,
+        remindAfter: null,
+      });
+      res.json({ ok: true, schedule });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/app/update/skip', (req, res) => {
+    const version = req.body?.version;
+    const schedule = appUpdater.writeSchedule({
+      skippedVersion: version || null,
+      remindAfter: null,
+    });
+    res.json({ ok: true, schedule });
+  });
+
+  app.post('/api/app/update/remind-later', (req, res) => {
+    const minutes = Number(req.body?.minutes) || 60;
+    const schedule = appUpdater.writeSchedule({
+      remindAfter: Date.now() + minutes * 60 * 1000,
+    });
+    res.json({ ok: true, schedule });
+  });
+
+  app.post('/api/app/update/clear-schedule', (_req, res) => {
+    res.json({ ok: true, schedule: appUpdater.clearSchedule() });
+  });
+
+  setInterval(() => {
+    const due = appUpdater.dueScheduledUpdate();
+    if (!due) return;
+    console.log('[Updater] Scheduled update due for version', due.pendingVersion);
+  }, 60 * 1000).unref();
+
+  // ── ECS portal auth (Google/Facebook / desktop adopt) ─────────────────────
+  ecsPortalAuth.registerEcsPortalAuthRoutes(app);
 
   // ── Boss auth (credits/subscription — separate from Admin /api/auth) ───────
   app.post('/api/boss/auth/login', async (req, res) => {
@@ -324,7 +432,7 @@ function registerAntlerRoutes(app) {
   });
   app.get('/api/boss/auth/oauth/callback', async (req, res) => {
     const q = req.query || {};
-    const frontend = process.env.OAUTH_FRONTEND_ORIGIN || process.env.DEV_FRONTEND_URL || 'http://localhost:3001';
+    const frontend = process.env.OAUTH_FRONTEND_ORIGIN || process.env.DEV_FRONTEND_URL || 'http://127.0.0.1:3020';
     if (q.error) {
       return res.redirect(`${frontend}/boss/login?error=${encodeURIComponent(String(q.error))}`);
     }
@@ -775,7 +883,7 @@ function registerAntlerRoutes(app) {
     if (!a) return res.status(404).json({ ok: false });
     res.json({ agent: redactAgent(a), knowledge: registry.listKnowledge(a.id) });
   });
-  app.put('/api/config/agents/:id', (req, res) => {
+  app.put('/api/config/agents/:id', async (req, res) => {
     const existing = registry.getAgent(req.params.id);
     if (!existing) return res.status(404).json({ ok: false });
     const patch = mergeAgentIncoming(existing, req.body || {});
@@ -792,7 +900,17 @@ function registerAntlerRoutes(app) {
       mcpBindings: a.mcpBindings,
       channels: a.channels,
     });
-    res.json({ ok: true, agent: redactAgent(a) });
+    let entitlementWarnings = [];
+    try {
+      entitlementWarnings = await workerEntitlements.checkBindingWarnings({
+        homeWorkerId: a.homeWorkerId || a.role || a.templateId,
+        skillIds: a.skillIds || [],
+        mcpIds: a.mcpIds || [],
+      });
+    } catch {
+      /* non-fatal */
+    }
+    res.json({ ok: true, agent: redactAgent(a), entitlementWarnings });
   });
   app.get('/api/config/agents/:id/overview', async (req, res) => {
     const a = registry.getAgent(req.params.id);
@@ -1349,6 +1467,9 @@ function registerAntlerRoutes(app) {
   app.get('/api/materials', (_req, res) => {
     res.json(materials.workspaceInfo());
   });
+  app.get('/api/materials/summary', (_req, res) => {
+    res.json(materials.librarySummary());
+  });
   app.get('/api/materials/list', (req, res) => {
     const result = materials.listDir(req.query.path || '');
     if (!result.ok) return res.status(400).json(result);
@@ -1427,8 +1548,18 @@ function registerAntlerRoutes(app) {
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
   });
+  app.post('/api/materials/upload', upload.single('file'), (req, res) => {
+    const file = req.file;
+    if (!file) return res.status(400).json({ ok: false, error: 'No file uploaded' });
+    const dir = String(req.body?.path ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const result = materials.writeUploadedFile(dir, file.originalname, file.buffer);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  });
   app.post('/api/materials/root', (req, res) => {
-    const result = materials.setRootPath(req.body?.rootPath);
+    const result = req.body?.useDefault
+      ? materials.resetToDefaultRoot()
+      : materials.setRootPath(req.body?.rootPath);
     if (!result.ok) return res.status(400).json(result);
     res.json({ ...materials.workspaceInfo(), ...result });
   });
@@ -1503,6 +1634,13 @@ function registerAntlerRoutes(app) {
   });
 
   // ── Onboarding: detect + install OpenClaw (execution) + Hermes (memory) ───
+  app.get('/api/onboard/state', async (_req, res) => {
+    try {
+      res.json(await onboard.getAppState());
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
   app.get('/api/onboard/status', async (_req, res) => {
     res.json(await onboard.detect());
   });
@@ -1516,6 +1654,16 @@ function registerAntlerRoutes(app) {
   app.post('/api/onboard/openclaw-key', async (req, res) => {
     const { provider, apiKey, model } = req.body || {};
     res.json(await onboard.setOpenClawKey({ provider, apiKey, model }));
+  });
+  app.post('/api/onboard/ai-skip', (_req, res) => {
+    res.json({ ok: true, onboarding: onboard.markAiSkipped() });
+  });
+  app.post('/api/onboard/installer-complete', async (_req, res) => {
+    try {
+      res.json(await onboard.markInstallerComplete());
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   });
 
   app.get('/api/onboard/mcp-pack/status', async (_req, res) => {
@@ -1565,6 +1713,12 @@ function registerAntlerRoutes(app) {
     if (!provider || !apiKey) return res.json({ ok: false, error: 'missing provider or apiKey' });
     res.json(await openclaw.setKey(provider, apiKey));
   });
+  app.delete('/api/openclaw/provider-key', async (req, res) => {
+    const provider = String(req.query?.provider || req.body?.provider || '').trim();
+    const profileId = String(req.query?.profileId || req.body?.profileId || '').trim() || undefined;
+    if (!provider) return res.json({ ok: false, error: 'missing provider' });
+    res.json(await openclaw.deleteKey(provider, { profileId }));
+  });
 
   // ── Usage + key overview (drives the Settings page) ───────────────────────
   app.get('/api/usage', async (_req, res) => {
@@ -1576,7 +1730,16 @@ function registerAntlerRoutes(app) {
     const st = models.status || {};
     const keys = [];
     for (const p of st.auth?.providers || []) {
-      for (const label of p.profiles?.labels || []) keys.push({ provider: p.provider, label });
+      for (const label of p.profiles?.labels || []) {
+        const labelStr = String(label || '');
+        const eq = labelStr.indexOf('=');
+        const profileId = eq > 0 ? labelStr.slice(0, eq) : `${p.provider}:default`;
+        const secret = eq >= 0 ? labelStr.slice(eq + 1) : labelStr;
+        const tail = secret.includes('...') ? secret.split('...').pop() : secret;
+        const last4 = String(tail || '').slice(-4);
+        const masked = last4 ? `••••••••${last4}` : '••••••••';
+        keys.push({ provider: p.provider, label: labelStr, profileId, masked, last4 });
+      }
     }
     res.json({
       available: true,
@@ -1595,11 +1758,106 @@ function registerAntlerRoutes(app) {
   app.get('/api/antler/settings', (_req, res) => {
     res.json(redact(store.readSettings()));
   });
-  app.post('/api/antler/settings', (req, res) => {
-    const saved = store.writeSettings(mergeIncoming(store.readSettings(), req.body || {}));
+  app.post('/api/antler/settings', async (req, res) => {
+    const incoming = req.body || {};
+    const saved = store.writeSettings(mergeIncoming(store.readSettings(), incoming));
+    if (incoming.office?.desktopDisplayName !== undefined) {
+      await syncDesktopDisplayNameToEcs(req, saved.office?.desktopDisplayName || '');
+    }
     openclaw.invalidate();
     ecssync.refresh();
     res.json(redact(saved));
+  });
+
+  // ── Payslip / billing ledger (boss only) ───────────────────────────────────
+  app.get('/api/billing/payslip', async (req, res) => {
+    if (!requireBossOnlyRoute(req, res)) return;
+    try {
+      const { ecsToken, officeId } = resolveEcsBillingContext(req);
+      const period = String(req.query.period || '').trim() || undefined;
+      const page = Number(req.query.page) || 1;
+      const pageSize = Number(req.query.pageSize) || 20;
+      const sortBy = String(req.query.sortBy || 'at');
+      const sortOrder = req.query.sortOrder === 'ascend' ? 'ascend' : 'descend';
+      const data = await payslip.getPayslip({
+        ecsToken,
+        officeId,
+        period,
+        page,
+        pageSize,
+        sortBy,
+        sortOrder,
+      });
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/billing/payslip/export', async (req, res) => {
+    if (!requireBossOnlyRoute(req, res)) return;
+    try {
+      const { ecsToken, officeId } = resolveEcsBillingContext(req);
+      const period = String(req.query.period || '').trim() || undefined;
+      const data = await payslip.exportPayslip({ ecsToken, officeId, period });
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/usage/agent', (req, res) => {
+    if (!requireBossOnlyRoute(req, res)) return;
+    const agentId = String(req.query.agentId || '').trim();
+    const period = String(req.query.period || '').trim() || undefined;
+    if (!agentId) return res.status(400).json({ ok: false, error: 'agentId required' });
+    res.json({
+      ok: true,
+      agentId,
+      period: period || agentUsageStore.formatPeriod(),
+      usage: agentUsageStore.getAgentUsage(agentId, period),
+    });
+  });
+
+  app.get('/api/catalog/worker-entitlements', async (_req, res) => {
+    try {
+      const data = await workerEntitlements.loadEntitlements();
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/usage/classify', async (req, res) => {
+    try {
+      const { homeWorkerId, skillIds, mcpIds } = req.body || {};
+      const result = await workerEntitlements.classifyTaskUsage({
+        homeWorkerId,
+        skillIds: Array.isArray(skillIds) ? skillIds : [],
+        mcpIds: Array.isArray(mcpIds) ? mcpIds : [],
+      });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/usage/meter', async (req, res) => {
+    if (!requireBossOnlyRoute(req, res)) return;
+    try {
+      const agent = registry.getAgent(req.body?.agentId);
+      if (!agent) return res.status(404).json({ ok: false, error: 'Agent not found' });
+      const bossToken = req.headers['x-boss-token'] || req.body?.bossToken;
+      const result = await taskMeter.meterTaskRun(agent, {
+        skillIds: req.body?.skillIds,
+        mcpIds: req.body?.mcpIds,
+        tokens: req.body?.tokens,
+        bossToken,
+      });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   });
 }
 
@@ -1783,6 +2041,51 @@ function mergeIncoming(current, incoming) {
   if (incoming.advanced && typeof incoming.advanced.showRawOutput === 'boolean') {
     next.advanced.showRawOutput = incoming.advanced.showRawOutput;
   }
+  if (incoming.office) {
+    next.office = { ...next.office, ...incoming.office };
+    if (typeof incoming.office.bossDisplayName === 'string') {
+      next.office.bossDisplayName = incoming.office.bossDisplayName.trim().slice(0, 80);
+    }
+    if (typeof incoming.office.desktopDisplayName === 'string') {
+      next.office.desktopDisplayName = incoming.office.desktopDisplayName.trim().slice(0, 80);
+    }
+  }
   return next;
+}
+
+function resolveBossDisplayName(session) {
+  const custom = String(store.readSettings().office?.bossDisplayName || '').trim();
+  if (custom) return custom;
+  if (session?.user?.name) return String(session.user.name).trim();
+  if (session?.username) return String(session.username).trim();
+  return 'Boss';
+}
+
+function resolveDesktopDisplayName() {
+  const custom = String(store.readSettings().office?.desktopDisplayName || '').trim();
+  if (custom) return custom;
+  return require('node:os').hostname();
+}
+
+async function syncDesktopDisplayNameToEcs(req, displayName) {
+  const token = req.headers['x-boss-token'] || req.body?.bossToken;
+  const s = auth.session(token);
+  if (!s?.ecsAccessToken || !displayName) return;
+  const base = auth.ecsBaseUrl();
+  if (!base) return;
+  const desktopId = ecssync.desktopId();
+  try {
+    await fetch(`${base}/api/desktops/${encodeURIComponent(desktopId)}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${s.ecsAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName }),
+      signal: AbortSignal.timeout(12000),
+    });
+  } catch {
+    /* ECS sync best-effort */
+  }
 }
 

@@ -23,3 +23,13 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+interface AntlerDesktopBridge {
+  platform?: string
+  isElectron?: boolean
+  openExternal?: (url: string) => Promise<{ ok?: boolean }>
+}
+
+interface Window {
+  antlerDesktop?: AntlerDesktopBridge
+}

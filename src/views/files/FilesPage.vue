@@ -20,15 +20,11 @@ import {
   NImage,
   NTabs,
   NTabPane,
-  NBreadcrumb,
-  NBreadcrumbItem,
   NTooltip,
-  NSelect,
-  NAvatar,
+  NDropdown,
   useMessage,
   type DataTableColumns,
   type UploadFileInfo,
-  type SelectOption,
 } from 'naive-ui'
 import {
   RefreshOutline,
@@ -43,7 +39,6 @@ import {
   AddOutline,
   CloudUploadOutline,
   CloseOutline,
-  HomeOutline,
   CreateOutline,
   TextOutline,
   ListOutline,
@@ -55,7 +50,6 @@ import {
   RemoveOutline,
   AddCircleOutline,
   ReorderFourOutline,
-  PersonOutline,
   ExpandOutline,
   ContractOutline,
   DocumentTextOutline,
@@ -63,8 +57,8 @@ import {
   ChevronForwardOutline,
 } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
-import { useAuthStore } from '@/stores/auth'
 import { useMemoryStore } from '@/stores/memory'
+import { ensureApiSession, getApiAuthHeaders, getApiAuthToken } from '@/lib/api-auth'
 import { formatRelativeTime } from '@/utils/format'
 import { renderSimpleMarkdown, extractTocHeadings } from '@/utils/markdown'
 import PdfViewer from '@/components/common/PdfViewer.vue'
@@ -80,22 +74,8 @@ interface FileEntry {
   modifiedAt?: string
 }
 
-interface AgentSelectOption extends SelectOption {
-  agent: {
-    id: string
-    name?: string
-    identity?: {
-      name?: string
-      emoji?: string
-      avatar?: string
-      avatarUrl?: string
-    }
-  }
-}
-
 const { t } = useI18n()
 const message = useMessage()
-const authStore = useAuthStore()
 const memoryStore = useMemoryStore()
 
 const loading = ref(false)
@@ -267,44 +247,21 @@ function generateHeadingId(text: string): string {
   return text.toLowerCase().replace(/[^\w\u4e00-\u9fa5]+/g, '-')
 }
 
-const agentOptions = computed<AgentSelectOption[]>(() =>
+const agentOptions = computed(() =>
   memoryStore.agents.map((agent) => ({
     label: agent.identity?.name || agent.name || agent.id,
     value: agent.id,
-    agent: {
-      id: agent.id,
-      name: agent.name,
-      identity: agent.identity,
-    },
-  }))
+  })),
 )
 
-function renderAgentLabel(option: SelectOption) {
-  const agentOption = option as AgentSelectOption
-  const agent = agentOption.agent
-  if (!agent) return option.label as string
+const agentDropdownOptions = computed(() =>
+  agentOptions.value.map((option) => ({
+    key: option.value as string,
+    label: option.label as string,
+  })),
+)
 
-  const identity = agent.identity
-  const emoji = identity?.emoji
-  const avatar = identity?.avatarUrl || identity?.avatar
-  const name = identity?.name || agent.name || agent.id
-
-  return h(
-    'div',
-    { style: 'display: flex; align-items: center; gap: 8px; white-space: nowrap;' },
-    [
-      emoji
-        ? h('span', { style: 'font-size: 18px; line-height: 1; flex-shrink: 0;' }, emoji)
-        : h(NAvatar, {
-            round: true,
-            size: 22,
-            src: avatar || undefined,
-            style: avatar ? undefined : 'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); flex-shrink: 0;',
-          }, { default: () => name.charAt(0).toUpperCase() }),
-      h('span', { style: 'overflow: hidden; text-overflow: ellipsis;' }, name),
-    ]
-  )
-}
+const hasMultipleAgents = computed(() => agentOptions.value.length > 1)
 
 const selectedAgentId = computed({
   get: () => memoryStore.selectedAgentId,
@@ -320,15 +277,30 @@ const pathParts = computed(() => {
   return currentPath.value.split('/').filter(Boolean)
 })
 
+const selectedAgentLabel = computed(() => {
+  const agent = memoryStore.agents.find((item) => item.id === selectedAgentId.value)
+  return agent?.identity?.name || agent?.name || agent?.id || t('pages.files.selectAgent')
+})
+
+const isAtRoot = computed(() => pathParts.value.length === 0)
+
+const displayPathTrail = computed(() => {
+  const parts = [selectedAgentLabel.value, ...pathParts.value]
+  return parts.join(' > ')
+})
+
+const workspaceFilesystemPath = computed(() => {
+  if (!currentWorkspace.value) return ''
+  return currentPath.value
+    ? `${currentWorkspace.value}/${currentPath.value}`
+    : currentWorkspace.value
+})
+
 const directories = computed(() => entries.value.filter(e => e.type === 'directory'))
 const files = computed(() => entries.value.filter(e => e.type === 'file'))
 
 function getAuthHeaders() {
-  const token = authStore.token
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
-  }
+  return getApiAuthHeaders()
 }
 
 const tableColumns = computed<DataTableColumns<FileEntry>>(() => [
@@ -540,6 +512,14 @@ async function switchAgent(agentId: string) {
   }
 }
 
+function handleAgentSelect(agentId: string) {
+  if (agentId === selectedAgentId.value) {
+    navigateToPath(-1)
+    return
+  }
+  void switchAgent(agentId)
+}
+
 function handleRowClick(row: FileEntry) {
   if (row.type === 'directory') {
     navigateToDirectory(row.name)
@@ -549,8 +529,8 @@ function handleRowClick(row: FileEntry) {
 }
 
 function navigateToDirectory(dirName: string) {
-  const newPath = currentPath.value 
-    ? `${currentPath.value}/${dirName}` 
+  const newPath = currentPath.value
+    ? `${currentPath.value}/${dirName}`
     : dirName
   browsePath(newPath)
 }
@@ -872,12 +852,9 @@ async function handleUpload({ file, onFinish, onError }: { file: UploadFileInfo,
     formData.append('path', fullPath)
     formData.append('workspace', currentWorkspace.value || '')
     
-    const token = authStore.token
     const response = await fetch('/api/files/upload', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      },
+      headers: getApiAuthHeaders({ contentType: false }),
       body: formData
     })
     
@@ -912,7 +889,7 @@ function renderMarkdown(content: string): string {
   return renderSimpleMarkdown(content, {
     imageBasePath: selectedFile.value?.path,
     workspace: currentWorkspace.value || undefined,
-    authToken: authStore.token || undefined,
+    authToken: getApiAuthToken() || undefined,
   })
 }
 
@@ -1065,12 +1042,9 @@ async function uploadPastedImage(file: File) {
     formData.append('path', imagePath)
     formData.append('workspace', currentWorkspace.value)
     
-    const token = authStore.token
     const response = await fetch('/api/files/upload', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      },
+      headers: getApiAuthHeaders({ contentType: false }),
       body: formData
     })
     
@@ -1094,7 +1068,17 @@ async function uploadPastedImage(file: File) {
   }
 }
 
+async function copyFullPath() {
+  try {
+    await navigator.clipboard.writeText(displayPathTrail.value)
+    message.success(t('pages.files.pathCopied'))
+  } catch {
+    message.error(t('pages.files.pathCopyFailed'))
+  }
+}
+
 async function initialize() {
+  await ensureApiSession()
   if (memoryStore.agents.length === 0) {
     await memoryStore.fetchAgents()
   }
@@ -1139,31 +1123,72 @@ onMounted(() => {
         {{ error }}
       </NAlert>
 
-      <div class="files-toolbar">
-        <NSpace :size="12" align="center">
-          <NSelect
-            v-model:value="selectedAgentId"
-            :options="agentOptions"
-            :placeholder="t('pages.files.selectAgent')"
-            :render-label="renderAgentLabel"
-            style="width: 260px;"
-            :loading="memoryStore.loadingAgents"
-          >
-            <template #arrow>
-              <NIcon :component="PersonOutline" />
+      <div class="files-path-header">
+        <div class="files-path-row">
+          <div v-if="currentWorkspace" class="files-path-trail">
+            <NDropdown
+              v-if="hasMultipleAgents"
+              trigger="click"
+              :options="agentDropdownOptions"
+              @select="handleAgentSelect"
+            >
+              <button
+                type="button"
+                class="files-path-root files-path-root--switchable"
+                :class="{ 'files-path-segment--current': isAtRoot }"
+              >
+                <NIcon :component="FolderOutline" :size="18" />
+                <span>{{ selectedAgentLabel }}</span>
+                <NIcon :component="ChevronDownOutline" :size="14" class="files-path-current-caret" />
+              </button>
+            </NDropdown>
+            <button
+              v-else
+              type="button"
+              class="files-path-root"
+              :class="{ 'files-path-segment--current': isAtRoot }"
+              @click="navigateToPath(-1)"
+            >
+              <NIcon :component="FolderOutline" :size="18" />
+              <span>{{ selectedAgentLabel }}</span>
+            </button>
+
+            <template v-for="(part, index) in pathParts" :key="`${part}-${index}`">
+              <NIcon :component="ChevronForwardOutline" class="files-path-sep" />
+              <button
+                type="button"
+                class="files-path-segment"
+                :class="{ 'files-path-segment--current': index === pathParts.length - 1 }"
+                @click="navigateToPath(index)"
+              >
+                <span>{{ part }}</span>
+                <NIcon
+                  v-if="index === pathParts.length - 1"
+                  :component="ChevronDownOutline"
+                  :size="14"
+                  class="files-path-current-caret"
+                />
+              </button>
             </template>
-          </NSelect>
-          
-          <NBreadcrumb>
-            <NBreadcrumbItem @click="navigateToPath(-1)">
-              <NIcon :component="HomeOutline" />
-            </NBreadcrumbItem>
-            <NBreadcrumbItem v-for="(part, index) in pathParts" :key="index" @click="navigateToPath(index)">
-              {{ part }}
-            </NBreadcrumbItem>
-          </NBreadcrumb>
-        </NSpace>
-        
+          </div>
+        </div>
+
+        <NTooltip v-if="currentWorkspace" trigger="hover">
+          <template #trigger>
+            <button type="button" class="files-path-location" @click="copyFullPath">
+              <NIcon :component="FolderOutline" :size="14" />
+              <span>{{ displayPathTrail }}</span>
+            </button>
+          </template>
+          <div class="files-path-tooltip">
+            <div>{{ t('pages.files.pathLocation') }}</div>
+            <div class="files-path-tooltip-path">{{ workspaceFilesystemPath }}</div>
+            <div class="files-path-tooltip-hint">{{ t('pages.files.pathCopyHint') }}</div>
+          </div>
+        </NTooltip>
+      </div>
+
+      <div class="files-toolbar">
         <NSpace :size="8">
           <NButton size="small" @click="openCreateModal('directory')" :disabled="!currentWorkspace">
             <template #icon><NIcon :component="AddOutline" /></template>
@@ -1193,10 +1218,6 @@ onMounted(() => {
         <NTag size="small" :bordered="false" type="info">
           {{ files.length }} {{ t('pages.files.types.file') }}
         </NTag>
-        <NTag v-if="currentWorkspace" size="small" :bordered="false" type="success">
-          <template #icon><NIcon :component="FolderOutline" /></template>
-          {{ currentWorkspace }}
-        </NTag>
       </div>
 
       <NSpin :show="loading">
@@ -1214,10 +1235,6 @@ onMounted(() => {
         <NEmpty v-else-if="!currentWorkspace" :description="t('pages.files.selectAgentFirst')" style="padding: 48px 0;" />
         <NEmpty v-else :description="t('pages.files.empty')" style="padding: 48px 0;" />
       </NSpin>
-
-      <NText depth="3" style="font-size: 12px; display: block; margin-top: 12px;">
-        {{ t('pages.files.workspace', { path: currentPath || '/' }) }}
-      </NText>
     </NCard>
 
     <NModal 
@@ -1258,7 +1275,7 @@ onMounted(() => {
         <PdfViewer
           v-else-if="isPdfFile && pdfUrl"
           :url="pdfUrl"
-          :auth-token="authStore.token || undefined"
+          :auth-token="getApiAuthToken() || undefined"
           :fullscreen="isPreviewMaximized"
           @toggle-fullscreen="isPreviewMaximized = !isPreviewMaximized"
         />
@@ -1554,6 +1571,122 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.files-path-header {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.files-path-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.files-path-trail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.files-path-root,
+.files-path-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  max-width: 100%;
+  transition: background-color 0.15s ease;
+}
+
+.files-path-root {
+  background: var(--bg-secondary);
+}
+
+.files-path-root--switchable {
+  cursor: pointer;
+}
+
+.files-path-root:hover,
+.files-path-segment:hover {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.files-path-segment--current {
+  font-weight: 600;
+}
+
+.files-path-segment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.files-path-sep {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.files-path-current-caret {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.files-path-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.files-path-location span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-path-location:hover {
+  color: var(--text-primary);
+}
+
+.files-path-tooltip {
+  max-width: 420px;
+}
+
+.files-path-tooltip-path {
+  margin-top: 4px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.files-path-tooltip-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 .files-toolbar {
   display: flex;
   justify-content: space-between;

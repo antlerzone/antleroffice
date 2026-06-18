@@ -40,15 +40,39 @@ function expandHome(p) {
 }
 
 function defaultRoot() {
+  const fromEnv = process.env.ANTLEROFFICE_MATERIALS_DIR;
+  if (fromEnv && String(fromEnv).trim()) {
+    return path.resolve(expandHome(String(fromEnv).trim()));
+  }
   return path.join(store.getDataDir(), 'materials');
 }
 
-function getRootPath() {
+function ensureDefaultMaterialsRoot() {
   const settings = store.readSettings();
-  const configured = settings.materials?.rootPath;
-  const root = configured ? expandHome(String(configured).trim()) : defaultRoot();
+  const configured = String(settings.materials?.rootPath || '').trim();
+  if (configured) {
+    const abs = path.resolve(expandHome(configured));
+    store.ensureDir(abs);
+    return abs;
+  }
+  const root = defaultRoot();
   store.ensureDir(root);
+  settings.materials = { ...(settings.materials || {}), rootPath: root };
+  store.writeSettings(settings);
   return root;
+}
+
+function getRootPath() {
+  return ensureDefaultMaterialsRoot();
+}
+
+function resetToDefaultRoot() {
+  const root = defaultRoot();
+  store.ensureDir(root);
+  const settings = store.readSettings();
+  settings.materials = { ...(settings.materials || {}), rootPath: root };
+  store.writeSettings(settings);
+  return { ok: true, rootPath: root };
 }
 
 function setRootPath(nextPath) {
@@ -374,19 +398,97 @@ function paste({ mode, fromPath, toDir }) {
   return { ok: true, mode: 'copy', path: relFromAbs(copyAbs, root) };
 }
 
+function writeUploadedFile(relDir, fileName, buffer) {
+  const root = getRootPath();
+  const parentRel = String(relDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const safeName = path.basename(String(fileName || '').trim());
+  if (!safeName) return { ok: false, error: 'File name required' };
+
+  const rel = parentRel ? `${parentRel}/${safeName}` : safeName;
+  const abs = safePath(rel, root);
+  if (!abs) return { ok: false, error: 'Invalid path' };
+
+  const parentAbs = path.dirname(abs);
+  store.ensureDir(parentAbs);
+
+  const ext = path.extname(safeName);
+  const base = path.basename(safeName, ext);
+  const destAbs = uniqueDestPath(parentAbs, base, ext);
+  fs.writeFileSync(destAbs, buffer);
+
+  const stat = fs.statSync(destAbs);
+  const relOut = relFromAbs(destAbs, root);
+  const name = path.basename(destAbs);
+  return {
+    ok: true,
+    path: relOut,
+    name,
+    size: stat.size,
+    sizeLabel: formatSize(stat.size),
+    updatedAtMs: stat.mtimeMs,
+  };
+}
+
 function workspaceInfo() {
+  const def = defaultRoot();
   const root = getRootPath();
   return {
     ok: true,
     rootPath: root,
-    defaultRoot: defaultRoot(),
-    openclawHint: `Use absolute paths under ${root} for shared office materials.`,
+    defaultRoot: def,
+    isDefaultRoot: path.resolve(root).toLowerCase() === path.resolve(def).toLowerCase(),
+    dataDir: store.getDataDir(),
+    openclawHint: `Use absolute paths under ${root}.`,
+  };
+}
+
+function walkLibrary(dirAbs, stats) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dirAbs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const full = path.join(dirAbs, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        stats.folderCount += 1;
+        walkLibrary(full, stats);
+      } else if (entry.isFile()) {
+        stats.fileCount += 1;
+        const s = fs.statSync(full);
+        stats.totalBytes += s.size || 0;
+      }
+    } catch {
+      /* skip unreadable entries */
+    }
+  }
+}
+
+function librarySummary() {
+  const root = getRootPath();
+  const stats = { fileCount: 0, folderCount: 0, totalBytes: 0 };
+  if (fs.existsSync(root)) {
+    walkLibrary(root, stats);
+  }
+  return {
+    ok: true,
+    rootPath: root,
+    fileCount: stats.fileCount,
+    folderCount: stats.folderCount,
+    totalBytes: stats.totalBytes,
+    totalSizeLabel: formatSize(stats.totalBytes),
   };
 }
 
 module.exports = {
+  ensureDefaultMaterialsRoot,
   getRootPath,
   setRootPath,
+  resetToDefaultRoot,
+  defaultRoot,
   listDir,
   statEntry,
   resolveGetPath,
@@ -396,7 +498,9 @@ module.exports = {
   duplicate,
   move,
   paste,
+  writeUploadedFile,
   workspaceInfo,
+  librarySummary,
   MIME_BY_EXT,
   IMG_EXTS,
   VIDEO_EXTS,

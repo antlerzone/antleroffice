@@ -1,21 +1,31 @@
-# AntlerOffice 2.0
+# AntlerOffice
 
 **Mission:** Let anyone — especially non-technical bosses — use **OpenClaw** and **Hermes** without the command line.
 
-AntlerOffice 2.0 is a friendly local web product built on a fork of [OpenClaw-Admin](https://github.com/itq5/OpenClaw-Admin) (MIT). The upstream project provides the engine; this repo adds the **boss-first** experience from AntlerOffice v1.
-
-Original **AntlerOffice/** (v1) in the parent folder is kept as a **read-only backup**.
-
-## Quick start
+## Desktop app (Windows)
 
 ```powershell
 cd AntlerOffice2
 npm install
-cp .env.example .env   # if needed
+npm run build
+npm run build:win   # AntlerOffice-Setup-x64.exe in release/
+```
+
+Development with Electron window:
+
+```powershell
+npm run dev:electron
+```
+
+Production: install `AntlerOffice-Setup-*.exe` from GitHub Releases. Updates require **Boss approval** in-app or via COO chat.
+
+## Dev (web + API)
+
+```powershell
 npm run dev:all
 ```
 
-- **Frontend:** http://localhost:3001 (Vite)
+- **Frontend (dev):** http://localhost:3001 (Vite)
 - **Backend API:** http://localhost:3020 (Express + Antler modules)
 
 Open **Office** in the sidebar — that's the pixel-agents virtual office (replaces Admin MyWorld).

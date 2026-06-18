@@ -24,7 +24,7 @@ function defaultFrontendOrigin() {
   return (
     process.env.OAUTH_FRONTEND_ORIGIN ||
     process.env.DEV_FRONTEND_URL ||
-    'http://localhost:3001'
+    'http://127.0.0.1:3020'
   ).replace(/\/+$/, '');
 }
 

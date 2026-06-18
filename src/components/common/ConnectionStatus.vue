@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useHermesConnectionStore } from '@/stores/hermes/connection'
 import { ConnectionState } from '@/api/types'
+import CreditBalance from '@/components/common/CreditBalance.vue'
 
 const message = useMessage()
 
@@ -23,25 +24,25 @@ const isHermes = computed(() => hermesConnStore.currentGateway === 'hermes')
 const status = computed(() => {
   if (isHermes.value) {
     if (hermesConnStore.hermesConnected) {
-      return { label: t('components.connectionStatus.connected'), type: 'success' as const }
+      return { label: t('components.connectionStatus.connected'), type: 'success' as const, pulse: false }
     }
     if (hermesConnStore.hermesConnecting) {
-      return { label: t('components.connectionStatus.connecting'), type: 'info' as const }
+      return { label: t('components.connectionStatus.connecting'), type: 'info' as const, pulse: true }
     }
-    return { label: t('components.connectionStatus.disconnected'), type: 'error' as const }
+    return { label: t('components.connectionStatus.disconnected'), type: 'error' as const, pulse: false }
   }
   switch (wsStore.state) {
     case ConnectionState.CONNECTED:
-      return { label: t('components.connectionStatus.connected'), type: 'success' as const }
+      return { label: t('components.connectionStatus.connected'), type: 'success' as const, pulse: false }
     case ConnectionState.CONNECTING:
-      return { label: t('components.connectionStatus.connecting'), type: 'info' as const }
+      return { label: t('components.connectionStatus.connecting'), type: 'info' as const, pulse: true }
     case ConnectionState.RECONNECTING:
-      return { label: t('components.connectionStatus.reconnecting'), type: 'warning' as const }
+      return { label: t('components.connectionStatus.reconnecting'), type: 'warning' as const, pulse: true }
     case ConnectionState.FAILED:
-      return { label: t('components.connectionStatus.failed'), type: 'error' as const }
+      return { label: t('components.connectionStatus.failed'), type: 'error' as const, pulse: false }
     case ConnectionState.DISCONNECTED:
     default:
-      return { label: t('components.connectionStatus.disconnected'), type: 'error' as const }
+      return { label: t('components.connectionStatus.disconnected'), type: 'error' as const, pulse: false }
   }
 })
 
@@ -167,6 +168,7 @@ function handleCustomUpdate() {
 
 <template>
   <NSpace :size="8" align="center">
+    <CreditBalance />
     <NTag
       v-if="wsStore.gatewayVersion"
       size="small"
@@ -223,7 +225,8 @@ function handleCustomUpdate() {
     >
       <template #icon>
         <span
-          style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px;"
+          class="connection-dot"
+          :class="{ 'connection-dot--pulse': status.pulse }"
           :style="{
             backgroundColor: status.type === 'success' ? '#18a058' : status.type === 'warning' ? '#f0a020' : status.type === 'error' ? '#d03050' : '#2080f0'
           }"
@@ -233,3 +236,28 @@ function handleCustomUpdate() {
     </NTag>
   </NSpace>
 </template>
+
+<style scoped>
+.connection-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.connection-dot--pulse {
+  animation: connection-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes connection-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+</style>

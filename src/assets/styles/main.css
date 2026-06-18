@@ -64,6 +64,11 @@
   --md-pre-bg: rgba(0, 0, 0, 0.2);
 }
 
+/* antleroffice-logo.png is white; invert on light backgrounds */
+[data-theme='light'] .app-logo:not(.app-logo--on-dark) {
+  filter: invert(1);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -113,14 +118,20 @@ html, body, #app {
 
 /* Utility */
 .page-container {
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-body.wide-mode .page-container {
   max-width: 100%;
+  margin: 0 auto;
   padding-left: 12px;
   padding-right: 12px;
+  position: relative;
+}
+
+.page-container > .fade-leave-active {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  pointer-events: none;
 }
 
 .app-card.n-card {

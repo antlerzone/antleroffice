@@ -65,7 +65,7 @@ function bossInputEscalationBlock() {
     'Credential & permission policy:\n' +
     '1. Try OpenClaw built-in tools (exec, browser) first.\n' +
     '2. If a skill/MCP fails for missing API key, OAuth, or permission — ASK THE BOSS whether they have the key. ' +
-    'Offer: paste in chat OR Settings → Integrations → MCP (or OpenClaw model key under Integrations).\n' +
+    'Offer: paste in chat OR Settings → Accounts → MCP (or OpenClaw model key under Models).\n' +
     '3. Do NOT reply as if the job is finished when you are blocked on credentials. Ask one clear question and wait.\n' +
     '4. Do NOT deflect with "visit the site manually" while a configured tool could work after the boss provides a key.'
   );
@@ -74,7 +74,7 @@ function bossInputEscalationBlock() {
 function bossInputAskMessage({ agentLabel = 'COO', provider } = {}) {
   const name = agentLabel || 'Agent';
   const via = provider ? ` (${provider})` : '';
-  return `${name} needs your input${via} — reply with the API key or add it under Settings → Integrations, then send your message again.`;
+  return `${name} needs your input${via} — reply with the API key or add it under Settings → Models, then send your message again.`;
 }
 
 function scanMessagesForToolAuthBlock(messages) {

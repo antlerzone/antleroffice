@@ -4,6 +4,7 @@ import { OpenClawWebSocket } from '@/api/websocket'
 import { RPCClient } from '@/api/rpc-client'
 import { ConnectionState } from '@/api/types'
 import { useAuthStore } from './auth'
+import { useBossStore } from './boss'
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -35,8 +36,9 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
   function createWebSocket(): OpenClawWebSocket {
     const authStore = useAuthStore()
+    const bossStore = useBossStore()
     return new OpenClawWebSocket({
-      getToken: () => authStore.getToken(),
+      getToken: () => authStore.getToken() || bossStore.token || null,
     })
   }
 
@@ -56,6 +58,13 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
     ws.value.on('stateChange', (newState: unknown) => {
       state.value = newState as ConnectionState
+      if (newState !== ConnectionState.CONNECTED) {
+        if (newState === ConnectionState.DISCONNECTED || newState === ConnectionState.FAILED) {
+          gatewayVersion.value = null
+          updateAvailable.value = null
+          gatewayMethods.value = []
+        }
+      }
     })
 
     ws.value.on('reconnecting', (attempts: unknown) => {
@@ -98,17 +107,40 @@ export const useWebSocketStore = defineStore('websocket', () => {
     listenersBound = true
   }
 
-  function connect(url?: string) {
-    lastError.value = null
-    
+  async function connect(url?: string) {
     const authStore = useAuthStore()
+    const bossStore = useBossStore()
+    if (!authStore.getToken() && !bossStore.token) {
+      await bossStore.ensureSession().catch(() => {})
+    }
+
+    const syncFromHealth = async () => {
+      await ws.value.syncGatewayState()
+      if (state.value !== ws.value.state) state.value = ws.value.state
+    }
+
+    await syncFromHealth()
+    if (ws.value.state === ConnectionState.CONNECTED) return
+
+    const current = ws.value.state
+    if (current === ConnectionState.CONNECTING || current === ConnectionState.RECONNECTING) {
+      if (state.value !== current) state.value = current
+      return
+    }
+
+    lastError.value = null
+
     ws.value = createWebSocket()
     rpc.value = new RPCClient(ws.value)
     listenersBound = false
-    
+
     bindListeners()
     rebindPersistentListeners()
     ws.value.connect(url)
+
+    // SSE auth can lag; health reflects real OpenClaw gateway state.
+    setTimeout(() => void syncFromHealth(), 800)
+    setTimeout(() => void syncFromHealth(), 2500)
   }
 
   function disconnect() {

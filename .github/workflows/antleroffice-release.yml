@@ -1,0 +1,47 @@
+name: AntlerOffice Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: AntlerOffice2/package-lock.json
+
+      - name: Install dependencies
+        working-directory: AntlerOffice2
+        run: npm ci
+
+      - name: Build Vue app
+        working-directory: AntlerOffice2
+        run: npm run build:app
+
+      - name: Build Windows installer
+        working-directory: AntlerOffice2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            AntlerOffice2/release/AntlerOffice-Setup-*-x64.exe
+            AntlerOffice2/release/latest.yml
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

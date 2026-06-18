@@ -96,6 +96,10 @@ export class OpenClawWebSocket {
     this.emit('stateChange', ConnectionState.DISCONNECTED)
   }
 
+  syncGatewayState(): Promise<void> {
+    return this.apiClient.syncGatewayState()
+  }
+
   async send(data: RPCFrame): Promise<void> {
     if (data.type !== 'req') {
       return

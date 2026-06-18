@@ -65,7 +65,7 @@ const naiveDateLocale = computed(() =>
   localeStore.locale === "zh-CN" ? dateZhCN : dateEnUS,
 );
 
-const APP_TITLE = import.meta.env.VITE_APP_TITLE || "Antler Office";
+const APP_TITLE = import.meta.env.VITE_APP_TITLE || "AntlerOffice";
 
 watch(
   () =>

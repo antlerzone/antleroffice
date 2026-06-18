@@ -69,7 +69,7 @@ async function devMockLogin() {
 <template>
   <div class="boss-login">
     <div class="box">
-      <h1>Antler Office</h1>
+      <h1>AntlerOffice</h1>
       <p class="hint">Sign in with your ECS account to manage agents, credits, and office sharing.</p>
       <NAlert v-if="error" type="error" :title="error" style="margin-bottom: 12px" />
       <NButton
@@ -80,7 +80,7 @@ async function devMockLogin() {
         :loading="loading"
         @click="signInWithEcs"
       >
-        Sign in with Antler Office
+        Sign in with AntlerOffice
       </NButton>
       <NButton
         v-else

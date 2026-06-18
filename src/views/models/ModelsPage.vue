@@ -10,6 +10,7 @@ import {
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
+  NDropdown,
   NEmpty,
   NForm,
   NFormItem,
@@ -18,25 +19,34 @@ import {
   NIcon,
   NInput,
   NModal,
-  NPopconfirm,
   NSelect,
   NSpace,
   NTabPane,
   NTag,
   NTabs,
   NText,
+  useDialog,
   useMessage,
+  type DropdownOption,
 } from 'naive-ui'
-import { AddOutline, CheckmarkCircleOutline, CloseOutline, CreateOutline, RefreshOutline, SaveOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, CloseOutline, EllipsisHorizontalOutline, RefreshOutline, SaveOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { useConfigStore } from '@/stores/config'
 import { useWebSocketStore } from '@/stores/websocket'
+import { AI_PROVIDERS, modelRefForProvider, presetModelId, type AiProviderId, type AiProviderPresetId } from '@/lib/ai-providers'
+import {
+  isMaskedApiKeyDisplay,
+  primaryMaskedKeyForProvider,
+  profileCountForProvider,
+  type ProviderKeyRecord,
+} from '@/lib/masked-api-key'
 import type { DataTableColumns } from 'naive-ui'
 import type { ConfigPatch, ModelProviderConfig, OpenClawConfig } from '@/api/types'
 
 const configStore = useConfigStore()
 const wsStore = useWebSocketStore()
 const message = useMessage()
+const dialog = useDialog()
 const { t, locale } = useI18n()
 
 function joinDisplayList(values: string[]): string {
@@ -53,6 +63,13 @@ const showSaveConfirmModal = ref(false)
 const confirmActionType = ref<'edit' | 'create'>('edit')
 const editActiveTab = ref<'basic' | 'models' | 'preview'>('basic')
 const createActiveTab = ref<'basic' | 'models' | 'preview'>('basic')
+const createPreset = ref<AiProviderPresetId>('openai')
+const createSimpleMode = ref(true)
+const createSaving = ref(false)
+
+const catalogModels = ref<{ label: string; value: string }[]>([])
+const defaultModelFilter = ref<AiProviderId | ''>('')
+const savingDefaultModel = ref(false)
 
 type ModelInputType = 'text' | 'image'
 
@@ -69,75 +86,100 @@ const modelInputTypeOptions = [
 
 const DEFAULT_MODEL_INPUT_TYPES: ModelInputType[] = ['text']
 
-type QuickProviderKey = 'zhipu' | 'kimi' | 'minimax' | 'bailian'
+type QuickProviderKey = AiProviderId
 
-type QuickProviderPreset = {
-  key: QuickProviderKey
-  providerId: string
-  api: string
-  baseUrl: string
-  modelId: string
-  modelName: string
-  input: ModelInputType[]
-  docsUrl: string
+const quickProviderList = AI_PROVIDERS
+const providerKeys = ref<ProviderKeyRecord[]>([])
+const configuredProviderIds = ref<Set<string>>(new Set())
+const quickProviderApiKeys = reactive<Record<QuickProviderKey, string>>(
+  Object.fromEntries(AI_PROVIDERS.map((p) => [p.id, ''])) as Record<QuickProviderKey, string>,
+)
+const quickProviderSaving = reactive<Record<QuickProviderKey, boolean>>(
+  Object.fromEntries(AI_PROVIDERS.map((p) => [p.id, false])) as Record<QuickProviderKey, boolean>,
+)
+
+async function loadConfiguredProviders() {
+  try {
+    const res = await fetch('/api/usage')
+    if (!res.ok) return
+    const data = (await res.json()) as { keys?: ProviderKeyRecord[] }
+    providerKeys.value = data.keys || []
+    configuredProviderIds.value = new Set(
+      providerKeys.value.map((k) => String(k.provider || '').trim()).filter(Boolean),
+    )
+    for (const p of AI_PROVIDERS) {
+      quickProviderApiKeys[p.id] = primaryMaskedKeyForProvider(providerKeys.value, p.id)
+    }
+  } catch {
+    providerKeys.value = []
+    configuredProviderIds.value = new Set()
+    for (const p of AI_PROVIDERS) quickProviderApiKeys[p.id] = ''
+  }
 }
 
-const QUICK_PROVIDER_PRESETS: Record<QuickProviderKey, QuickProviderPreset> = {
-  zhipu: {
-    key: 'zhipu',
-    providerId: 'zai',
-    api: 'openai-completions',
-    baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-    modelId: 'glm-5',
-    modelName: 'GLM-5',
-    input: ['text'],
-    docsUrl: 'https://docs.bigmodel.cn/cn/coding-plan/faq',
-  },
-  kimi: {
-    key: 'kimi',
-    providerId: 'moonshot',
-    api: 'openai-completions',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    modelId: 'kimi-k2.5',
-    modelName: 'Kimi K2.5',
-    input: ['text'],
-    docsUrl: 'https://platform.moonshot.cn/docs/introduction',
-  },
-  minimax: {
-    key: 'minimax',
-    providerId: 'minimax',
-    api: 'openai-completions',
-    baseUrl: 'https://api.minimaxi.com/v1',
-    modelId: 'MiniMax-M2.5',
-    modelName: 'MiniMax-M2.5',
-    input: ['text'],
-    docsUrl: 'https://platform.minimaxi.com/docs/api-reference/text-openai-api',
-  },
-  bailian: {
-    key: 'bailian',
-    providerId: 'bailian',
-    api: 'openai-completions',
-    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
-    modelId: 'qwen3.5-plus',
-    modelName: 'qwen3.5-plus',
-    input: ['text', 'image'],
-    docsUrl: 'https://help.aliyun.com/zh/model-studio/coding-plan',
-  },
+function onQuickKeyFocus(id: QuickProviderKey) {
+  if (isMaskedApiKeyDisplay(quickProviderApiKeys[id])) {
+    quickProviderApiKeys[id] = ''
+  }
 }
 
-const quickProviderList = Object.values(QUICK_PROVIDER_PRESETS)
-const quickProviderApiKeys = reactive<Record<QuickProviderKey, string>>({
-  zhipu: '',
-  kimi: '',
-  minimax: '',
-  bailian: '',
+const defaultModelOptions = computed(() => {
+  if (!defaultModelFilter.value) return catalogModels.value
+  const prefix = `${defaultModelFilter.value}/`
+  const filtered = catalogModels.value.filter((m) => m.value.startsWith(prefix))
+  return filtered.length ? filtered : catalogModels.value
 })
-const quickProviderSaving = reactive<Record<QuickProviderKey, boolean>>({
-  zhipu: false,
-  kimi: false,
-  minimax: false,
-  bailian: false,
+
+const createProviderModelOptions = computed(() => {
+  if (createPreset.value === 'custom') return catalogModels.value
+  const preset = AI_PROVIDERS.find((p) => p.id === createPreset.value)
+  if (!preset) return catalogModels.value
+  const providerId = normalizeProviderId(createProviderForm.id || preset.id)
+  const prefix = `${providerId}/`
+  const filtered = catalogModels.value.filter((m) => m.value.startsWith(prefix))
+  if (filtered.length) return filtered
+  return [{ label: preset.defaultModel, value: modelRefForProvider(providerId, preset.defaultModel) }]
 })
+
+async function loadCatalogModels() {
+  try {
+    const res = await fetch('/api/openclaw/models?all=1')
+    if (!res.ok) return
+    const data = (await res.json()) as { models?: { key: string; name: string; available: boolean }[] }
+    catalogModels.value = (data.models || []).map((m) => ({
+      label: m.available ? m.name || m.key : `${m.name || m.key} (needs key)`,
+      value: m.key,
+    }))
+  } catch {
+    catalogModels.value = []
+  }
+}
+
+async function handleSaveDefaultModel() {
+  const target = primaryModel.value.trim()
+  if (!target) {
+    message.warning(t('pages.models.messages.primaryModelRequired'))
+    return
+  }
+  savingDefaultModel.value = true
+  try {
+    const res = await fetch('/api/openclaw/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: target }),
+    })
+    const data = (await res.json()) as { ok?: boolean; error?: string }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'Could not set default model')
+    }
+    message.success(t('pages.models.defaultModel.saved'))
+    await configStore.fetchConfig()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('common.saveFailed'))
+  } finally {
+    savingDefaultModel.value = false
+  }
+}
 
 const providerForm = reactive({
   id: '',
@@ -170,6 +212,7 @@ type ProviderSummary = {
   baseUrl: string
   modelIds: string[]
   sources: string[]
+  hasKey: boolean
 }
 
 type DefaultsModelsCatalogSnapshot = {
@@ -551,12 +594,7 @@ const providerMap = computed<Record<string, ModelProviderConfig>>(() => {
 const quickProviderConfiguredMap = computed<Record<QuickProviderKey, boolean>>(() => {
   const next = {} as Record<QuickProviderKey, boolean>
   for (const item of quickProviderList) {
-    const provider = providerMap.value[item.providerId]
-    if (!provider) {
-      next[item.key] = false
-      continue
-    }
-    next[item.key] = readProviderModelIds(provider).length > 0
+    next[item.id] = configuredProviderIds.value.has(item.id)
   }
   return next
 })
@@ -580,6 +618,7 @@ const providerSummaries = computed(() => {
       baseUrl: string
       modelIds: Set<string>
       sources: Set<string>
+      hasKey: boolean
     }
   >()
 
@@ -594,6 +633,7 @@ const providerSummaries = computed(() => {
       baseUrl: providerBaseUrl,
       modelIds: new Set(readProviderModelIds(provider)),
       sources: new Set([entry.pathPrefix]),
+      hasKey: configuredProviderIds.value.has(id) || providerHasStoredKey(provider),
     })
   }
 
@@ -618,6 +658,23 @@ const providerSummaries = computed(() => {
       baseUrl: providerBaseUrl,
       modelIds: new Set([parsed.modelId]),
       sources: new Set([refItem.source]),
+      hasKey: configuredProviderIds.value.has(parsed.providerId),
+    })
+  }
+
+  for (const providerId of configuredProviderIds.value) {
+    if (registry.has(providerId)) {
+      registry.get(providerId)!.hasKey = true
+      continue
+    }
+    const preset = AI_PROVIDERS.find((p) => p.id === providerId)
+    registry.set(providerId, {
+      id: providerId,
+      api: preset?.api || '-',
+      baseUrl: preset?.baseUrl || '-',
+      modelIds: new Set(preset ? [presetModelId(preset.defaultModel)] : []),
+      sources: new Set(['auth']),
+      hasKey: true,
     })
   }
 
@@ -628,6 +685,7 @@ const providerSummaries = computed(() => {
       baseUrl: item.baseUrl,
       modelIds: Array.from(item.modelIds).sort((a, b) => a.localeCompare(b)),
       sources: Array.from(item.sources).sort((a, b) => a.localeCompare(b)),
+      hasKey: item.hasKey ?? configuredProviderIds.value.has(item.id),
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
 })
@@ -654,11 +712,16 @@ function sanitizeProviderForDisplay(provider: Record<string, unknown>): Record<s
   return clone
 }
 
+function providerHasStoredKey(provider: Record<string, unknown> | ModelProviderConfig | undefined): boolean {
+  if (!provider) return false
+  return !!readProviderText(provider as Record<string, unknown>, ['apiKey', 'api_key', 'key', 'token', 'accessToken', 'access_token'])
+}
+
 const selectedProviderHasKey = computed(() => {
   if (!selectedProviderId.value) return false
+  if (configuredProviderIds.value.has(selectedProviderId.value)) return true
   const provider = providerMap.value[selectedProviderId.value] as unknown as Record<string, unknown> | undefined
-  if (!provider) return false
-  return !!readProviderText(provider, ['apiKey', 'api_key', 'key', 'token', 'accessToken', 'access_token'])
+  return providerHasStoredKey(provider)
 })
 
 const selectedProviderRawText = computed(() => {
@@ -928,6 +991,64 @@ const currentPrimaryProviderId = computed(() => {
   return parsed?.providerId || ''
 })
 
+function buildProviderActionOptions(row: ProviderSummary): DropdownOption[] {
+  const isPrimaryProvider = row.id === currentPrimaryProviderId.value
+  const isManagedProvider = managedProviderIdSet.value.has(row.id)
+  const options: DropdownOption[] = []
+
+  if (isManagedProvider) {
+    options.push({ label: t('common.edit'), key: 'edit' })
+  }
+  if (isPrimaryProvider) {
+    options.push({ label: t('pages.models.default.primary'), key: 'primary', disabled: true })
+  } else {
+    options.push({ label: t('pages.models.default.set'), key: 'set-primary' })
+  }
+  if (row.hasKey && !isPrimaryProvider) {
+    options.push({ label: t('pages.models.actions.deleteKey'), key: 'delete-key' })
+  }
+  if (isManagedProvider && !isPrimaryProvider) {
+    options.push({ type: 'divider', key: `divider-${row.id}` })
+    options.push({ label: t('common.delete'), key: 'delete-provider' })
+  }
+  return options
+}
+
+function handleProviderAction(row: ProviderSummary, key: string | number) {
+  const action = String(key)
+  if (action === 'edit') {
+    handleLoadProvider(row.id)
+    return
+  }
+  if (action === 'set-primary') {
+    void handleUseProviderAsPrimary(row.id, row.modelIds)
+    return
+  }
+  if (action === 'delete-key') {
+    dialog.warning({
+      title: t('pages.models.actions.deleteKey'),
+      content: t('pages.models.confirm.deleteKey', { id: row.id }),
+      positiveText: t('pages.models.actions.deleteKey'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => {
+        void handleDeleteProviderKey(row.id)
+      },
+    })
+    return
+  }
+  if (action === 'delete-provider') {
+    dialog.warning({
+      title: t('common.delete'),
+      content: t('pages.models.confirm.deleteProvider', { id: row.id }),
+      positiveText: t('common.delete'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => {
+        void handleDeleteProvider(row.id)
+      },
+    })
+  }
+}
+
 const providerColumns = computed<DataTableColumns<ProviderSummary>>(() => [
   {
     title: t('pages.models.table.providers.provider'),
@@ -935,7 +1056,23 @@ const providerColumns = computed<DataTableColumns<ProviderSummary>>(() => [
     width: 136,
     ellipsis: { tooltip: true },
     render(row) {
-      return h('code', { style: 'font-size: 12px;' }, row.id)
+      const isPrimaryProvider = row.id === currentPrimaryProviderId.value
+      return h(
+        NSpace,
+        { size: 6, align: 'center', wrap: false },
+        () => [
+          h('code', { style: 'font-size: 12px;' }, row.id),
+          ...(isPrimaryProvider
+            ? [
+                h(
+                  NTag,
+                  { size: 'small', type: 'success', bordered: false, round: true },
+                  { default: () => t('pages.models.default.primary') },
+                ),
+              ]
+            : []),
+        ],
+      )
     },
   },
   {
@@ -966,110 +1103,50 @@ const providerColumns = computed<DataTableColumns<ProviderSummary>>(() => [
     },
   },
   {
+    title: t('pages.models.table.providers.apiKey'),
+    key: 'apiKey',
+    width: 108,
+    render(row) {
+      return h(
+        NTag,
+        { size: 'small', bordered: false, type: row.hasKey ? 'success' : 'default' },
+        { default: () => (row.hasKey ? t('pages.models.table.providers.keyConfigured') : t('pages.models.table.providers.keyMissing')) },
+      )
+    },
+  },
+  {
     title: t('pages.models.table.providers.actions'),
     key: 'actions',
-    width: 320,
+    width: 120,
     align: 'right',
     titleAlign: 'right',
     render(row) {
-      const isPrimaryProvider = row.id === currentPrimaryProviderId.value
-      const isManagedProvider = managedProviderIdSet.value.has(row.id)
-      return h('div', {
-        class: 'models-provider-actions-wrap',
-        style: {
-          width: '100%',
-          display: 'flex',
-          justifyContent: 'flex-end',
+      const options = buildProviderActionOptions(row)
+      if (!options.length) return '-'
+      return h(
+        NDropdown,
+        {
+          trigger: 'click',
+          options,
+          onSelect: (key: string | number) => handleProviderAction(row, key),
         },
-      }, [
-        h(
-          NSpace,
-          {
-            size: 6,
-            wrap: false,
-            justify: 'end',
-            class: 'models-provider-actions',
-            style: {
-              width: '100%',
-              justifyContent: 'flex-end',
-            },
-          },
-          () => [
-            ...(isManagedProvider
-              ? [
-                  h(
-                    NButton,
-                    {
-                      size: 'small',
-                      type: 'info',
-                      secondary: true,
-                      strong: true,
-                      class: 'models-action-btn models-action-btn--edit',
-                      onClick: () => handleLoadProvider(row.id)
-                    },
-                    {
-                      icon: () => h(NIcon, { component: CreateOutline }),
-                      default: () => t('common.edit'),
-                    }
-                  ),
-                ]
-              : []),
+        {
+          default: () =>
             h(
               NButton,
               {
                 size: 'small',
-                type: isPrimaryProvider ? 'default' : 'success',
-                secondary: true,
-                strong: true,
-                class: isPrimaryProvider
-                  ? 'models-action-btn models-action-btn--active'
-                  : 'models-action-btn models-action-btn--primary',
-                disabled: isPrimaryProvider,
-                onClick: () => handleUseProviderAsPrimary(row.id, row.modelIds),
+                quaternary: true,
+                class: 'models-action-btn models-action-btn--menu',
+                onClick: (e: MouseEvent) => e.stopPropagation(),
               },
               {
-                icon: () => h(NIcon, { component: CheckmarkCircleOutline }),
-                default: () => (isPrimaryProvider ? t('pages.models.default.active') : t('pages.models.default.set')),
-              }
+                icon: () => h(NIcon, { component: EllipsisHorizontalOutline }),
+                default: () => t('pages.models.table.providers.actionsMenu'),
+              },
             ),
-            ...(isManagedProvider
-              ? [
-                  h(
-                    NPopconfirm,
-                    {
-                      onPositiveClick: () => handleDeleteProvider(row.id),
-                      positiveText: t('common.delete'),
-                      negativeText: t('common.cancel'),
-                    },
-                    {
-                      trigger: () =>
-                        h(
-                          NButton,
-                          {
-                            size: 'small',
-                            type: 'error',
-                            secondary: true,
-                            strong: true,
-                            class: 'models-action-btn models-action-btn--delete',
-                            disabled: isPrimaryProvider,
-                            onClick: (e: MouseEvent) => e.stopPropagation(),
-                          },
-                          {
-                            icon: () => h(NIcon, { component: TrashOutline }),
-                            default: () => t('common.delete'),
-                          }
-                        ),
-                      default: () =>
-                        isPrimaryProvider
-                          ? t('pages.models.confirm.deleteDefaultProviderBlocked')
-                          : t('pages.models.confirm.deleteProvider', { id: row.id }),
-                    }
-                  ),
-                ]
-              : []),
-          ]
-        ),
-      ])
+        },
+      )
     },
   },
 ])
@@ -1077,13 +1154,19 @@ const providerColumns = computed<DataTableColumns<ProviderSummary>>(() => [
 function providerRowProps(row: ProviderSummary) {
   const isManagedProvider = managedProviderIdSet.value.has(row.id)
   const active = row.id === selectedProviderId.value
+  const isPrimaryProvider = row.id === currentPrimaryProviderId.value
+  const styleParts = [
+    isPrimaryProvider ? 'background: rgba(24, 160, 88, 0.1);' : '',
+    !isPrimaryProvider && active ? 'background: rgba(32, 128, 240, 0.08);' : '',
+    isManagedProvider ? 'cursor: pointer;' : 'cursor: default;',
+  ].filter(Boolean)
+  const style = styleParts.join(' ')
   if (!isManagedProvider) {
-    return {
-      style: active ? 'cursor: default; background: rgba(32, 128, 240, 0.08);' : 'cursor: default;',
-    }
+    return { style, class: isPrimaryProvider ? 'models-provider-row is-primary' : undefined }
   }
   return {
-    style: active ? 'cursor: pointer; background: rgba(32, 128, 240, 0.08);' : 'cursor: pointer;',
+    style,
+    class: isPrimaryProvider ? 'models-provider-row is-primary' : undefined,
     onClick: () => handleLoadProvider(row.id),
   }
 }
@@ -1115,8 +1198,21 @@ watch(selectedProviderId, (value) => {
   loadProviderForm(value)
 })
 
+watch(
+  () => [createProviderForm.id, createPreset.value, createSimpleMode.value] as const,
+  ([id, presetId, simple]) => {
+    if (!simple || presetId === 'custom') return
+    const preset = AI_PROVIDERS.find((p) => p.id === presetId)
+    if (!preset) return
+    const providerId = normalizeProviderId(id || preset.id)
+    createProviderForm.pendingPrimaryModel = modelRefForProvider(providerId, preset.defaultModel)
+  },
+)
+
 onMounted(async () => {
   await configStore.fetchConfig()
+  await loadConfiguredProviders()
+  await loadCatalogModels()
 })
 
 function normalizeProviderId(value: string): string {
@@ -1647,6 +1743,116 @@ function resetCreateProviderForm() {
   createProviderForm.apiKey = ''
   createProviderForm.models = []
   createProviderForm.pendingPrimaryModel = ''
+  createPreset.value = 'openai'
+  createSimpleMode.value = true
+}
+
+function applyCreatePreset(presetId: AiProviderPresetId) {
+  createPreset.value = presetId
+  if (presetId === 'custom') {
+    createSimpleMode.value = false
+    createProviderForm.id = ''
+    createProviderForm.api = 'openai-completions'
+    createProviderForm.baseUrl = ''
+    createProviderForm.apiKey = ''
+    createProviderForm.models = []
+    createProviderForm.pendingPrimaryModel = ''
+    return
+  }
+
+  const preset = AI_PROVIDERS.find((p) => p.id === presetId)
+  if (!preset) return
+
+  createProviderForm.id = preset.id
+  createProviderForm.api = preset.api
+  createProviderForm.baseUrl = preset.baseUrl
+  createProviderForm.apiKey = ''
+  const modelId = presetModelId(preset.defaultModel)
+  createProviderForm.models = [{ id: modelId, input: ['text'] }]
+  createProviderForm.pendingPrimaryModel = modelRefForProvider(preset.id, preset.defaultModel)
+}
+
+function onCreateKeyFocus() {
+  if (isMaskedApiKeyDisplay(createProviderForm.apiKey)) {
+    createProviderForm.apiKey = ''
+  }
+}
+
+function needsProviderConfigEntry(providerId: string, presetId: AiProviderId): boolean {
+  return providerId !== presetId
+}
+
+async function handleSimplePresetCreate() {
+  if (createPreset.value === 'custom') {
+    createSimpleMode.value = false
+    return
+  }
+
+  const preset = AI_PROVIDERS.find((p) => p.id === createPreset.value)
+  if (!preset) return
+
+  const providerId = normalizeProviderId(createProviderForm.id || preset.id)
+  const apiKey = createProviderForm.apiKey.trim()
+  if (!apiKey || isMaskedApiKeyDisplay(apiKey)) {
+    message.warning(t('pages.models.quick.messages.keyRequired'))
+    return
+  }
+  if (!/^[a-z0-9_-]+$/.test(providerId)) {
+    message.warning(t('pages.models.validation.providerIdInvalid'))
+    return
+  }
+
+  createSaving.value = true
+  try {
+    if (needsProviderConfigEntry(providerId, preset.id)) {
+      if (providerMap.value[providerId]) {
+        message.warning(t('pages.models.validation.providerIdExists'))
+        return
+      }
+      applyCreatePreset(preset.id)
+      createProviderForm.id = providerId
+      createProviderForm.apiKey = apiKey
+      createProviderForm.pendingPrimaryModel =
+        createProviderForm.pendingPrimaryModel || modelRefForProvider(providerId, preset.defaultModel)
+      await handleCreateProvider(true)
+      await loadConfiguredProviders()
+      return
+    }
+
+    const keyRes = await fetch('/api/openclaw/provider-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: providerId, apiKey }),
+    })
+    const keyData = (await keyRes.json()) as { ok?: boolean; error?: string }
+    if (!keyRes.ok || keyData.ok === false) {
+      throw new Error(keyData.error || 'Could not save key')
+    }
+
+    const modelRef = createProviderForm.pendingPrimaryModel.trim() || preset.defaultModel
+    const currentPrimary = primaryModel.value.trim() || configStore.config?.agents?.defaults?.model?.primary || ''
+    if (modelRef && (!currentPrimary || createProviderForm.pendingPrimaryModel)) {
+      const modelRes = await fetch('/api/openclaw/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: modelRef }),
+      })
+      const modelData = (await modelRes.json()) as { ok?: boolean; error?: string }
+      if (modelRes.ok && modelData.ok !== false) {
+        primaryModel.value = modelRef
+      }
+    }
+
+    showCreateProviderModal.value = false
+    await loadConfiguredProviders()
+    await configStore.fetchConfig()
+    selectedProviderId.value = providerId
+    message.success(t('pages.models.messages.providerCreated'))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('pages.models.messages.createFailed'))
+  } finally {
+    createSaving.value = false
+  }
 }
 
 function loadProviderForm(providerId: string) {
@@ -1667,6 +1873,7 @@ function loadProviderForm(providerId: string) {
 
 function handleNewProvider() {
   resetCreateProviderForm()
+  applyCreatePreset('openai')
   createActiveTab.value = 'basic'
   showCreateProviderModal.value = true
 }
@@ -1723,12 +1930,48 @@ async function savePrimaryModel(targetInput: string): Promise<void> {
 }
 
 async function handleUseProviderAsPrimary(providerId: string, modelIds: string[]) {
-  if (modelIds.length === 0) {
+  let modelRef = ''
+  if (modelIds.length > 0) {
+    modelRef = `${providerId}/${modelIds[0]}`
+  } else {
+    const preset = AI_PROVIDERS.find((p) => p.id === providerId)
+    if (preset) {
+      modelRef = modelRefForProvider(providerId, preset.defaultModel)
+    } else {
+      const catalogMatch = catalogModels.value.find((m) => m.value.startsWith(`${providerId}/`))
+      modelRef = catalogMatch?.value || ''
+    }
+  }
+  if (!modelRef) {
     message.warning(t('pages.models.messages.noModelsForProvider'))
     return
   }
-  const primary = `${providerId}/${modelIds[0]}`
-  await savePrimaryModel(primary)
+  await savePrimaryModel(modelRef)
+}
+
+async function handleDeleteProviderKey(providerId: string): Promise<void> {
+  const id = normalizeProviderId(providerId)
+  if (!id) return
+
+  if (id === currentPrimaryProviderId.value) {
+    message.warning(t('pages.models.messages.deleteKeyPrimaryBlocked'))
+    return
+  }
+
+  try {
+    const res = await fetch(`/api/openclaw/provider-key?provider=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+    const data = (await res.json()) as { ok?: boolean; error?: string }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || 'Could not delete key')
+    }
+    await loadConfiguredProviders()
+    await configStore.fetchConfig()
+    message.success(t('pages.models.messages.keyDeleted', { id }))
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('pages.models.messages.deleteKeyFailed'))
+  }
 }
 
 function isCurrentPrimaryModel(providerId: string, modelId: string): boolean {
@@ -2086,87 +2329,43 @@ async function handleCreateProvider(confirmed = false) {
 }
 
 async function handleQuickProviderSetup(key: QuickProviderKey) {
-  if (quickProviderConfiguredMap.value[key]) {
-    return
-  }
-  const preset = QUICK_PROVIDER_PRESETS[key]
+  const preset = quickProviderList.find((p) => p.id === key)
+  if (!preset) return
   const apiKey = quickProviderApiKeys[key].trim()
-  if (!apiKey) {
+  if (!apiKey || isMaskedApiKeyDisplay(apiKey)) {
     message.warning(t('pages.models.quick.messages.keyRequired'))
     return
   }
 
   quickProviderSaving[key] = true
   try {
-    const providerId = normalizeProviderId(preset.providerId)
-    const providerPath = `models.providers.${providerId}`
-    
-    // 为阿里云百炼提供完整模型列表
-    let modelIds: string[]
-    let modelsConfig: any[]
-    
-    if (key === 'bailian') {
-      // 阿里云百炼完整模型列表
-      const bailianModels = [
-        { id: 'qwen3.5-plus', name: 'qwen3.5-plus', reasoning: false, input: ['text', 'image'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 65536, compat: { thinkingFormat: 'qwen' } },
-        { id: 'qwen3-max-2026-01-23', name: 'qwen3-max-2026-01-23', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 262144, maxTokens: 65536, compat: { thinkingFormat: 'qwen' } },
-        { id: 'qwen3-coder-next', name: 'qwen3-coder-next', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 262144, maxTokens: 65536 },
-        { id: 'qwen3-coder-plus', name: 'qwen3-coder-plus', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 65536 },
-        { id: 'MiniMax-M2.5', name: 'MiniMax-M2.5', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 196608, maxTokens: 32768 },
-        { id: 'glm-5', name: 'glm-5', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 202752, maxTokens: 16384, compat: { thinkingFormat: 'qwen' } },
-        { id: 'glm-4.7', name: 'glm-4.7', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 202752, maxTokens: 16384, compat: { thinkingFormat: 'qwen' } },
-        { id: 'kimi-k2.5', name: 'kimi-k2.5', reasoning: false, input: ['text', 'image'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 262144, maxTokens: 32768, compat: { thinkingFormat: 'qwen' } },
-      ]
-      modelIds = bailianModels.map(model => model.id)
-      modelsConfig = bailianModels
-    } else {
-      // 其他提供商保持现有行为
-      modelIds = [preset.modelId]
-      modelsConfig = modelIds.map((id) => ({ id, name: preset.modelName || id, input: [...preset.input] }))
-    }
-
-    const patches: ConfigPatch[] = [
-      { path: 'models.mode', value: 'merge' },
-      { path: `${providerPath}.api`, value: preset.api },
-      { path: `${providerPath}.baseUrl`, value: preset.baseUrl },
-      { path: `${providerPath}.apiKey`, value: apiKey },
-      {
-        path: `${providerPath}.models`,
-        value: modelsConfig,
-      },
-    ]
-
-    const providerPrefix = providerPathPrefixMap.value[providerId] || 'models.providers'
-    if (providerPrefix === 'models') {
-      patches.push({ path: `models.${providerId}`, value: null })
-    }
-
-    const mergedDefaultsModels = buildDefaultsModelsCatalogSyncedForProvider(providerId, modelIds, {
-      createWhenMissing: true,
+    const keyRes = await fetch('/api/openclaw/provider-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: preset.id, apiKey }),
     })
-    if (mergedDefaultsModels) {
-      patches.push({ path: 'agents.defaults.models', value: mergedDefaultsModels })
+    const keyData = (await keyRes.json()) as { ok?: boolean; error?: string }
+    if (!keyRes.ok || keyData.ok === false) {
+      throw new Error(keyData.error || 'Could not save key')
     }
-
-    const defaultsCatalogSnapshot = readExistingDefaultsModelsCatalog()
-    patches.push(
-      ...buildAgentModelReferenceSyncPatches(providerId, modelIds, defaultsCatalogSnapshot.catalog),
-      ...buildLegacyModelsReferenceSyncPatches(providerId, modelIds, defaultsCatalogSnapshot.catalog),
-    )
 
     const currentPrimary = primaryModel.value.trim() || configStore.config?.agents?.defaults?.model?.primary || ''
     if (!currentPrimary) {
-      patches.push({ path: 'agents.defaults.model.primary', value: `${providerId}/${preset.modelId}` })
+      const modelRes = await fetch('/api/openclaw/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: preset.defaultModel }),
+      })
+      const modelData = (await modelRes.json()) as { ok?: boolean; error?: string }
+      if (modelRes.ok && modelData.ok !== false) {
+        primaryModel.value = preset.defaultModel
+      }
     }
 
-    const finalPatches = dedupeConfigPatchesByPath(patches)
-    await configStore.patchConfig(finalPatches)
-    quickProviderApiKeys[key] = ''
-    selectedProviderId.value = providerId
-    loadProviderForm(providerId)
-    message.success(t('pages.models.quick.messages.saved', {
-      provider: t(`pages.models.quick.providers.${key}.name`)
-    }))
+    await loadConfiguredProviders()
+    await configStore.fetchConfig()
+    selectedProviderId.value = preset.id
+    message.success(t('pages.models.quick.messages.saved', { provider: preset.label }))
   } catch (error) {
     message.error(error instanceof Error ? error.message : t('common.saveFailed'))
   } finally {
@@ -2233,6 +2432,30 @@ function handleCreateProviderClick() {
 
     </NCard>
 
+    <NCard :title="t('pages.models.defaultModel.title')" class="models-default-model-card">
+      <NAlert type="info" :bordered="false" style="margin-bottom: 12px;">
+        {{ t('pages.models.defaultModel.hint') }}
+      </NAlert>
+      <NSpace align="center" :size="12" style="flex-wrap: wrap;">
+        <NSelect
+          v-model:value="defaultModelFilter"
+          :options="[{ label: t('pages.models.defaultModel.filterAll'), value: '' }, ...AI_PROVIDERS.map((p) => ({ label: p.label, value: p.id }))]"
+          style="min-width: 180px"
+          clearable
+        />
+        <NSelect
+          v-model:value="primaryModel"
+          :options="defaultModelOptions"
+          filterable
+          style="min-width: 280px"
+          :placeholder="t('pages.models.defaultModel.pickPlaceholder')"
+        />
+        <NButton type="primary" :loading="savingDefaultModel" @click="handleSaveDefaultModel">
+          {{ t('pages.models.defaultModel.setAction') }}
+        </NButton>
+      </NSpace>
+    </NCard>
+
     <NCard :title="t('pages.models.workbench.title')" class="models-workbench-card">
       <NGrid cols="1 xl:12" responsive="screen" :x-gap="16" :y-gap="16">
         <NGridItem class="models-workbench-item" span="1 xl:12">
@@ -2283,29 +2506,26 @@ function handleCreateProviderClick() {
       <div class="models-quick-grid">
         <div
           v-for="item in quickProviderList"
-          :key="`quick-provider-${item.key}`"
+          :key="`quick-provider-${item.id}`"
           class="models-quick-item"
         >
           <div class="models-quick-item-header">
-            <NText strong>{{ t(`pages.models.quick.providers.${item.key}.name`) }}</NText>
+            <NText strong>{{ item.label }}</NText>
             <NSpace :size="6" align="center">
-              <NTag v-if="quickProviderConfiguredMap[item.key]" size="small" type="primary" :bordered="false">
+              <NTag v-if="quickProviderConfiguredMap[item.id]" size="small" type="primary" :bordered="false">
                 {{ t('pages.models.quick.configuredTag') }}
               </NTag>
-              <NTag size="small" type="success" :bordered="false">
-                {{ t('pages.models.quick.latestTag') }}
+              <NTag v-if="profileCountForProvider(providerKeys, item.id) > 1" size="small" type="info" :bordered="false">
+                {{ profileCountForProvider(providerKeys, item.id) }} profiles
               </NTag>
             </NSpace>
           </div>
           <NSpace vertical :size="6">
             <NText depth="3" class="models-quick-meta">
-              {{ t('pages.models.quick.providerId') }}：<code>{{ item.providerId }}</code>
+              {{ t('pages.models.quick.providerId') }}：<code>{{ item.id }}</code>
             </NText>
             <NText depth="3" class="models-quick-meta">
-              {{ t('pages.models.quick.defaultModel') }}：<code>{{ item.modelId }}</code>
-            </NText>
-            <NText depth="3" class="models-quick-meta">
-              {{ t('pages.models.quick.endpoint') }}：<code>{{ item.baseUrl }}</code>
+              {{ t('pages.models.quick.defaultModel') }}：<code>{{ item.defaultModel }}</code>
             </NText>
             <a
               class="models-quick-doc-link"
@@ -2318,19 +2538,17 @@ function handleCreateProviderClick() {
           </NSpace>
           <NSpace vertical :size="8" style="margin-top: 10px;">
             <NInput
-              v-model:value="quickProviderApiKeys[item.key]"
-              type="password"
-              show-password-on="click"
+              v-model:value="quickProviderApiKeys[item.id]"
               :placeholder="t('pages.models.quick.keyPlaceholder')"
+              @focus="onQuickKeyFocus(item.id)"
             />
             <NButton
               type="primary"
-              :loading="quickProviderSaving[item.key]"
-              :disabled="quickProviderConfiguredMap[item.key]"
-              @click="handleQuickProviderSetup(item.key)"
+              :loading="quickProviderSaving[item.id]"
+              @click="handleQuickProviderSetup(item.id)"
             >
-              {{ quickProviderConfiguredMap[item.key]
-                ? t('pages.models.quick.configuredTag')
+              {{ quickProviderConfiguredMap[item.id]
+                ? t('pages.models.quick.updateAction')
                 : t('pages.models.quick.action') }}
             </NButton>
           </NSpace>
@@ -2622,6 +2840,75 @@ function handleCreateProviderClick() {
       style="max-width: 720px; width: 92vw;"
       :mask-closable="false"
     >
+      <template v-if="createSimpleMode">
+        <NAlert type="info" :bordered="false" style="margin-bottom: 12px;">
+          {{ t('pages.models.createModal.simpleHint') }}
+        </NAlert>
+
+        <div class="models-create-preset-grid">
+          <button
+            v-for="item in AI_PROVIDERS"
+            :key="`create-preset-${item.id}`"
+            type="button"
+            class="models-create-preset-item"
+            :class="{ 'is-active': createPreset === item.id }"
+            @click="applyCreatePreset(item.id)"
+          >
+            <NText strong>{{ item.label }}</NText>
+          </button>
+          <button
+            type="button"
+            class="models-create-preset-item"
+            :class="{ 'is-active': createPreset === 'custom' }"
+            @click="applyCreatePreset('custom')"
+          >
+            <NText strong>{{ t('pages.models.createModal.customOption') }}</NText>
+          </button>
+        </div>
+
+        <NForm label-placement="left" label-width="120" style="margin-top: 16px;">
+          <NFormItem :label="t('pages.models.form.providerId')">
+            <NSpace vertical :size="4" style="width: 100%;">
+              <NInput
+                v-model:value="createProviderForm.id"
+                :placeholder="t('pages.models.form.providerIdPlaceholder')"
+              />
+              <NText depth="3" style="font-size: 12px;">{{ t('pages.models.createModal.providerIdHint') }}</NText>
+            </NSpace>
+          </NFormItem>
+          <NFormItem :label="t('pages.models.form.apiKey')">
+            <NInput
+              v-model:value="createProviderForm.apiKey"
+              type="password"
+              show-password-on="click"
+              :placeholder="t('pages.models.form.apiKeyPlaceholderCreateRequired')"
+              @focus="onCreateKeyFocus"
+            />
+          </NFormItem>
+          <NFormItem :label="t('pages.models.preview.primaryModel')">
+            <NSelect
+              v-model:value="createProviderForm.pendingPrimaryModel"
+              :options="createProviderModelOptions"
+              filterable
+              style="width: 100%;"
+            />
+          </NFormItem>
+        </NForm>
+
+        <NSpace justify="space-between" style="margin-top: 12px;">
+          <NButton text type="primary" @click="createSimpleMode = false">
+            {{ t('pages.models.createModal.advancedLink') }}
+          </NButton>
+          <NSpace>
+            <NButton @click="showCreateProviderModal = false">{{ t('common.cancel') }}</NButton>
+            <NButton type="primary" :loading="createSaving" @click="handleSimplePresetCreate">
+              {{ t('pages.models.actions.createProvider') }}
+            </NButton>
+          </NSpace>
+        </NSpace>
+      </template>
+
+      <template v-else>
       <NAlert type="default" :bordered="false" style="margin-bottom: 12px;">
         {{ t('pages.models.createModal.flowHint') }}
       </NAlert>
@@ -2815,7 +3102,14 @@ function handleCreateProviderClick() {
         </NTabPane>
       </NTabs>
 
-      <template #footer>
+      <NSpace style="margin-top: 12px;">
+        <NButton text type="primary" @click="createSimpleMode = true">
+          {{ t('pages.models.createModal.backToPresets') }}
+        </NButton>
+      </NSpace>
+      </template>
+
+      <template v-if="!createSimpleMode" #footer>
         <NSpace justify="end">
           <NButton @click="showCreateProviderModal = false">{{ t('common.cancel') }}</NButton>
         </NSpace>
@@ -3036,8 +3330,46 @@ function handleCreateProviderClick() {
 
 .models-quick-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 10px;
+}
+
+.models-create-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.models-create-preset-item {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.models-create-preset-item:hover {
+  border-color: var(--primary-color);
+}
+
+.models-create-preset-item.is-active {
+  border-color: var(--primary-color);
+  background: rgba(32, 128, 240, 0.08);
+}
+
+.models-default-model-card {
+  border-radius: var(--radius-lg);
+  margin-bottom: 16px;
+}
+
+.models-provider-row.is-primary td {
+  background: rgba(24, 160, 88, 0.06);
+}
+
+.models-action-btn--menu {
+  min-width: 88px;
 }
 
 .models-quick-item {

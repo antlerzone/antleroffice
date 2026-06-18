@@ -24,13 +24,12 @@ import {
   TimeOutline,
 } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
-import { useAuthStore } from '@/stores/auth'
+import { ensureApiSession, getApiAuthHeaders } from '@/lib/api-auth'
 import { formatRelativeTime } from '@/utils/format'
 import type { SystemMetrics, SystemPresenceEntry } from '@/api/types'
 
 const { t } = useI18n()
 const router = useRouter()
-const authStore = useAuthStore()
 
 const loading = ref(false)
 const error = ref('')
@@ -88,12 +87,14 @@ async function fetchMetrics() {
   loading.value = true
   error.value = ''
   try {
-    const token = authStore.token || localStorage.getItem('auth_token') || ''
-    const response = await fetch('/api/system/metrics', {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
-    })
+    await ensureApiSession()
+    const headers = getApiAuthHeaders({ contentType: false })
+    if (!headers.Authorization && !headers['X-Boss-Token']) {
+      error.value = t('pages.system.authRequired')
+      return
+    }
+
+    const response = await fetch('/api/system/metrics', { headers })
     
     if (response.status === 401) {
       error.value = t('pages.system.authRequired')
@@ -127,7 +128,7 @@ async function fetchMetrics() {
 }
 
 function goToLogin() {
-  router.push('/login')
+  router.push({ name: 'Login', query: { redirect: router.currentRoute.value.fullPath } })
 }
 
 onMounted(() => {

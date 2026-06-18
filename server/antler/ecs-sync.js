@@ -1,20 +1,25 @@
-// Mirror local office state to the ECS/website backend so the boss can view it
-// from a phone/browser. This is a ONE-WAY read-only mirror: execution always
-// stays on the local desktop; we only push a snapshot. No-op while sync is off
-// or auth.baseUrl is empty, so it's safe by default.
+// On-demand ECS mirror: push snapshot only when website requests via /api/sync/pending.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const store = require('./store');
 const office = require('./office-state');
 const registry = require('./registry-store');
 const auth = require('./auth');
 
-let timer = null;
-const status = { enabled: false, target: '', lastPushAt: 0, lastOk: null, lastError: '', desktopId: '' };
+let pollTimer = null;
+const status = {
+  enabled: false,
+  target: '',
+  lastPushAt: 0,
+  lastOk: null,
+  lastError: '',
+  desktopId: '',
+  mode: 'on-demand',
+};
 
-// Stable per-machine id so the website can group desktops.
 function desktopId() {
   const file = path.join(store.getDataDir(), 'desktop-id');
   try {
@@ -35,11 +40,26 @@ function target() {
   return base ? `${base}/sync/office` : '';
 }
 
-function buildPayload() {
+function ecsApi(pathname, ecsToken, init = {}) {
+  const base = auth.ecsBaseUrl();
+  if (!base || !ecsToken) return Promise.resolve(null);
+  return fetch(`${base}${pathname}`, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Authorization: `Bearer ${ecsToken}`,
+      'Content-Type': 'application/json',
+    },
+    signal: AbortSignal.timeout(12000),
+  }).catch(() => null);
+}
+
+function buildPayload(officeId) {
   const snap = office.snapshot();
   const deliverables = registry.listDeliverables();
   return {
     desktopId: status.desktopId,
+    officeId: officeId || store.readSettings().selectedOfficeId || '',
     at: Date.now(),
     office: {
       agents: snap.agents.map((a) => ({
@@ -65,18 +85,23 @@ function buildPayload() {
   };
 }
 
-async function pushOnce() {
+async function pushOnce(officeId) {
   const url = target();
   if (!url) {
     status.lastOk = null;
     status.lastError = 'no baseUrl';
     return { ok: false, skipped: true };
   }
+  const payload = buildPayload(officeId);
+  if (!payload.officeId) {
+    status.lastError = 'no officeId';
+    return { ok: false, skipped: true };
+  }
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildPayload()),
+      body: JSON.stringify(payload),
     });
     status.lastPushAt = Date.now();
     status.lastOk = res.ok;
@@ -90,25 +115,46 @@ async function pushOnce() {
   }
 }
 
-function refresh() {
+async function pollSyncRequests() {
+  const base = auth.ecsBaseUrl();
+  if (!base) return;
   const s = store.readSettings();
+  const ecsToken = s._lastEcsAccessToken;
+  if (!ecsToken) return;
+
+  const res = await ecsApi(`/api/sync/pending?desktopId=${encodeURIComponent(status.desktopId)}`, ecsToken);
+  if (!res || !res.ok) return;
+  const data = await res.json().catch(() => ({}));
+  if (data.pending) {
+    await pushOnce(s.selectedOfficeId);
+  }
+}
+
+function refresh() {
   status.desktopId = desktopId();
-  status.enabled = !!s.sync?.enabled;
+  status.enabled = !!auth.ecsBaseUrl();
   status.target = target();
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
-  if (status.enabled && status.target) {
-    const ms = Math.max(5000, s.sync?.intervalMs || 30000);
-    timer = setInterval(pushOnce, ms);
-    timer.unref?.();
-    pushOnce();
+  if (status.enabled) {
+    pollTimer = setInterval(() => {
+      pollSyncRequests().catch(() => {});
+    }, 5000);
+    pollTimer.unref?.();
   }
+}
+
+function rememberEcsToken(token) {
+  if (!token) return;
+  const s = store.readSettings();
+  if (s._lastEcsAccessToken === token) return;
+  store.writeSettings({ ...s, _lastEcsAccessToken: token });
 }
 
 function getStatus() {
   return { ...status };
 }
 
-module.exports = { refresh, pushOnce, getStatus, desktopId };
+module.exports = { refresh, pushOnce, getStatus, desktopId, rememberEcsToken, pollSyncRequests };

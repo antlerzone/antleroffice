@@ -98,6 +98,25 @@ const TOOLS = [
       required: ['templateId', 'department', 'template', 'skills'],
     },
   },
+  {
+    name: 'check_app_update',
+    description: 'Check whether a new AntlerOffice desktop version is available on GitHub Releases.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'schedule_app_update',
+    description:
+      'Schedule AntlerOffice update after Boss approval. Use when Boss says "update at 2am" or "update tonight".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        version: { type: 'string', description: 'Target version, e.g. 2.1.0' },
+        scheduled_at: { type: 'string', description: 'ISO datetime when Boss wants the update' },
+        pre_approved: { type: 'boolean', description: 'True if Boss already approved restart' },
+      },
+      required: ['scheduled_at'],
+    },
+  },
 ];
 
 function ecsBaseUrl() {
@@ -189,6 +208,33 @@ async function callTool(name, args = {}) {
         body: JSON.stringify(args),
       });
       return toolText(data);
+    }
+    case 'check_app_update': {
+      const pkg = require('../../package.json');
+      const schedule = require('./app-updater.cjs').readSchedule();
+      return toolText({
+        currentVersion: pkg.version,
+        pendingVersion: schedule.pendingVersion,
+        scheduledAt: schedule.scheduledAt,
+        message: 'Boss must approve in the desktop app or ask COO to schedule an update time.',
+      });
+    }
+    case 'schedule_app_update': {
+      const appUpdater = require('./app-updater.cjs');
+      const scheduledAt = new Date(String(args.scheduled_at || '')).getTime();
+      if (!scheduledAt || Number.isNaN(scheduledAt)) throw new Error('scheduled_at must be a valid ISO datetime');
+      const schedule = appUpdater.writeSchedule({
+        pendingVersion: args.version || null,
+        scheduledAt,
+        preApproved: !!args.pre_approved,
+        skippedVersion: null,
+        remindAfter: null,
+      });
+      return toolText({
+        ok: true,
+        schedule,
+        message: `Update scheduled for ${new Date(scheduledAt).toISOString()}. Boss approval required unless pre_approved is true.`,
+      });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

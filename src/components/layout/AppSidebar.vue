@@ -29,6 +29,8 @@ import {
   LinkOutline,
   KeyOutline,
   CheckmarkDoneOutline,
+  ReceiptOutline,
+  FolderOpenOutline,
 } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { routes } from '@/router/routes'
@@ -68,6 +70,8 @@ const iconMap: Record<string, unknown> = {
   LinkOutline,
   KeyOutline,
   CheckmarkDoneOutline,
+  ReceiptOutline,
+  FolderOpenOutline,
 }
 
 function renderIcon(iconName: string) {
@@ -108,14 +112,19 @@ function handleSelect(key: string) {
 
 <template>
   <div style="display: flex; flex-direction: column; height: 100%;">
-    <div style="display: flex; align-items: center; padding: 20px 24px; gap: 10px;">
-      <span style="font-size: 24px;">▦</span>
+    <div style="display: flex; align-items: center; padding: 20px 24px; gap: 4px;">
+      <img
+        class="app-logo"
+        src="/antleroffice-logo.png?v=3"
+        alt="AntlerOffice"
+        style="width: 56px; height: 56px; object-fit: contain; flex-shrink: 0; background: transparent; margin-right: -4px;"
+      />
       <NText
         v-if="!collapsed"
         strong
         style="font-size: 17px; white-space: nowrap; letter-spacing: -0.5px;"
       >
-        AntlerOffice 2.0
+        AntlerOffice
       </NText>
     </div>
 

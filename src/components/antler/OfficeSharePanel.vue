@@ -48,7 +48,7 @@ async function enableShare() {
     const res = await fetch('/api/office/share/enable', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...boss.authHeaders() },
-      body: JSON.stringify({ token: boss.token, name: 'Antler Office' }),
+      body: JSON.stringify({ token: boss.token, name: 'AntlerOffice' }),
     })
     const data = await res.json()
     if (!data.ok) throw new Error(data.error || 'Enable failed')
