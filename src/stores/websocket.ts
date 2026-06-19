@@ -34,11 +34,18 @@ export const useWebSocketStore = defineStore('websocket', () => {
   let listenersBound = false
   const persistentListeners = new Map<string, Set<(...args: unknown[]) => void>>()
 
-  function createWebSocket(): OpenClawWebSocket {
+  function resolveGatewayAuthToken(): string | null {
     const authStore = useAuthStore()
     const bossStore = useBossStore()
+    if (bossStore.token) return bossStore.token
+    return authStore.getToken()
+  }
+
+  function createWebSocket(): OpenClawWebSocket {
+    const bossStore = useBossStore()
     return new OpenClawWebSocket({
-      getToken: () => authStore.getToken() || bossStore.token || null,
+      getToken: () => resolveGatewayAuthToken(),
+      getBossToken: () => bossStore.token || null,
     })
   }
 

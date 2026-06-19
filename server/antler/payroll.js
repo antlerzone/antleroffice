@@ -1,9 +1,9 @@
-// Monthly NPC salary: deduct credits on hire anniversary (and on hire for first month).
+// NPC salary: deduct credits on hire anniversary (and on hire for first period).
 
 const billing = require('./billing');
 const registry = require('./registry-store');
 const office = require('./office-state');
-
+const billingIntervalMod = require('./billing-interval');
 function addOneMonth(fromMs) {
   const d = new Date(fromMs);
   const day = d.getDate();
@@ -64,9 +64,30 @@ function requestFire(agent) {
   const updated = registry.updateAgent(agent.id, {
     payrollStatus: 'pending_termination',
     fireAt,
+    autoRenew: false,
   });
   syncOfficeLeaving(updated);
   return { immediate: false, fireAt, agent: updated };
+}
+
+function cancelFire(agent, { billingInterval } = {}) {
+  if (!agent?.id) throw new Error('Agent not found');
+  if (agent.payrollStatus !== 'pending_termination') {
+    throw new Error('Agent is not scheduled to leave');
+  }
+
+  const patch = {
+    payrollStatus: 'active',
+    fireAt: null,
+    autoRenew: true,
+  };
+  if (billingInterval) {
+    patch.billingInterval = billingIntervalMod.normalizeBillingInterval(billingInterval);
+  }
+
+  const updated = registry.updateAgent(agent.id, patch);
+  office.setAgent(`user:${agent.id}`, { bubbleText: '' });
+  return updated;
 }
 
 async function processPendingFires(openclaw) {
@@ -82,8 +103,12 @@ async function processPendingFires(openclaw) {
 }
 
 function payAgentSalary(agent, { reason = 'monthly', periodAt } = {}) {
-  const salary = agent.salaryCreditsPerMonth;
-  if (!Number.isFinite(salary) || salary <= 0) return { ok: true, skipped: true };
+  const monthly = agent.salaryCreditsPerMonth;
+  if (!Number.isFinite(monthly) || monthly <= 0) return { ok: true, skipped: true };
+
+  const bill = billingIntervalMod.normalizeBillingInterval(agent.billingInterval);
+  const billingCredits = agent.billingCreditsByInterval || null;
+  const salary = billingIntervalMod.creditsPerPeriod(monthly, bill, billingCredits);
 
   try {
     billing.deductCredits(salary, {
@@ -102,7 +127,10 @@ function payAgentSalary(agent, { reason = 'monthly', periodAt } = {}) {
     throw e;
   }
 
-  const nextSalaryDueAt = addOneMonth(agent.nextSalaryDueAt || agent.hiredAt || Date.now());
+  const nextSalaryDueAt = billingIntervalMod.addBillingPeriod(
+    agent.nextSalaryDueAt || agent.hiredAt || Date.now(),
+    bill,
+  );
   const updated = registry.updateAgent(agent.id, {
     payrollStatus: 'active',
     nextSalaryDueAt,
@@ -119,6 +147,7 @@ function runPayrollDue() {
       a.templateId &&
       !a.ecsSubscriptionId &&
       a.payrollStatus === 'active' &&
+      a.autoRenew !== false &&
       Number.isFinite(a.salaryCreditsPerMonth) &&
       a.salaryCreditsPerMonth > 0 &&
       typeof a.nextSalaryDueAt === 'number' &&
@@ -132,12 +161,21 @@ function runPayrollDue() {
   return { processed: results.length, results };
 }
 
+function updateContractBilling(agent, { billingInterval } = {}) {
+  if (!agent?.id) throw new Error('Agent not found');
+  if (!billingInterval) throw new Error('billingInterval required');
+  const bill = billingIntervalMod.normalizeBillingInterval(billingInterval);
+  return registry.updateAgent(agent.id, { billingInterval: bill });
+}
+
 module.exports = {
   addOneMonth,
   payAgentSalary,
   runPayrollDue,
   syncOfficePayroll,
+  cancelFire,
   requestFire,
+  updateContractBilling,
   terminateAgent,
   processPendingFires,
 };

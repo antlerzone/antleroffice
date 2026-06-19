@@ -18,6 +18,17 @@ import {
   AGENT_SKIN_CANVAS,
   SKIN_CANVAS_SIZE,
 } from '@/lib/skin-preview'
+import {
+  BILLING_INTERVALS,
+  creditsPerPeriod,
+  firstChargeLabel,
+  intervalChargeAdjustment,
+  intervalLabel,
+  intervalTabLabel,
+  listCreditsPerPeriod,
+  normalizeBillingInterval,
+  type BillingInterval,
+} from '@/lib/billing-interval'
 
 interface Skin {
   id: string
@@ -39,10 +50,23 @@ interface UserAgent {
   mcpBindings?: { mcpId: string; accountIds: string[] }[]
   openclawAgentId?: string | null
   salaryCreditsPerMonth?: number | null
+  billingInterval?: BillingInterval | string | null
+  billingCreditsByInterval?: Partial<Record<BillingInterval, number>> | null
+  autoRenew?: boolean
   hiredAt?: number | null
+  nextSalaryDueAt?: number | null
   payrollStatus?: string | null
   fireAt?: number | null
   templateId?: string | null
+}
+
+interface CatalogTemplate {
+  id: string
+  departmentId?: string
+  bundleTemplateId?: string | null
+  templateId?: string
+  salaryCreditsPerMonth?: number
+  billingCreditsByInterval?: Partial<Record<BillingInterval, number>>
 }
 
 interface McpAccount {
@@ -100,6 +124,7 @@ const viewMode = ref<'list' | 'grid'>(
   localStorage.getItem(AGENT_VIEW_KEY) === 'grid' ? 'grid' : 'list',
 )
 const agents = ref<UserAgent[]>([])
+const catalogTemplates = ref<CatalogTemplate[]>([])
 const officeSnapshot = ref<BuiltinNpc[]>([])
 const builtins = ref<BuiltinNpc[]>([])
 const skins = ref<Skin[]>([])
@@ -128,6 +153,16 @@ const renameError = ref('')
 const resumeOpen = ref(false)
 const resumeAgent = ref<UserAgent | null>(null)
 const resumeBuiltinRole = ref<string | null>(null)
+const hireBackOpen = ref(false)
+const hireBackAgent = ref<UserAgent | null>(null)
+const hireBackInterval = ref<BillingInterval>('monthly')
+const hireBackBusy = ref(false)
+const hireBackError = ref('')
+const changeContractOpen = ref(false)
+const changeContractAgent = ref<UserAgent | null>(null)
+const changeContractInterval = ref<BillingInterval>('monthly')
+const changeContractBusy = ref(false)
+const changeContractError = ref('')
 const gridRef = ref<HTMLElement | null>(null)
 const loading = ref(false)
 const previewMap = new Map<string, ReturnType<typeof registerPreview>>()
@@ -215,14 +250,16 @@ function tokenLabel(openclawAgentId?: string | null, role?: string) {
 }
 
 async function loadAll() {
-  const [agentsRes, snapRes, skinsRes, skillsRes, mcpsRes] = await Promise.all([
+  const [agentsRes, snapRes, skinsRes, skillsRes, mcpsRes, catalogRes] = await Promise.all([
     api.get<{ agents?: UserAgent[] }>('/api/config/agents'),
     api.get<{ agents?: BuiltinNpc[] }>('/api/office/snapshot'),
     api.get<{ skins?: Skin[] }>('/api/config/skins'),
     api.get<{ skills?: Skill[] }>('/api/config/skills'),
     api.get<{ mcps?: McpServer[] }>('/api/config/mcps'),
+    api.get<{ templates?: CatalogTemplate[] }>('/api/config/agents/catalog'),
   ])
   agents.value = agentsRes.agents || []
+  catalogTemplates.value = catalogRes.templates || []
   const snap = snapRes.agents || []
   officeSnapshot.value = snap
   builtins.value = snap.filter((a) => !a.userAgentId && !a.external)
@@ -266,19 +303,45 @@ async function refresh() {
   }
 }
 
+function catalogForAgent(agent: UserAgent) {
+  const keys = [agent.templateId, agent.id].filter(Boolean) as string[]
+  return catalogTemplates.value.find((t) =>
+    keys.some((k) => k === t.id || k === t.departmentId || k === t.bundleTemplateId || k === t.templateId),
+  ) || null
+}
+
+function billingOverridesForAgent(agent: UserAgent | null) {
+  if (!agent) return null
+  return agent.billingCreditsByInterval || catalogForAgent(agent)?.billingCreditsByInterval || null
+}
+
+function agentSalaryLabel(agent: UserAgent) {
+  if (!agent.salaryCreditsPerMonth) return '—'
+  const bill = normalizeBillingInterval(agent.billingInterval || 'monthly')
+  const overrides = billingOverridesForAgent(agent)
+  const amount = creditsPerPeriod(agent.salaryCreditsPerMonth, bill, overrides)
+  return `${amount} / ${intervalLabel(bill)}`
+}
+
+function contractEndLabel(agent: UserAgent) {
+  const end = agent.nextSalaryDueAt || agent.fireAt
+  return end ? fmtDate(end) : '—'
+}
+
 function confirmFire(agent: UserAgent) {
   const hasPayroll =
     agent.salaryCreditsPerMonth &&
     agent.salaryCreditsPerMonth > 0 &&
-    typeof agent.hiredAt === 'number'
-  const leaveDate = hasPayroll && agent.hiredAt ? fmtDate(agent.hiredAt) : null
-  const msg = leaveDate
-    ? `Fire "${agent.name}"?\n\nNo refund. They keep working until the next salary date, then leave.`
-    : `Fire "${agent.name}" now?\n\nThey will be removed immediately.`
+    typeof agent.nextSalaryDueAt === 'number'
+  const contractEnd = agent.nextSalaryDueAt || agent.fireAt
+  const endLabel = contractEnd ? fmtDate(contractEnd) : null
+  const msg = hasPayroll && endLabel
+    ? `Resign "${agent.name}"?\n\nThey will keep working until the end of the current contract (${endLabel}), then leave.\n\nNo refund. Auto-renew will be turned off.`
+    : `Remove "${agent.name}" now?\n\nThey will leave immediately.`
   dialog.warning({
-    title: 'Fire agent',
+    title: 'End contract',
     content: msg,
-    positiveText: 'Fire',
+    positiveText: hasPayroll && endLabel ? 'Resign at contract end' : 'Remove now',
     negativeText: 'Cancel',
     onPositiveClick: async () => {
       try {
@@ -286,14 +349,154 @@ function confirmFire(agent: UserAgent) {
           'POST',
           `/api/config/agents/${agent.id}/fire`,
         )
-        if (r.ok === false) throw new Error(r.error || 'Could not fire')
-        message.success(r.immediate ? `${agent.name} has left` : `${agent.name} scheduled to leave`)
+        if (r.ok === false) throw new Error(r.error || 'Could not resign')
+        message.success(
+          r.immediate
+            ? `${agent.name} has left`
+            : `${agent.name} will leave at end of contract (${endLabel})`,
+        )
         await refresh()
       } catch (e) {
-        message.error(e instanceof Error ? e.message : 'Could not fire agent')
+        message.error(e instanceof Error ? e.message : 'Could not resign agent')
       }
     },
   })
+}
+
+function openHireBack(agent: UserAgent) {
+  hireBackAgent.value = agent
+  hireBackInterval.value = normalizeBillingInterval(agent.billingInterval || 'monthly')
+  hireBackError.value = ''
+  hireBackOpen.value = true
+}
+
+const hireBackOverrides = computed(() => billingOverridesForAgent(hireBackAgent.value))
+
+const hireBackRenewCredits = computed(() => {
+  const a = hireBackAgent.value
+  if (!a?.salaryCreditsPerMonth) return 0
+  return creditsPerPeriod(a.salaryCreditsPerMonth, hireBackInterval.value, hireBackOverrides.value)
+})
+
+const hireBackRenewLabel = computed(() => firstChargeLabel(hireBackInterval.value))
+
+const hireBackRenewAdjustment = computed(() => {
+  const a = hireBackAgent.value
+  if (!a?.salaryCreditsPerMonth) return null
+  return intervalChargeAdjustment(hireBackInterval.value, a.salaryCreditsPerMonth, hireBackOverrides.value)
+})
+
+const hireBackShowListPrice = computed(() => {
+  const a = hireBackAgent.value
+  if (!a?.salaryCreditsPerMonth) return false
+  const list = listCreditsPerPeriod(a.salaryCreditsPerMonth, hireBackInterval.value, hireBackOverrides.value)
+  return list !== hireBackRenewCredits.value
+})
+
+const hireBackListCredits = computed(() => {
+  const a = hireBackAgent.value
+  if (!a?.salaryCreditsPerMonth) return 0
+  return listCreditsPerPeriod(a.salaryCreditsPerMonth, hireBackInterval.value, hireBackOverrides.value)
+})
+
+async function confirmHireBack() {
+  const agent = hireBackAgent.value
+  if (!agent) return
+  hireBackBusy.value = true
+  hireBackError.value = ''
+  try {
+    const r = await api.send<{ ok?: boolean; error?: string }>(
+      'POST',
+      `/api/config/agents/${agent.id}/hire-back`,
+      { billingInterval: hireBackInterval.value },
+    )
+    if (r.ok === false) throw new Error(r.error || 'Could not hire back')
+    hireBackOpen.value = false
+    message.success(`${agent.name} is back on your team — auto-renew resumed`)
+    await refresh()
+  } catch (e) {
+    hireBackError.value = e instanceof Error ? e.message : 'Could not hire back'
+  } finally {
+    hireBackBusy.value = false
+  }
+}
+
+function openChangeContract(agent: UserAgent) {
+  changeContractAgent.value = agent
+  changeContractInterval.value = normalizeBillingInterval(agent.billingInterval || 'monthly')
+  changeContractError.value = ''
+  changeContractOpen.value = true
+}
+
+const changeContractOverrides = computed(() => billingOverridesForAgent(changeContractAgent.value))
+
+const changeContractRenewCredits = computed(() => {
+  const a = changeContractAgent.value
+  if (!a?.salaryCreditsPerMonth) return 0
+  return creditsPerPeriod(a.salaryCreditsPerMonth, changeContractInterval.value, changeContractOverrides.value)
+})
+
+const changeContractRenewLabel = computed(() => firstChargeLabel(changeContractInterval.value))
+
+const changeContractRenewAdjustment = computed(() => {
+  const a = changeContractAgent.value
+  if (!a?.salaryCreditsPerMonth) return null
+  return intervalChargeAdjustment(
+    changeContractInterval.value,
+    a.salaryCreditsPerMonth,
+    changeContractOverrides.value,
+  )
+})
+
+const changeContractShowListPrice = computed(() => {
+  const a = changeContractAgent.value
+  if (!a?.salaryCreditsPerMonth) return false
+  const list = listCreditsPerPeriod(
+    a.salaryCreditsPerMonth,
+    changeContractInterval.value,
+    changeContractOverrides.value,
+  )
+  return list !== changeContractRenewCredits.value
+})
+
+const changeContractListCredits = computed(() => {
+  const a = changeContractAgent.value
+  if (!a?.salaryCreditsPerMonth) return 0
+  return listCreditsPerPeriod(
+    a.salaryCreditsPerMonth,
+    changeContractInterval.value,
+    changeContractOverrides.value,
+  )
+})
+
+const changeContractUnchanged = computed(() => {
+  const a = changeContractAgent.value
+  if (!a) return true
+  return normalizeBillingInterval(a.billingInterval || 'monthly') === changeContractInterval.value
+})
+
+async function confirmChangeContract() {
+  const agent = changeContractAgent.value
+  if (!agent || changeContractUnchanged.value) return
+  changeContractBusy.value = true
+  changeContractError.value = ''
+  try {
+    const r = await api.send<{ ok?: boolean; error?: string }>(
+      'POST',
+      `/api/config/agents/${agent.id}/contract`,
+      { billingInterval: changeContractInterval.value },
+    )
+    if (r.ok === false) throw new Error(r.error || 'Could not update contract')
+    changeContractOpen.value = false
+    message.success(
+      `${agent.name} contract updated — renews as ${intervalTabLabel(changeContractInterval.value)} on ${contractEndLabel(agent)}`,
+    )
+    await refresh()
+  } catch (e) {
+    changeContractError.value = e instanceof Error ? e.message : 'Could not update contract'
+  } finally {
+    changeContractBusy.value = false
+  }
 }
 
 function mcpBindingFor(mcpId: string) {
@@ -390,8 +593,13 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
     { label: 'Review', key: 'review' },
     { label: 'MCP accounts', key: 'mcps' },
   ]
-  if (agent.payrollStatus !== 'pending_termination') {
-    opts.push({ label: 'Fire', key: 'fire' })
+  if (agent.salaryCreditsPerMonth && agent.salaryCreditsPerMonth > 0) {
+    opts.push({ label: 'Change contract', key: 'change-contract' })
+  }
+  if (agent.payrollStatus === 'pending_termination') {
+    opts.push({ label: 'Hire back', key: 'hire-back' })
+  } else {
+    opts.push({ label: 'Resign', key: 'fire' })
   }
   return opts
 }
@@ -505,6 +713,8 @@ function resumeSkinMeta() {
 
 function onUserMenu(key: string, agent: UserAgent) {
   if (key === 'fire') confirmFire(agent)
+  else if (key === 'hire-back') openHireBack(agent)
+  else if (key === 'change-contract') openChangeContract(agent)
   else if (key === 'view') openOverview(agent)
   else if (key === 'rename') openRename(agent)
   else if (key === 'skin') void router.push({ name: 'AntlerSkins', query: { agent: agent.id } })
@@ -569,7 +779,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-show="agentTab === 'mine'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Your hired NPC employees and built-in departments. Hired agents show hire date and monthly salary.
+          Your hired NPC employees and built-in departments. Salary auto-renews each billing period until you resign at contract end.
         </p>
         <div class="inline">
           <div class="seg">
@@ -615,7 +825,7 @@ onUnmounted(() => stopSkinPreviews())
                 <th>Role</th>
                 <th>Runtime</th>
                 <th>Salary</th>
-                <th>Hired</th>
+                <th>Contract end</th>
                 <th>Skills</th>
                 <th>Tokens</th>
                 <th class="agent-th-actions">Actions</th>
@@ -691,10 +901,8 @@ onUnmounted(() => stopSkinPreviews())
                 </td>
                 <td>{{ a.role }}</td>
                 <td>{{ a.runtime }}</td>
-                <td class="agent-td-muted">
-                  {{ a.salaryCreditsPerMonth ? `${a.salaryCreditsPerMonth} cr/mo` : '—' }}
-                </td>
-                <td class="agent-td-muted">{{ fmtDate(a.hiredAt) }}</td>
+                <td class="agent-td-muted">{{ agentSalaryLabel(a) }}</td>
+                <td class="agent-td-muted">{{ contractEndLabel(a) }}</td>
                 <td>
                   <div class="agent-td-tags">
                     <span v-for="tag in skillTags(a)" :key="tag" class="tag">{{ tag }}</span>
@@ -806,8 +1014,8 @@ onUnmounted(() => stopSkinPreviews())
               <div v-if="a.salaryCreditsPerMonth" class="npc-market-price">
                 <div class="npc-market-price-icon">◎</div>
                 <div class="npc-market-price-text">
-                  <strong>{{ a.salaryCreditsPerMonth }}</strong>
-                  <span>credits / month</span>
+                  <strong>{{ agentSalaryLabel(a) }}</strong>
+                  <span>credits · ends {{ contractEndLabel(a) }}</span>
                 </div>
               </div>
               <ul class="npc-market-features">
@@ -821,7 +1029,7 @@ onUnmounted(() => stopSkinPreviews())
                   <span class="npc-market-check">✓</span>MCP: {{ mcpSummary(a) }}
                 </li>
                 <li v-if="a.hiredAt">
-                  <span class="npc-market-check">✓</span>Hired {{ fmtDate(a.hiredAt) }}
+                  <span class="npc-market-check">✓</span>{{ agentSalaryLabel(a) }} · ends {{ contractEndLabel(a) }}
                 </li>
               </ul>
             </div>
@@ -857,7 +1065,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-if="agentTab === 'browse'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Browse NPC templates to hire. Salary is deducted from your credit balance — first month on hire, then each month on the hire date.
+          Browse NPC templates to hire. First period charged on hire; credits auto-renew until you resign on My Agents.
         </p>
       </div>
       <AgentBrowsePage embedded @hired="onHired" />
@@ -985,6 +1193,121 @@ onUnmounted(() => stopSkinPreviews())
       </template>
     </NModal>
 
+    <NModal
+      v-model:show="hireBackOpen"
+      preset="card"
+      :title="hireBackAgent ? `Hire back ${hireBackAgent.name}` : 'Hire back'"
+      style="max-width: 520px"
+    >
+      <template v-if="hireBackAgent">
+        <p class="hint">
+          Cancel resignation and resume auto-renew. Choose the billing period for future renewals.
+        </p>
+        <p v-if="hireBackAgent.fireAt" class="hint sm">
+          Current contract still ends {{ fmtDate(hireBackAgent.fireAt) }} if you do not hire back.
+        </p>
+        <div v-if="(hireBackAgent.salaryCreditsPerMonth ?? 0) > 0" class="hire-billing-field">
+          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+          <div class="hire-billing-tabs">
+            <button
+              v-for="interval in BILLING_INTERVALS"
+              :key="interval"
+              type="button"
+              class="hire-billing-tab"
+              :class="{
+                active: hireBackInterval === interval,
+                'hire-billing-tab--yearly': interval === 'yearly',
+              }"
+              @click="hireBackInterval = interval"
+            >
+              <span v-if="interval === 'yearly'" class="hire-billing-ribbon">Most people choose</span>
+              {{ intervalTabLabel(interval) }}
+            </button>
+          </div>
+        </div>
+        <dl class="agent-browse-detail-list">
+          <div class="agent-browse-detail-row">
+            <dt>{{ hireBackRenewLabel }} renewal</dt>
+            <dd>
+              <span v-if="hireBackShowListPrice" class="hire-price-was">{{ hireBackListCredits }}</span>
+              <strong>{{ hireBackRenewCredits }}</strong>
+              credits per {{ intervalLabel(hireBackInterval) }}
+              <span v-if="hireBackRenewAdjustment" class="hire-price-adjust">{{ hireBackRenewAdjustment }}</span>
+            </dd>
+          </div>
+        </dl>
+        <p class="hint sm">No charge today — billing resumes on the next renewal date.</p>
+        <p v-if="hireBackError" class="modal-error">{{ hireBackError }}</p>
+      </template>
+      <template #footer>
+        <NButton @click="hireBackOpen = false">Cancel</NButton>
+        <NButton type="primary" :loading="hireBackBusy" @click="confirmHireBack">Hire back</NButton>
+      </template>
+    </NModal>
+
+    <NModal
+      v-model:show="changeContractOpen"
+      preset="card"
+      :title="changeContractAgent ? `Change contract — ${changeContractAgent.name}` : 'Change contract'"
+      style="max-width: 520px"
+    >
+      <template v-if="changeContractAgent">
+        <p class="hint">
+          Switch billing period for this agent. Takes effect on the next renewal — no charge today.
+          You can move from yearly to monthly or any other combination.
+        </p>
+        <p class="hint sm">
+          Next renewal: <strong>{{ contractEndLabel(changeContractAgent) }}</strong>
+          <span v-if="changeContractAgent.billingInterval">
+            · current: {{ intervalTabLabel(changeContractAgent.billingInterval) }}
+          </span>
+        </p>
+        <div class="hire-billing-field">
+          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+          <div class="hire-billing-tabs">
+            <button
+              v-for="interval in BILLING_INTERVALS"
+              :key="interval"
+              type="button"
+              class="hire-billing-tab"
+              :class="{
+                active: changeContractInterval === interval,
+                'hire-billing-tab--yearly': interval === 'yearly',
+              }"
+              @click="changeContractInterval = interval"
+            >
+              <span v-if="interval === 'yearly'" class="hire-billing-ribbon">Most people choose</span>
+              {{ intervalTabLabel(interval) }}
+            </button>
+          </div>
+        </div>
+        <dl class="agent-browse-detail-list">
+          <div class="agent-browse-detail-row">
+            <dt>{{ changeContractRenewLabel }} renewal</dt>
+            <dd>
+              <span v-if="changeContractShowListPrice" class="hire-price-was">{{ changeContractListCredits }}</span>
+              <strong>{{ changeContractRenewCredits }}</strong>
+              credits per {{ intervalLabel(changeContractInterval) }}
+              <span v-if="changeContractRenewAdjustment" class="hire-price-adjust">{{ changeContractRenewAdjustment }}</span>
+            </dd>
+          </div>
+        </dl>
+        <p v-if="changeContractUnchanged" class="hint sm">Already on this billing period.</p>
+        <p v-if="changeContractError" class="modal-error">{{ changeContractError }}</p>
+      </template>
+      <template #footer>
+        <NButton @click="changeContractOpen = false">Cancel</NButton>
+        <NButton
+          type="primary"
+          :loading="changeContractBusy"
+          :disabled="changeContractUnchanged"
+          @click="confirmChangeContract"
+        >
+          Save contract
+        </NButton>
+      </template>
+    </NModal>
+
     <AgentResumeModal
       v-model:show="resumeOpen"
       :agent="resumeAgent"
@@ -1102,5 +1425,81 @@ onUnmounted(() => stopSkinPreviews())
 .tag.ok {
   border-color: rgba(80, 200, 120, 0.4);
   color: #6ecf8a;
+}
+.hire-billing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 8px 0 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.hire-billing-byline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.hire-billing-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+.hire-billing-tab {
+  position: relative;
+  overflow: visible;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.hire-billing-tab.active {
+  background: #5eead4;
+  color: #101418;
+}
+.hire-billing-tab--yearly {
+  margin-top: 2px;
+}
+.hire-billing-ribbon {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #101418;
+  background: linear-gradient(135deg, #ffd76a 0%, #f0b429 100%);
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.hire-price-was {
+  margin-right: 8px;
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.hire-price-adjust {
+  margin-left: 6px;
+  font-weight: 600;
+  color: #5eead4;
+}
+.agent-browse-detail-list {
+  margin: 12px 0 0;
+}
+.agent-browse-detail-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.agent-browse-detail-row dt {
+  min-width: 110px;
+  color: var(--muted);
 }
 </style>

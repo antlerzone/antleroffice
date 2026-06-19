@@ -19,6 +19,7 @@ import {
   loadNpcHireLayout,
   normalizeNpcHireLayout,
   saveNpcHireLayoutToStorage,
+  saveNpcHireLayoutShared,
   type NpcHireLayout,
 } from '@/lib/npc-hire-layout'
 
@@ -142,9 +143,17 @@ function resetBaseline() {
 }
 
 function saveLayout() {
-  saveNpcHireLayoutToStorage({ ...layout })
-  baseline.value = { ...layout }
-  flash('已保存 — Details 弹窗会自动读取')
+  const data = { ...layout }
+  void saveNpcHireLayoutShared(data)
+    .then(() => {
+      baseline.value = { ...data }
+      flash('已保存 — 浏览器与 Electron 共用 public/npc-hire-layout.json')
+    })
+    .catch((e) => {
+      saveNpcHireLayoutToStorage(data)
+      baseline.value = { ...data }
+      flash(e instanceof Error ? e.message : '仅保存到本机 localStorage')
+    })
 }
 
 async function copyCss() {
@@ -249,8 +258,7 @@ function clearSaved() {
     </aside>
 
     <div class="npc-layout-stage">
-      <div class="npc-hire-page npc-layout-preview-page">
-        <div class="npc-hire-backdrop" aria-hidden="true" />
+      <div class="npc-layout-preview-page">
         <div class="npc-hire-modal">
           <div
             class="npc-hire-scene npc-hire-scene--modal npc-layout-draggable"
@@ -373,6 +381,8 @@ function clearSaved() {
 }
 
 .npc-layout-panel {
+  position: relative;
+  z-index: 2;
   padding: 20px 18px;
   border-right: 1px solid rgba(214, 168, 79, 0.15);
   overflow-y: auto;
@@ -468,6 +478,8 @@ function clearSaved() {
 
 .npc-layout-actions button,
 .file-btn {
+  position: relative;
+  z-index: 1;
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -490,6 +502,8 @@ function clearSaved() {
 }
 
 .npc-layout-stage {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -499,10 +513,12 @@ function clearSaved() {
 
 .npc-layout-preview-page {
   position: relative;
-  inset: auto;
   width: min(1092px, 100%);
   height: min(756px, calc(100vh - 48px));
   padding: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f1115;
 }
 
 .npc-layout-preview-page .npc-hire-modal {

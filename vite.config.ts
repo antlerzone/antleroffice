@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   const appVersion = packageJson.version || ''
   
   const backendPort = env.PORT || '3000'
-  const frontendPort = env.DEV_PORT || '3001'
+  const frontendPort = env.DEV_PORT || '3300'
   
   return {
     plugins: [vue()],
@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '0.0.0.0',
       port: parseInt(String(frontendPort)),
+      strictPort: true,
       allowedHosts: true,
       proxy: {
         '/api': {

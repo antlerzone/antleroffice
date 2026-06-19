@@ -95,8 +95,14 @@
       "sprite": 5,
       "hueShift": 0,
       "runtime": "openclaw",
-      "salaryCreditsPerMonth": 12,
+      "salaryCreditsPerMonth": 300,
       "currency": "credits",
+      "billingCreditsByInterval": {
+        "daily": 15,
+        "monthly": 300,
+        "quarterly": 855,
+        "yearly": 3240
+      },
       "skillIds": ["create_saas_worker"],
       "openclawSkillNames": ["antleroffice-hr-create-npc"],
       "mcps": [

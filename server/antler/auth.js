@@ -19,13 +19,34 @@ function authConfig() {
   return store.readSettings().auth || {};
 }
 
-function ecsBaseUrl() {
+function ecsAuthUrl() {
   return (
+    process.env.ECS_AUTH_URL ||
+    process.env.VITE_OFFICE_WEB_URL ||
+    ''
+  ).replace(/\/+$/, '');
+}
+
+function isLoopbackUrl(base) {
+  try {
+    const host = new URL(base).hostname;
+    return host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+function ecsBaseUrl() {
+  const authUrl = ecsAuthUrl();
+  const direct = (
     process.env.ECS_BASE_URL ||
     process.env.ECS_SERVER_URL ||
     authConfig().baseUrl ||
     ''
   ).replace(/\/+$/, '');
+  // Local Antlermarket/server (:3030) is optional; cloud login tokens use ECS_AUTH_URL.
+  if (authUrl && direct && isLoopbackUrl(direct) && authUrl !== direct) return authUrl;
+  return direct || authUrl;
 }
 
 function isMock() {
@@ -91,10 +112,15 @@ async function login({ username, password } = {}) {
 }
 
 async function loginWithEcsToken(ecsData = {}) {
+  const offices = ecsData.offices || [];
+  const selectedOfficeId =
+    ecsData.selectedOfficeId || offices[0]?.id || null;
   const s = {
     token: newToken(),
     ecsAccessToken: ecsData.access_token || '',
     user: ecsData.user || { name: 'Boss', email: '' },
+    offices,
+    selectedOfficeId,
     subscription:
       ecsData.subscription || ecsData.user?.subscription || { plan: 'Pro', status: 'active' },
     creditBalance:
@@ -165,6 +191,7 @@ module.exports = {
   publicView,
   isMock,
   ecsBaseUrl,
+  ecsAuthUrl,
   syncSessionCredits,
   refreshAllSessionCredits,
 };

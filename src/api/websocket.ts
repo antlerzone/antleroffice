@@ -10,20 +10,30 @@ export interface WebSocketConfig {
   reconnectInterval?: number
   maxReconnectAttempts?: number
   getToken?: () => string | null
+  getBossToken?: () => string | null
 }
 
-const DEFAULT_CONFIG: Required<Omit<WebSocketConfig, 'auth' | 'getToken'>> & { auth?: string; getToken?: () => string | null } = {
+const DEFAULT_CONFIG: Required<Omit<WebSocketConfig, 'auth' | 'getToken' | 'getBossToken'>> & {
+  auth?: string
+  getToken?: () => string | null
+  getBossToken?: () => string | null
+} = {
   url: '',
   reconnect: true,
   reconnectInterval: 3000,
   maxReconnectAttempts: 20,
   auth: undefined,
   getToken: undefined,
+  getBossToken: undefined,
 }
 
 export class OpenClawWebSocket {
   private apiClient: ApiClient
-  private config: Required<Omit<WebSocketConfig, 'auth' | 'getToken'>> & { auth?: string; getToken?: () => string | null }
+  private config: Required<Omit<WebSocketConfig, 'auth' | 'getToken' | 'getBossToken'>> & {
+    auth?: string
+    getToken?: () => string | null
+    getBossToken?: () => string | null
+  }
   private listeners = new Map<string, Set<EventHandler>>()
   private _state: ConnectionState = ConnectionState.DISCONNECTED
 
@@ -38,6 +48,7 @@ export class OpenClawWebSocket {
       reconnectInterval: this.config.reconnectInterval,
       maxReconnectAttempts: this.config.maxReconnectAttempts,
       getToken: this.config.getToken,
+      getBossToken: this.config.getBossToken,
     })
 
     this.bindApiClientEvents()

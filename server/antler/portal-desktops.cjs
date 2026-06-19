@@ -4,9 +4,16 @@ const store = require('./store');
 const ecssync = require('./ecs-sync');
 const ecsSubscriptions = require('./ecs-subscriptions');
 const openclaw = require('./openclaw-config');
+const desktopRelay = require('./desktop-relay-client.cjs');
+
+function resolveDesktopDisplayName() {
+  const custom = String(store.readSettings().office?.desktopDisplayName || '').trim();
+  if (custom) return custom;
+  return os.hostname();
+}
 
 function registerPortalDesktopRoutes(app, hooks = {}) {
-  const { reconnectGateway } = hooks;
+  const { reconnectGateway, runBossHeartbeat, disconnectGateway } = hooks;
 
   async function ecsFetch(pathname, ecsToken, init = {}) {
     const base = auth.ecsBaseUrl();
@@ -35,9 +42,9 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
       const s = bossSession(req);
       if (!s?.ecsAccessToken) return res.status(401).json({ ok: false, error: 'Unauthorized' });
       ecssync.rememberEcsToken(s.ecsAccessToken);
-      const data = await ecsFetch('/api/desktops', s.ecsAccessToken);
-      if (!data.ok) return res.status(data.status || 500).json(data);
       const localId = ecssync.desktopId();
+      const data = await ecsFetch(`/api/desktops?localDesktopId=${encodeURIComponent(localId)}`, s.ecsAccessToken);
+      if (!data.ok) return res.status(data.status || 500).json(data);
       const settings = store.readSettings();
       const owned = (data.owned || []).map((d) => ({
         ...d,
@@ -50,7 +57,14 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
         isCurrent: settings.activeDesktopId === d.desktopId,
         shared: true,
       }));
-      res.json({ ok: true, localDesktopId: localId, owned, shared, desktops: [...owned, ...shared] });
+      res.json({
+        ok: true,
+        localDesktopId: localId,
+        localBindStatus: data.localBindStatus || 'unbound',
+        owned,
+        shared,
+        desktops: [...owned, ...shared],
+      });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
@@ -161,6 +175,7 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
       let password;
       let activeDesktopId = null;
       let officeId = settings.selectedOfficeId || null;
+      let bindCreated = false;
 
       if (mode === 'local') {
         wsUrl = process.env.OPENCLAW_WS_URL || 'ws://127.0.0.1:18789';
@@ -191,13 +206,96 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
         });
       }
 
+      if (mode === 'local' && s.ecsAccessToken) {
+        desktopRelay.startFromBossSession(s);
+        const relayUrl = desktopRelay.getPublicGatewayUrl() || wsUrl;
+        const pkgVersion = require('../../package.json').version;
+        const bindRes = await ecsFetch('/api/desktops/bind', s.ecsAccessToken, {
+          method: 'POST',
+          body: JSON.stringify({
+            desktopId: activeDesktopId,
+            displayName: resolveDesktopDisplayName(),
+            hostname: os.hostname(),
+            platform: process.platform,
+            gatewayWsUrl: relayUrl,
+            gatewayAuthToken: token,
+            gatewayAuthPassword: password,
+            antlerVersion: pkgVersion,
+          }),
+        });
+        if (!bindRes.ok) {
+          const status = bindRes.status || (bindRes.code === 'DESKTOP_OWNED_BY_OTHER' ? 409 : 400);
+          return res.status(status).json({
+            ok: false,
+            error: bindRes.error || 'Could not bind this computer',
+            code: bindRes.code,
+          });
+        }
+        officeId = bindRes.officeId || officeId;
+        bindCreated = !!bindRes.created;
+        store.writeSettings({
+          ...store.readSettings(),
+          selectedOfficeId: officeId,
+          activeDesktopId,
+        });
+        const bossToken = req.headers['x-boss-token'] || req.body?.bossToken;
+        if (typeof runBossHeartbeat === 'function' && bossToken) {
+          await runBossHeartbeat(bossToken).catch(() => {});
+        }
+      } else {
+        store.writeSettings({
+          ...settings,
+          selectedOfficeId: officeId || settings.selectedOfficeId,
+          activeDesktopId,
+        });
+      }
+
+      res.json({
+        ok: true,
+        mode: mode || 'remote',
+        activeDesktopId,
+        officeId,
+        gatewayWsUrl: wsUrl,
+        created: bindCreated,
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/portal/desktops/unbind-local', async (req, res) => {
+    try {
+      const s = bossSession(req);
+      if (!s?.ecsAccessToken) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+      const desktopId = ecssync.desktopId();
+      const data = await ecsFetch(`/api/desktops/${encodeURIComponent(desktopId)}/bind`, s.ecsAccessToken, {
+        method: 'DELETE',
+      });
+      if (!data.ok) {
+        return res.status(data.status || 400).json({ ok: false, error: data.error || 'Unbind failed', code: data.code });
+      }
+      if (typeof disconnectGateway === 'function') {
+        try {
+          await disconnectGateway();
+        } catch {
+          /* ignore */
+        }
+      }
+      const nextDesktopId = ecssync.resetDesktopId();
+      const settings = store.readSettings();
       store.writeSettings({
         ...settings,
-        selectedOfficeId: officeId || settings.selectedOfficeId,
-        activeDesktopId,
+        selectedOfficeId: null,
+        activeDesktopId: null,
       });
-
-      res.json({ ok: true, mode: mode || 'remote', activeDesktopId, officeId, gatewayWsUrl: wsUrl });
+      res.json({
+        ok: true,
+        previousDesktopId: desktopId,
+        desktopId: nextDesktopId,
+        officeId: data.officeId,
+        creditBalanceRemoved:
+          typeof data.creditBalanceRemoved === 'number' ? data.creditBalanceRemoved : 0,
+      });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }

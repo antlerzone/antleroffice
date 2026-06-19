@@ -36,6 +36,15 @@ import {
 } from '@/lib/npc-hire-layout'
 import { drawModalBorderVignette } from '@/lib/npc-hire-vignette'
 import { looksLikeUuidSearch } from '@/lib/catalog-uuid'
+import {
+  BILLING_INTERVALS,
+  creditsPerPeriod,
+  listCreditsPerPeriod,
+  firstChargeLabel,
+  intervalChargeAdjustment,
+  intervalTabLabel,
+  type BillingInterval,
+} from '@/lib/billing-interval'
 
 interface Skin {
   id: string
@@ -56,6 +65,7 @@ interface Template {
   sortOrder?: number
   installable?: boolean
   salaryCreditsPerMonth?: number
+  billingCreditsByInterval?: Partial<Record<'daily' | 'monthly' | 'quarterly' | 'yearly', number>>
   currency?: string
   hired?: boolean
   featured?: boolean
@@ -143,7 +153,36 @@ const hireOpen = ref(false)
 const hireTemplate = ref<Template | null>(null)
 const hireName = ref('')
 const hirePassword = ref('')
+const hireBillingInterval = ref<BillingInterval>('monthly')
 const hireError = ref('')
+
+const hireBillingOverrides = computed(() => hireTemplate.value?.billingCreditsByInterval ?? null)
+
+const hireChargeCredits = computed(() => {
+  const t = hireTemplate.value
+  if (!t) return 0
+  return creditsPerPeriod(t.salaryCreditsPerMonth ?? 0, hireBillingInterval.value, hireBillingOverrides.value)
+})
+
+const hireListCredits = computed(() => {
+  const t = hireTemplate.value
+  if (!t) return 0
+  return listCreditsPerPeriod(t.salaryCreditsPerMonth ?? 0, hireBillingInterval.value, hireBillingOverrides.value)
+})
+
+const hireShowListPrice = computed(() => hireListCredits.value !== hireChargeCredits.value)
+
+const hireFirstChargeLabel = computed(() => firstChargeLabel(hireBillingInterval.value))
+
+const hireChargeAdjustment = computed(() => {
+  const t = hireTemplate.value
+  if (!t) return null
+  return intervalChargeAdjustment(
+    hireBillingInterval.value,
+    t.salaryCreditsPerMonth ?? 0,
+    hireBillingOverrides.value,
+  )
+})
 
 function loadFilterPrefs() {
   try {
@@ -629,6 +668,7 @@ function openHire(t: Template) {
   hireTemplate.value = t
   hireName.value = defaultHireName(t)
   hirePassword.value = ''
+  hireBillingInterval.value = 'monthly'
   hireError.value = ''
   hireOpen.value = true
   detailOpen.value = false
@@ -648,7 +688,7 @@ async function confirmHire() {
     }>(
       'POST',
       '/api/config/agents/hire',
-      { templateId: t.id, name: hireName.value.trim() || t.name, hirePassword: hirePassword.value.trim() || undefined },
+      { templateId: t.id, name: hireName.value.trim() || t.name, hirePassword: hirePassword.value.trim() || undefined, billingInterval: hireBillingInterval.value },
     )
     if (boss.session && r.creditBalance !== undefined) {
       boss.session.creditBalance = r.creditBalance
@@ -1279,7 +1319,7 @@ onUnmounted(() => {
       v-model:show="hireOpen"
       preset="card"
       :title="hireTemplate ? (hireTemplate.hired ? `Hire another ${hireTemplate.name}` : `Hire ${hireTemplate.name}`) : 'Hire'"
-      style="max-width: 440px"
+      style="max-width: 520px"
     >
       <template v-if="hireTemplate">
         <p v-if="hireTemplate.hired" class="hint agent-hire-again-note">
@@ -1296,10 +1336,38 @@ onUnmounted(() => {
             style="margin: 8px 0 12px"
           />
         </template>
+        <template v-if="(hireTemplate.salaryCreditsPerMonth ?? 0) > 0">
+          <div class="hire-billing-field">
+            <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+            <div class="hire-billing-tabs">
+              <button
+                v-for="interval in BILLING_INTERVALS"
+                :key="interval"
+                type="button"
+                class="hire-billing-tab"
+                :class="{
+                  active: hireBillingInterval === interval,
+                  'hire-billing-tab--yearly': interval === 'yearly',
+                }"
+                @click="hireBillingInterval = interval"
+              >
+                <span v-if="interval === 'yearly'" class="hire-billing-ribbon">Most people choose</span>
+                {{ intervalTabLabel(interval) }}
+              </button>
+            </div>
+          </div>
+        </template>
+        <p class="hint sm" style="margin-top: 0">
+          Credits auto-renew each billing period. Use <strong>Resign</strong> on My Agents to stop renewal.
+        </p>
         <dl class="agent-browse-detail-list">
           <div class="agent-browse-detail-row">
-            <dt>First month</dt>
-            <dd><strong>{{ hireTemplate.salaryCreditsPerMonth ?? 0 }}</strong> credits (charged today)</dd>
+            <dt>{{ hireFirstChargeLabel }}</dt>
+            <dd>
+              <span v-if="hireShowListPrice" class="hire-price-was">{{ hireListCredits }}</span>
+              <strong>{{ hireChargeCredits }}</strong>
+              credits (charged today)<span v-if="hireChargeAdjustment" class="hire-price-adjust">{{ hireChargeAdjustment }}</span>
+            </dd>
           </div>
           <div class="agent-browse-detail-row">
             <dt>Your balance</dt>
@@ -1328,6 +1396,91 @@ onUnmounted(() => {
 .agent-hire-again-note {
   margin: 0 0 10px;
   font-size: 13px;
+}
+.hire-billing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 0;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.hire-billing-byline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.hire-billing-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding-top: 8px;
+}
+.hire-billing-tab {
+  position: relative;
+  overflow: visible;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.hire-billing-tab:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.hire-billing-tab.active {
+  background: #5eead4;
+  color: #101418;
+}
+.hire-billing-tab--yearly {
+  margin-top: 2px;
+}
+.hire-auto-renew {
+  margin-top: 6px;
+  font-size: 13px;
+}
+.hire-price-was {
+  margin-right: 8px;
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.hire-price-adjust {
+  margin-left: 6px;
+  font-weight: 600;
+  color: #5eead4;
+}
+.hire-billing-ribbon {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #101418;
+  background: linear-gradient(135deg, #ffd76a 0%, #f0b429 100%);
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  z-index: 2;
+}
+.hire-billing-ribbon::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: #f0b429;
 }
 .includes-label {
   margin: 6px 0 0;

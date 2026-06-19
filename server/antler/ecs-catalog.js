@@ -39,6 +39,85 @@ function readJsonSafe(filePath, fallback) {
   }
 }
 
+function parseConfigJson(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function billingCreditsFromDept(dept, tech = {}) {
+  const cfg = parseConfigJson(dept.configJson);
+  return tech.billingCreditsByInterval || cfg?.billingCreditsByInterval || null;
+}
+
+/** Local repo seed prices override stale remote ECS catalog (dev monorepo). */
+function loadLocalPricingOverlayMap() {
+  const map = new Map();
+  const put = (key, pricing) => {
+    if (!key || !pricing) return;
+    const hasBilling = pricing.billingCreditsByInterval
+      && Object.keys(pricing.billingCreditsByInterval).length > 0;
+    const hasSalary = Number.isFinite(pricing.salaryCreditsPerMonth);
+    if (!hasBilling && !hasSalary) return;
+    map.set(key, pricing);
+  };
+
+  const deptPath = localDepartmentsSeedPath();
+  if (deptPath) {
+    const seed = readJsonSafe(deptPath, { departments: [] });
+    const catalogPath = localCatalogPath();
+    const catalog = catalogPath ? readJsonSafe(catalogPath, { templates: [] }) : { templates: [] };
+    const techById = new Map((catalog.templates || []).map((t) => [t.id, t]));
+    for (const dept of seed.departments || []) {
+      const bundleId = dept.bundleTemplateId || dept.id;
+      const tech = techById.get(bundleId) || techById.get(dept.id) || {};
+      const pricing = {
+        salaryCreditsPerMonth: dept.salaryCreditsPerMonth ?? tech.salaryCreditsPerMonth,
+        billingCreditsByInterval: billingCreditsFromDept(dept, tech),
+      };
+      put(dept.id, pricing);
+      put(bundleId, pricing);
+      if (dept.role) put(dept.role, pricing);
+    }
+  }
+
+  for (const t of agentCatalog.loadCatalog() || []) {
+    put(t.id, {
+      salaryCreditsPerMonth: t.salaryCreditsPerMonth,
+      billingCreditsByInterval: t.billingCreditsByInterval || null,
+    });
+    if (t.role) {
+      put(t.role, {
+        salaryCreditsPerMonth: t.salaryCreditsPerMonth,
+        billingCreditsByInterval: t.billingCreditsByInterval || null,
+      });
+    }
+  }
+
+  return map;
+}
+
+function applyLocalPricingOverlay(templates) {
+  const overlay = loadLocalPricingOverlayMap();
+  if (!overlay.size) return templates;
+  return templates.map((t) => {
+    for (const k of [t.id, t.departmentId, t.bundleTemplateId, t.templateId, t.role].filter(Boolean)) {
+      const p = overlay.get(k);
+      if (!p) continue;
+      return {
+        ...t,
+        salaryCreditsPerMonth: p.salaryCreditsPerMonth ?? t.salaryCreditsPerMonth,
+        billingCreditsByInterval: p.billingCreditsByInterval ?? t.billingCreditsByInterval,
+      };
+    }
+    return t;
+  });
+}
+
 function normalizeCategory(value) {
   const raw = String(value || '')
     .trim()
@@ -120,6 +199,10 @@ function mergeDepartmentsWithCatalog(departments, technicalTemplates) {
           : tech.examples || [],
         role: dept.role || tech.role,
         salaryCreditsPerMonth: dept.salaryCreditsPerMonth ?? tech.salaryCreditsPerMonth,
+        billingCreditsByInterval:
+          tech.billingCreditsByInterval
+          || billingCreditsFromDept(dept, tech)
+          || null,
         salaryUsdPerMonth: dept.salaryUsdPerMonth ?? tech.salaryUsdPerMonth,
         featured: !!(dept.featured ?? tech.featured),
         sortOrder: Number(dept.sortOrder) || 999,
@@ -165,7 +248,9 @@ async function fetchCatalogFromEcs() {
 
 async function loadCatalogMerged() {
   const remote = await fetchCatalogFromEcs();
-  if (remote?.length) return remote.filter(isInstallableTemplate);
+  if (remote?.length) {
+    return applyLocalPricingOverlay(remote.filter(isInstallableTemplate));
+  }
   const localMerged = loadLocalDepartmentsMerged();
   if (localMerged?.length) return localMerged;
   return agentCatalog
@@ -192,7 +277,13 @@ function isTemplateHired(template, hired) {
 async function catalogWithStatusMerged() {
   const templates = await loadCatalogMerged();
   const registry = require('./registry-store');
-  const hired = new Set(registry.listAgents().map((a) => a.templateId).filter(Boolean));
+  const hired = new Set(
+    registry
+      .listAgents()
+      .filter((a) => registry.isOnTeamAgent(a))
+      .map((a) => a.templateId)
+      .filter(Boolean),
+  );
 
   return templates.map((t) => {
     const skillNames = (t.skillIds || [])

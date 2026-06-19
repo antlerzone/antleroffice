@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('antlerDesktop', {
   platform: process.platform,
   isElectron: true,
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  showItemInFolder: (filePath) => ipcRenderer.invoke('shell:showItemInFolder', filePath),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   approveUpdate: () => ipcRenderer.invoke('updater:approve'),
   scheduleUpdate: (isoTime, preApproved = false) =>
@@ -14,5 +15,18 @@ contextBridge.exposeInMainWorld('antlerDesktop', {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on('updater:status', handler);
     return () => ipcRenderer.removeListener('updater:status', handler);
+  },
+  voiceWakeGetStatus: () => ipcRenderer.invoke('voiceWake:getStatus'),
+  voiceWakeSetMode: (mode) => ipcRenderer.invoke('voiceWake:setMode', mode),
+  voiceWakeWake: () => ipcRenderer.invoke('voiceWake:wake'),
+  onVoiceWakeOpenSettings: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('voiceWake:openSettings', handler);
+    return () => ipcRenderer.removeListener('voiceWake:openSettings', handler);
+  },
+  onVoiceWakeState: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('voiceWake:state', handler);
+    return () => ipcRenderer.removeListener('voiceWake:state', handler);
   },
 });

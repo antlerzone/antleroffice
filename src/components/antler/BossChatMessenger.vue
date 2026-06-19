@@ -27,6 +27,11 @@ import {
   sessionKeysMatch,
   writeSelectedOpenClawSessionKey,
 } from '@/utils/openclaw-session-key'
+import VoiceMicButton from '@/components/voice/VoiceMicButton.vue'
+import { useTTSSettings } from '@/composables/useTTSSettings'
+import { useVoiceOutput } from '@/composables/useVoiceOutput'
+import { useVoiceWake } from '@/composables/useVoiceWake'
+import { useStreamingVoiceOutput } from '@/composables/useStreamingVoiceOutput'
 
 interface OfficeAgent {
   id: string
@@ -98,6 +103,12 @@ const chatStore = useChatStore()
 const sessionStore = useSessionStore()
 const router = useRouter()
 const message = useMessage()
+const { settings: ttsSettings } = useTTSSettings()
+const { speak: voiceSpeak, stop: voiceStop } = useVoiceOutput()
+const { mode: voiceWakeMode } = useVoiceWake()
+const { pushDelta, resetStream } = useStreamingVoiceOutput()
+const lastSpokenChatId = ref('')
+const lastStreamContentLen = ref(0)
 const dialog = useDialog()
 
 const open = ref(false)
@@ -348,15 +359,27 @@ function ensureDefaultThread() {
     selectedThreadId.value = threads.value[0]?.id || ''
     return
   }
-  if (selectedThreadId.value && threads.value.some((t) => t.id === selectedThreadId.value)) return
+  const current = selectedThreadId.value
+    ? threads.value.find((t) => t.id === selectedThreadId.value)
+    : null
+  if (current && current.agentId === selectedAgentId.value) return
+
   const saved = loadThreadMap()[selectedAgentId.value]
-  if (saved && threads.value.some((t) => t.id === saved)) {
-    selectedThreadId.value = saved
-    return
+  if (saved) {
+    const savedThread = threads.value.find((t) => t.id === saved && t.agentId === selectedAgentId.value)
+    if (savedThread) {
+      selectedThreadId.value = saved
+      return
+    }
   }
   const forAgent = threads.value.find((t) => t.agentId === selectedAgentId.value)
-  selectedThreadId.value = forAgent?.id || threads.value[0]?.id || ''
+  selectedThreadId.value = forAgent?.id || ''
 }
+
+const agentThreads = computed(() => {
+  if (!selectedAgentId.value) return threads.value
+  return threads.value.filter((t) => t.agentId === selectedAgentId.value)
+})
 
 function threadAgentLabel(thread: ChatThread) {
   const agent = agents.value.find((a) => a.id === thread.agentId)
@@ -384,6 +407,29 @@ function scrollChatIfNeeded(force = false) {
   if (force || atBottom) el.scrollTop = el.scrollHeight
 }
 
+function onVoiceInput(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed) return
+  chatText.value = trimmed
+  if (voiceWakeMode.value === 'active' || voiceWakeMode.value === 'speaking') {
+    void sendBossChat()
+  }
+}
+
+function onVoiceError(err: string) {
+  message.warning(err)
+}
+
+function maybeAutoPlayBossReply(msgs: ChatMsg[]) {
+  if (!ttsSettings.value.enabled || !ttsSettings.value.autoPlay) return
+  const last = msgs[msgs.length - 1]
+  if (!last?.text?.trim() || last.from === 'boss') return
+  const key = `${last.id}:${last.ts}`
+  if (lastSpokenChatId.value === key) return
+  lastSpokenChatId.value = key
+  void voiceSpeak(last.text).catch(() => {})
+}
+
 async function poll() {
   try {
     const base = await api.get<OfficeSnapshot>('/api/office/snapshot')
@@ -407,6 +453,7 @@ async function poll() {
       if (nextChat.length !== lastChatLen.value) {
         chat.value = nextChat
         lastChatLen.value = nextChat.length
+        maybeAutoPlayBossReply(nextChat)
         await nextTick()
         scrollChatIfNeeded()
       } else {
@@ -414,7 +461,10 @@ async function poll() {
       }
     }
     if (snap.activeThreadId && !selectedThreadId.value) {
-      selectedThreadId.value = snap.activeThreadId
+      const active = threads.value.find((t) => t.id === snap.activeThreadId)
+      if (active && active.agentId === selectedAgentId.value) {
+        selectedThreadId.value = snap.activeThreadId
+      }
     }
     ensureDefaultThread()
     if (selectedThreadId.value && selectedAgentId.value) {
@@ -519,6 +569,8 @@ function selectThread(id: string) {
 async function loadOpenClawSession() {
   openClawSessionKey.value = ''
   if (!useOpenClawBossChat.value || !selectedThreadId.value) return
+  const thread = threads.value.find((t) => t.id === selectedThreadId.value)
+  if (!thread || thread.agentId !== selectedAgentId.value) return
   openClawSessionLoading.value = true
   try {
     const res = await api.get<{
@@ -541,7 +593,10 @@ async function loadOpenClawSession() {
       if (gatewayConnected.value) void sessionStore.fetchSessions()
     }
   } catch (e) {
-    message.error(e instanceof Error ? e.message : 'Could not load OpenClaw session')
+    const msg = e instanceof Error ? e.message : 'Could not load OpenClaw session'
+    if (!/no OpenClaw runtime/i.test(msg)) {
+      message.error(msg)
+    }
   } finally {
     openClawSessionLoading.value = false
   }
@@ -785,6 +840,12 @@ watch([useOpenClawBossChat, selectedThreadId, selectedOpenClawAgentId], () => {
   if (open.value) void loadOpenClawSession()
 })
 
+watch(openClawSessionKey, () => {
+  lastStreamContentLen.value = 0
+  resetStream()
+  voiceStop()
+})
+
 watch(
   () =>
     [
@@ -792,10 +853,43 @@ watch(
       openClawSessionKey.value,
       chatStore.sending,
       chatStore.messages.map((m) => `${m.id || ''}:${m.role}:${String(m.content || '').length}`).join('|'),
+      selectedOpenClawAgentId.value,
     ].join('::'),
   () => {
     void maybeSavePlanDeliverable()
     void maybeUpdateThreadTitleFromGateway()
+    if (!useOpenClawBossChat.value) return
+    if (!ttsSettings.value.enabled) return
+
+    const agentId = selectedOpenClawAgentId.value || 'main'
+    const phase = chatStore.getOrCreateAgentStatus(agentId).phase
+    const last = [...chatStore.messages].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim())
+    const content = String(last?.content || '')
+
+    if (ttsSettings.value.streamingTts && (phase === 'replying' || phase === 'thinking' || chatStore.sending)) {
+      if (content.length > lastStreamContentLen.value) {
+        pushDelta(content.slice(lastStreamContentLen.value), false)
+        lastStreamContentLen.value = content.length
+      }
+      return
+    }
+
+    if (ttsSettings.value.streamingTts && (phase === 'done' || phase === 'idle' || phase === 'error')) {
+      if (content.length > lastStreamContentLen.value) {
+        pushDelta(content.slice(lastStreamContentLen.value), true)
+      } else if (lastStreamContentLen.value > 0) {
+        pushDelta('', true)
+      }
+      lastStreamContentLen.value = 0
+      return
+    }
+
+    if (!ttsSettings.value.autoPlay) return
+    if (!last) return
+    const key = `oc:${last.id || ''}:${content.length}`
+    if (lastSpokenChatId.value === key || chatStore.sending) return
+    lastSpokenChatId.value = key
+    void voiceSpeak(content).catch(() => {})
   },
 )
 
@@ -948,7 +1042,7 @@ onUnmounted(stopPoll)
             </div>
             <ul class="boss-chat-thread-list">
               <li
-                v-for="t in threads"
+                v-for="t in agentThreads"
                 :key="t.id"
                 class="boss-chat-thread-item"
                 :class="{ active: selectedThreadId === t.id, pinned: t.pinned }"
@@ -980,7 +1074,7 @@ onUnmounted(stopPoll)
                 </div>
               </li>
             </ul>
-            <p v-if="!threads.length" class="boss-chat-agents-empty">
+            <p v-if="!agentThreads.length" class="boss-chat-agents-empty">
               No chats yet. Pick an agent under Team and start one with +.
             </p>
           </aside>
@@ -1056,6 +1150,12 @@ onUnmounted(stopPoll)
                   :options="modeOptions"
                   size="small"
                   :consistent-menu-width="false"
+                />
+                <VoiceMicButton
+                  size="small"
+                  :disabled="sending || !selectedAgentId"
+                  @result="onVoiceInput"
+                  @error="onVoiceError"
                 />
                 <button
                   class="boss-chat-send"

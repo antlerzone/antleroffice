@@ -70,7 +70,7 @@ export const routes: RouteRecordRaw[] = [
         path: 'channels',
         name: 'AntlerChannels',
         component: () => import('@/views/antler/AntlerChannelsPage.vue'),
-        meta: { titleKey: 'routes.antlerChannels', icon: 'GitNetworkOutline', gateway: 'openclaw', tier: 'boss' },
+        meta: { titleKey: 'routes.antlerChannels', icon: 'GitNetworkOutline', gateway: 'openclaw', tier: 'boss', menuPinFromBottom: 3 },
       },
       {
         path: 'connect',
@@ -86,7 +86,7 @@ export const routes: RouteRecordRaw[] = [
         path: 'accounts',
         name: 'WebAccounts',
         component: () => import('@/views/antler/AccountsPage.vue'),
-        meta: { titleKey: 'routes.webAccounts', icon: 'KeyOutline', gateway: 'openclaw', tier: 'boss' },
+        meta: { titleKey: 'routes.webAccounts', icon: 'KeyOutline', gateway: 'openclaw', tier: 'boss', menuPinFromBottom: 2 },
       },
       {
         path: 'agents',
@@ -125,12 +125,6 @@ export const routes: RouteRecordRaw[] = [
         meta: { hidden: true },
       },
       {
-        path: 'settings',
-        name: 'Settings',
-        component: () => import('@/views/antler/AntlerOfficeSettingsPage.vue'),
-        meta: { titleKey: 'routes.settings', icon: 'SettingsOutline', gateway: 'openclaw', tier: 'boss' },
-      },
-      {
         path: 'jobs',
         name: 'AntlerCompleteJob',
         component: () => import('@/views/antler/AntlerCompleteJobPage.vue'),
@@ -141,6 +135,12 @@ export const routes: RouteRecordRaw[] = [
         name: 'AntlerSchedule',
         component: () => import('@/views/antler/AntlerSchedulePage.vue'),
         meta: { titleKey: 'routes.schedule', icon: 'CalendarOutline', gateway: 'openclaw', tier: 'boss' },
+      },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/antler/AntlerOfficeSettingsPage.vue'),
+        meta: { titleKey: 'routes.settings', icon: 'SettingsOutline', gateway: 'openclaw', tier: 'boss', menuPinFromBottom: 1 },
       },
       // ── OpenClaw Admin (advanced) ─────────────────────────────────────────
       {

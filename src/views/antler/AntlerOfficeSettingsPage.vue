@@ -1,20 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, useMessage } from 'naive-ui'
+import { ref, onMounted, computed } from 'vue'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, NTabs, NTabPane, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOfficeProfile } from '@/composables/useOfficeProfile'
 import { useLocalGateway } from '@/composables/useLocalGateway'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
-import TtsSettingsCard from '@/components/settings/TtsSettingsCard.vue'
+import { useBossStore } from '@/stores/boss'
+import SummonSettingsTab from '@/components/settings/SummonSettingsTab.vue'
+import VoiceSettingsTab from '@/components/settings/VoiceSettingsTab.vue'
+import PersonaSettingsTab from '@/components/settings/PersonaSettingsTab.vue'
+import DailyStandupSettingsTab from '@/components/settings/DailyStandupSettingsTab.vue'
+import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
+import { buildDesktopUnbindSignInUrl } from '@/lib/office-web'
+import { openExternalUrl } from '@/lib/desktop-shell'
+
+const PENDING_UNBIND_KEY = 'antleroffice-pending-unbind'
 
 const { t } = useI18n()
 const message = useMessage()
 const themeStore = useThemeStore()
+const boss = useBossStore()
 const { bossDisplayName, desktopDisplayName, hostname, load, save } = useOfficeProfile()
 const localGateway = useLocalGateway()
-const loading = ref(false)
+const { ensureLoaded } = useVoiceAssistantSettings()
+const settingsTab = ref('general')
+const loading = ref(true)
 const saving = ref(false)
 const reconnecting = ref(false)
+const localBindStatus = ref<'unbound' | 'owned_by_me' | 'owned_by_other'>('unbound')
 
 const gatewayStatus = computed(() => {
   if (localGateway.checking.value) return { label: 'Connecting…', type: 'info' as const }
@@ -27,17 +40,45 @@ const themeOptions = computed(() => [
   { label: t('pages.settings.themeDark'), value: 'dark' },
 ])
 
+const autosaveTabs = new Set(['summon', 'voice', 'persona', 'standup'])
+const showAutosaveBadge = computed(() => autosaveTabs.has(settingsTab.value))
+
 onMounted(async () => {
   loading.value = true
+  ensureLoaded()
   localGateway.startBackground()
   try {
     await load()
+    await loadLocalBindStatus()
   } catch (e) {
     message.error(e instanceof Error ? e.message : 'Could not load settings')
   } finally {
     loading.value = false
   }
 })
+
+async function loadLocalBindStatus() {
+  if (!boss.token) return
+  try {
+    const headers: Record<string, string> = { 'X-Boss-Token': boss.token }
+    const res = await fetch('/api/portal/desktops', { headers })
+    const data = await res.json()
+    if (res.ok && data.ok) {
+      localBindStatus.value = data.localBindStatus || 'unbound'
+    }
+  } catch {
+    localBindStatus.value = 'unbound'
+  }
+}
+
+function startUnbindFlow() {
+  try {
+    localStorage.setItem(PENDING_UNBIND_KEY, '1')
+  } catch {
+    /* ignore */
+  }
+  openExternalUrl(buildDesktopUnbindSignInUrl())
+}
 
 async function reconnectOpenClaw() {
   reconnecting.value = true
@@ -75,13 +116,23 @@ async function onSave() {
 
 <template>
   <div class="antler-v1-root office-settings-page">
-    <h2 class="view-title">{{ t('routes.settings') }}</h2>
+    <div class="view-head">
+      <h2 class="view-title">
+        {{ t('routes.settings') }}
+        <NTag v-if="showAutosaveBadge" size="small" round :bordered="false" class="autosave-badge">
+          {{ t('pages.settings.autosaveBadge') }}
+        </NTag>
+      </h2>
+    </div>
     <p class="hint">
-      Your office identity and appearance. Boss login uses your ECS account — no separate username/password here.
+      <template v-if="showAutosaveBadge">{{ t('pages.settings.autosaveHint') }}</template>
+      <template v-else>{{ t('pages.settings.generalHint') }}</template>
     </p>
 
     <NSpin :show="loading">
-      <NCard title="OpenClaw on this PC" class="office-settings-card">
+      <NTabs v-model:value="settingsTab" type="line" animated class="settings-tabs">
+        <NTabPane name="general" :tab="t('pages.settings.voiceAssistant.tabs.general')">
+          <NCard title="OpenClaw on this PC" class="office-settings-card">
         <NSpace align="center" style="margin-bottom: 12px">
           <NTag :type="gatewayStatus.type">{{ gatewayStatus.label }}</NTag>
           <span v-if="localGateway.gatewayUrl" class="hint sm" style="margin: 0">{{ localGateway.gatewayUrl }}</span>
@@ -92,6 +143,12 @@ async function onSave() {
         <NButton :loading="reconnecting" style="margin-top: 12px" @click="reconnectOpenClaw">
           Reconnect OpenClaw
         </NButton>
+        <div v-if="localBindStatus === 'owned_by_me'" style="margin-top: 16px">
+          <NButton type="error" secondary @click="startUnbindFlow">
+            {{ t('routes.settingsUnbindThisComputer') }}
+          </NButton>
+          <p class="hint sm">{{ t('routes.settingsUnbindHint') }}</p>
+        </div>
       </NCard>
 
       <NCard title="Office profile" class="office-settings-card">
@@ -130,8 +187,24 @@ async function onSave() {
           </NFormItem>
         </NForm>
       </NCard>
+        </NTabPane>
 
-      <TtsSettingsCard card-class="office-settings-card" />
+        <NTabPane name="summon" :tab="t('pages.settings.voiceAssistant.tabs.summon')">
+          <SummonSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+
+        <NTabPane name="voice" :tab="t('pages.settings.voiceAssistant.tabs.voice')">
+          <VoiceSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+
+        <NTabPane name="persona" :tab="t('pages.settings.voiceAssistant.tabs.persona')">
+          <PersonaSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+
+        <NTabPane name="standup" :tab="t('pages.settings.voiceAssistant.tabs.standup')">
+          <DailyStandupSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+      </NTabs>
     </NSpin>
   </div>
 </template>
@@ -143,6 +216,20 @@ async function onSave() {
 .view-title {
   margin: 0 0 8px;
   font-size: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.autosave-badge {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: rgba(70, 209, 96, 0.15);
+  color: #46d160;
+}
+.view-head {
+  margin-bottom: 0;
 }
 .office-settings-card {
   margin-top: 16px;

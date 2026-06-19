@@ -153,8 +153,19 @@ function rememberEcsToken(token) {
   store.writeSettings({ ...s, _lastEcsAccessToken: token });
 }
 
+function resetDesktopId() {
+  const file = path.join(store.getDataDir(), 'desktop-id');
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* ignore */
+  }
+  status.desktopId = desktopId();
+  return status.desktopId;
+}
+
 function getStatus() {
   return { ...status };
 }
 
-module.exports = { refresh, pushOnce, getStatus, desktopId, rememberEcsToken, pollSyncRequests };
+module.exports = { refresh, pushOnce, getStatus, desktopId, resetDesktopId, rememberEcsToken, pollSyncRequests };

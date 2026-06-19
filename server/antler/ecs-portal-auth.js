@@ -1,25 +1,17 @@
 // Proxy ECS portal auth + adopt ECS access tokens into boss sessions.
 
 const auth = require('./auth');
+const store = require('./store');
 const desktopHandoff = require('./desktop-auth-handoff.cjs');
 
 function ecsAuthUrl() {
-  return (
-    process.env.ECS_AUTH_URL ||
-    process.env.VITE_OFFICE_WEB_URL ||
-    auth.ecsBaseUrl()
-  ).replace(/\/+$/, '');
+  return auth.ecsAuthUrl();
 }
 
 function ecsApiBase() {
-  const direct = (
-    process.env.ECS_BASE_URL ||
-    process.env.ECS_SERVER_URL ||
-    auth.ecsBaseUrl() ||
-    ''
-  ).replace(/\/+$/, '');
-  if (direct) return direct;
-  return ecsAuthUrl();
+  const base = auth.ecsBaseUrl();
+  if (!base) throw new Error('ECS_AUTH_URL or ECS_BASE_URL not configured');
+  return base;
 }
 
 async function proxyEcs(path, init = {}) {
@@ -63,9 +55,17 @@ async function adoptAccessToken(accessToken) {
   const bossSession = await auth.loginWithEcsToken({
     access_token: accessToken,
     user: ecs.user,
+    offices: ecs.offices,
+    selectedOfficeId: ecs.selectedOfficeId,
     creditBalance: ecs.creditBalance,
     subscription: ecs.user?.subscription || { plan: 'Pro', status: 'active' },
   });
+  if (ecs.selectedOfficeId) {
+    store.writeSettings({
+      ...store.readSettings(),
+      selectedOfficeId: ecs.selectedOfficeId,
+    });
+  }
   return {
     bossToken: bossSession.token,
     session: auth.publicView(bossSession),

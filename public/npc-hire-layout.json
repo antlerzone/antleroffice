@@ -1,8 +1,8 @@
 {
   "agentLeft": 50,
   "agentBottom": 38,
-  "agentOffsetX": 0,
-  "agentOffsetY": -35,
+  "agentOffsetX": 38,
+  "agentOffsetY": 60,
   "agentMaxW": 180,
   "agentMaxH": 220,
   "statsOffsetX": 0,

@@ -13,3 +13,12 @@ export function openExternalUrl(url: string) {
 export function isElectronApp() {
   return !!(window as Window & { antlerDesktop?: { isElectron?: boolean } }).antlerDesktop?.isElectron
 }
+
+export function showItemInFolder(filePath: string) {
+  const desktop = (
+    window as Window & { antlerDesktop?: { showItemInFolder?: (p: string) => Promise<void> } }
+  ).antlerDesktop
+  if (desktop?.showItemInFolder) {
+    void desktop.showItemInFolder(filePath)
+  }
+}

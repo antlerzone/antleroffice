@@ -507,4 +507,114 @@ function savePlanDeliverable({ agentIdOrRole = 'coo', task, result }) {
   return file;
 }
 
-module.exports = { handleInstruction, savePlanDeliverable };
+async function runStandupAgentTurn({ agent, instruction, ownerKey, threadId }) {
+  office.work(agent.id, 'Standup report…', {
+    label: 'Department standup',
+    step: 'Writing',
+    progress: 1,
+    total: 2,
+  });
+
+  const notes = skills.readSharedNotes();
+  let baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  if (agent.role === 'human_resource') {
+    const catalogBlock = await saasNpcBlock();
+    if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
+  }
+
+  const regAgent = registryAgentForOfficeAgent(agent);
+  const { mcpBindings, mcpServers } = regAgent
+    ? registry.resolveAgentMcpRuntimeSpec(regAgent.id)
+    : { mcpBindings: [], mcpServers: [] };
+  const steps = regAgent
+    ? mcpTasklist.assignTasklistAccounts(instruction, mcpBindings, registry)
+    : [{ instruction, mcpId: null, accountId: null, accountLabel: null }];
+  const useTasklist =
+    regAgent &&
+    mcpTasklist.hasMultiAccountBindings(mcpBindings, registry) &&
+    steps.length > 1;
+
+  await sleep(400);
+  office.setAgent(agent.id, {
+    bubbleText: 'Drafting report…',
+    currentJob: { label: 'Standup', step: 'Producing', progress: 2, total: 2 },
+  });
+
+  let text;
+  let provider;
+  if (useTasklist) {
+    const out = await runTaskSteps({
+      agent,
+      steps,
+      baseSystem,
+      mcpServers,
+      shortTask: 'Standup',
+      planning: false,
+      rawTask: instruction,
+    });
+    text = out.text;
+    provider = out.provider;
+  } else {
+    const step = steps[0];
+    const mcpBlock = mcpContextForStep(step, mcpServers);
+    const system = [baseSystem, mcpBlock].filter(Boolean).join('\n\n');
+    const out = await runAgentTask({
+      agent,
+      instruction: step.accountLabel ? `[${step.accountLabel}] ${step.instruction}` : step.instruction,
+      system,
+      mcpServers,
+      threadId,
+      ownerKey,
+    });
+    text = out.text;
+    provider = out.provider;
+  }
+
+  office.rest(agent.id, '');
+  return { text, provider };
+}
+
+async function runStandupCooSummary({ instruction, ownerKey, threadId }) {
+  const coo = office.getAgent('coo') || { id: 'coo', role: 'coo', label: 'COO · OpenClaw' };
+  const cooName = coo.label || 'COO · OpenClaw';
+  office.work('coo', 'Summarizing standup…', {
+    label: 'COO summary',
+    step: 'Gateway',
+    progress: 1,
+    total: 2,
+  });
+
+  const notes = skills.readSharedNotes();
+  const system =
+    `You are ${cooName}, the COO inside AntlerOffice. Summarize department standup reports clearly for the boss. ` +
+    `Focus on decisions needed, risks, and priorities.\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
+  const { mcpHasCredentials } = require('./mcp-runtime-helper');
+  const mcpServers = (allMcp || []).filter(mcpHasCredentials);
+
+  await sleep(300);
+  office.setAgent('coo', {
+    bubbleText: 'Writing summary…',
+    currentJob: { label: 'COO summary', step: 'Tools', progress: 2, total: 2 },
+  });
+
+  const { text, provider } = await runAgentTask({
+    agent: coo,
+    instruction,
+    system,
+    mcpServers,
+    threadId,
+    ownerKey,
+  });
+
+  office.rest('coo', '');
+  return { text, provider };
+}
+
+module.exports = {
+  handleInstruction,
+  savePlanDeliverable,
+  runStandupAgentTurn,
+  runStandupCooSummary,
+};

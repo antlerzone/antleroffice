@@ -11,13 +11,20 @@ export function desktopReturnUrl() {
   return `${window.location.origin}/auth/desktop-complete`
 }
 
-export function buildDesktopSignInUrl() {
+export function buildDesktopSignInUrl(next = '/portal') {
+  const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/portal'
   const params = new URLSearchParams({
     signin: '1',
     desktop: '1',
     return: desktopReturnUrl(),
+    next: safeNext,
   })
   return officeWebUrl(`/?${params.toString()}`)
+}
+
+/** Re-auth on office.antlerzone.com before unbinding this computer (desktop handoff). */
+export function buildDesktopUnbindSignInUrl() {
+  return buildDesktopSignInUrl('/portal?unbindConfirm=1')
 }
 
 export function buildDesktopSignUpUrl() {

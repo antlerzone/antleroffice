@@ -18,6 +18,7 @@ import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useAuthStore } from '@/stores/auth'
 import TtsSettingsCard from '@/components/settings/TtsSettingsCard.vue'
+import VoiceCloneSettingsCard from '@/components/settings/VoiceCloneSettingsCard.vue'
 import AppUpdateCard from '@/components/settings/AppUpdateCard.vue'
 import { ConnectionState } from '@/api/types'
 
@@ -198,6 +199,7 @@ onMounted(() => {
     </NCard>
 
     <TtsSettingsCard card-class="app-card" />
+    <VoiceCloneSettingsCard card-class="app-card" />
 
     <AppUpdateCard />
 

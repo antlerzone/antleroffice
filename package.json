@@ -10,7 +10,7 @@
     "dev": "vite",
     "dev:server": "node --watch --env-file=.env server/index.js",
     "dev:all": "concurrently -n \"frontend,backend\" -c \"blue,green\" \"vite\" \"node --watch --env-file=.env server/index.js\"",
-    "dev:electron": "node scripts/kill-port.cjs 3020 && concurrently -n \"frontend,backend,electron\" -c \"blue,green,magenta\" \"vite\" \"node --watch --env-file=.env server/index.js\" \"cross-env ELECTRON_DEV=1 electron .\"",
+    "dev:electron": "node scripts/kill-antleroffice-dev-ports.cjs && concurrently -n \"frontend,backend,electron\" -c \"blue,green,magenta\" \"vite\" \"node --watch --env-file=.env server/index.js\" \"node scripts/wait-for-dev.cjs && cross-env ELECTRON_DEV=1 electron .\"",
     "build": "vue-tsc -b && vite build",
     "build:app": "vite build",
     "build:icon": "node scripts/generate-icon.cjs",
@@ -21,7 +21,8 @@
     "start": "node --env-file=.env server/index.js",
     "electron": "electron .",
     "verify:plan1": "node server/antler/verify-plan1.js",
-    "verify:plan234": "node server/antler/verify-plan234.js"
+    "verify:plan234": "node server/antler/verify-plan234.js",
+    "verify:standup": "node server/antler/verify-standup.js"
   },
   "dependencies": {
     "@fortawesome/fontawesome-svg-core": "^7.2.0",
@@ -48,9 +49,11 @@
     "markdown-it": "^14.1.1",
     "multer": "^2.0.2",
     "naive-ui": "^2.43.2",
+    "node-cron": "^4.4.1",
     "node-pty": "^1.1.0",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^3.11.174",
+    "pdfkit": "^0.19.1",
     "pinia": "^3.0.4",
     "ssh2": "^1.17.0",
     "tar": "^7.5.11",
@@ -105,6 +108,15 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**"
+    ],
+    "extraResources": [
+      {
+        "from": "server/voice-sidecar",
+        "to": "voice-sidecar",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "target": [

@@ -1,0 +1,2 @@
+# CosyVoice sidecar dependencies are installed via setup_cosyvoice.py
+# See requirements-cosyvoice.txt

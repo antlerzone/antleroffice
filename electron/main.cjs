@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, session } = require('electron');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
@@ -9,27 +9,65 @@ const SERVER_URL = `http://127.0.0.1:${PORT}`;
 const isDev = process.env.ELECTRON_DEV === '1';
 
 function readDevPort() {
-  if (process.env.DEV_PORT) return Number(process.env.DEV_PORT) || 3001;
+  if (process.env.DEV_PORT) return Number(process.env.DEV_PORT) || 3300;
   try {
     const envPath = path.join(__dirname, '..', '.env');
     const content = fs.readFileSync(envPath, 'utf8');
     const match = content.match(/^DEV_PORT=(\d+)/m);
-    if (match) return Number(match[1]) || 3001;
+    if (match) return Number(match[1]) || 3300;
   } catch {
     /* no .env */
   }
-  return 3001;
+  return 3300;
 }
 
 const DEV_PORT = readDevPort();
-const DEV_URL = `http://127.0.0.1:${DEV_PORT}`;
+let resolvedDevUrl = `http://127.0.0.1:${DEV_PORT}`;
 /** Dev loads Vite (live source); production loads backend static dist on PORT. */
 function appBaseUrl() {
-  return isDev ? DEV_URL : SERVER_URL;
+  return isDev ? resolvedDevUrl : SERVER_URL;
+}
+
+function probeAntlerVitePort(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/health`, (res) => {
+      let body = '';
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          resolve(!!data && typeof data.gateway === 'string');
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(2500, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function discoverViteDevUrl() {
+  const candidates = [DEV_PORT, 3301, 3302, 3303, 3304, 3305];
+  const seen = new Set();
+  for (const port of candidates) {
+    if (!port || seen.has(port)) continue;
+    seen.add(port);
+    if (await probeAntlerVitePort(port)) {
+      return `http://127.0.0.1:${port}`;
+    }
+  }
+  return `http://127.0.0.1:${DEV_PORT}`;
 }
 
 let mainWindow = null;
 let tray = null;
+let voiceWakeService = null;
 let serverProcess = null;
 let pendingAuthUrl = null;
 
@@ -120,7 +158,7 @@ function waitForServer(timeoutMs = 60000) {
 }
 
 function waitForVite(timeoutMs = 60000) {
-  return waitForHttp(`${DEV_URL}/`, timeoutMs);
+  return waitForHttp(`${resolvedDevUrl}/`, timeoutMs);
 }
 
 function startServer() {
@@ -133,6 +171,7 @@ function startServer() {
     PORT: String(PORT),
     ANTLEROFFICE_PACKAGED: '1',
     ELECTRON_RUN_AS_NODE: '1',
+    VOICE_SIDECAR_ROOT: path.join(process.resourcesPath, 'voice-sidecar'),
   };
   if (fs.existsSync(envFilePath())) {
     serverProcess = spawn(nodeBin, ['--env-file', envFilePath(), serverEntry], {
@@ -157,7 +196,7 @@ function attachNavigationGuards(win) {
       if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') return false;
       const port = u.port || (u.protocol === 'https:' ? '443' : '80');
       if (port === String(PORT)) return true;
-      if (isDev && port === String(DEV_PORT)) return true;
+      if (isDev && port === String(new URL(resolvedDevUrl).port || DEV_PORT)) return true;
       return false;
     } catch {
       return false;
@@ -214,13 +253,16 @@ function createTray() {
   const icon = loadAppIcon();
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip('AntlerOffice');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Open AntlerOffice', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
-      { type: 'separator' },
-      { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
-    ]),
-  );
+  if (voiceWakeService) voiceWakeService.updateTrayMenu();
+  else {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'Open AntlerOffice', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+        { type: 'separator' },
+        { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
+      ]),
+    );
+  }
   tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
 }
 
@@ -288,10 +330,28 @@ function setupUpdaterIpc() {
       return { ok: false };
     }
   });
+  ipcMain.handle('shell:showItemInFolder', async (_e, filePath) => {
+    if (!filePath || typeof filePath !== 'string') return { ok: false };
+    try {
+      shell.showItemInFolder(path.resolve(filePath));
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  });
+
+  const { createVoiceWakeService } = require('./voice-wake-service.cjs');
+  voiceWakeService = createVoiceWakeService({
+    ipcMain,
+    getMainWindow: () => mainWindow,
+    getTray: () => tray,
+  });
 }
 
-const gotLock = app.requestSingleInstanceLock();
+// Dev skips single-instance lock so `dev:electron` can open even if an installed copy is running.
+const gotLock = isDev || app.requestSingleInstanceLock();
 if (!gotLock) {
+  console.error('[AntlerOffice] Another instance is already running. Quit it, then retry.');
   app.quit();
 } else {
   app.on('second-instance', (_e, argv) => {
@@ -302,6 +362,19 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+      const mediaTypes = details?.mediaTypes || [];
+      if (permission === 'media' && mediaTypes.includes('audio')) {
+        callback(true);
+        return;
+      }
+      if (permission === 'media' && !mediaTypes.length) {
+        callback(true);
+        return;
+      }
+      callback(false);
+    });
+
     registerAntlerofficeProtocol();
 
     // Dev: backend runs via `npm run dev:electron` (system Node). Packaged: spawn from Electron.
@@ -309,14 +382,21 @@ if (!gotLock) {
     try {
       await waitForServer();
       if (isDev) {
+        resolvedDevUrl = await discoverViteDevUrl();
         await waitForVite();
-        console.log(`[AntlerOffice] Dev UI at ${DEV_URL} (API proxy → ${SERVER_URL})`);
+        console.log(`[AntlerOffice] Dev UI at ${resolvedDevUrl} (API proxy → ${SERVER_URL})`);
+        if (resolvedDevUrl !== `http://127.0.0.1:${DEV_PORT}`) {
+          console.warn(
+            `[AntlerOffice] Port ${DEV_PORT} is not AntlerOffice — using ${resolvedDevUrl}. Free port ${DEV_PORT} or update DEV_PORT in .env.`,
+          );
+        }
       }
     } catch (e) {
       console.error('[AntlerOffice] Server failed to start:', e.message);
     }
     createWindow();
     createTray();
+    if (voiceWakeService) voiceWakeService.updateTrayMenu();
     setupUpdaterIpc();
 
     if (!isDev) {
@@ -339,6 +419,10 @@ if (!gotLock) {
     if (serverProcess) {
       try { serverProcess.kill(); } catch { /* */ }
     }
+    try {
+      const voiceSidecarManager = require(path.join(projectRoot(), 'server', 'antler', 'voice-sidecar-manager'));
+      voiceSidecarManager.stopCosyVoiceSidecar();
+    } catch { /* */ }
   });
 
   app.on('window-all-closed', (e) => {

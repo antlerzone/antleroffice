@@ -77,9 +77,6 @@ export function clearNpcHireLayoutStorage() {
 }
 
 export async function loadNpcHireLayout(): Promise<NpcHireLayout> {
-  const fromStorage = loadNpcHireLayoutFromStorage()
-  if (fromStorage) return fromStorage
-
   try {
     const res = await fetch('/npc-hire-layout.json', { cache: 'no-store' })
     if (res.ok) {
@@ -87,10 +84,31 @@ export async function loadNpcHireLayout(): Promise<NpcHireLayout> {
       return normalizeNpcHireLayout(json)
     }
   } catch {
-    /* use defaults */
+    /* fall through */
   }
 
+  const fromStorage = loadNpcHireLayoutFromStorage()
+  if (fromStorage) return fromStorage
+
   return { ...NPC_HIRE_LAYOUT_DEFAULT }
+}
+
+export async function saveNpcHireLayoutShared(layout: NpcHireLayout): Promise<void> {
+  saveNpcHireLayoutToStorage(layout)
+  try {
+    const res = await fetch('/api/dev/npc-hire-layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(layout),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new Error(data.error || `Save failed (${res.status})`)
+    }
+  } catch (e) {
+    if (e instanceof Error) throw e
+    throw new Error('Could not save shared layout')
+  }
 }
 
 export function layoutToSceneStyle(layout: NpcHireLayout): Record<string, string> {

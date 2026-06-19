@@ -87,7 +87,7 @@ const menuOptions = computed<MenuOption[]>(() => {
   const currentGateway = connStore.currentGateway
   const tier = bossStore.showAdvanced ? 'advanced' : 'boss'
 
-  return mainRoute.children
+  const options = mainRoute.children
     .filter((child) => {
       if (child.meta?.hidden) return false
       const gateway = child.meta?.gateway as string | undefined
@@ -100,7 +100,15 @@ const menuOptions = computed<MenuOption[]>(() => {
       label: child.meta?.titleKey ? t(child.meta.titleKey as string) : (child.meta?.title as string),
       key: child.name as string,
       icon: child.meta?.icon ? renderIcon(child.meta.icon as string) : undefined,
+      menuPinFromBottom:
+        typeof child.meta?.menuPinFromBottom === 'number' ? child.meta.menuPinFromBottom : 0,
     }))
+
+  const regular = options.filter((o) => !o.menuPinFromBottom)
+  const pinned = options
+    .filter((o) => o.menuPinFromBottom > 0)
+    .sort((a, b) => b.menuPinFromBottom - a.menuPinFromBottom)
+  return [...regular, ...pinned.map(({ menuPinFromBottom: _p, ...rest }) => rest)]
 })
 
 const activeKey = computed(() => route.name as string)

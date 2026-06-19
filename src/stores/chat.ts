@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { useWebSocketStore } from './websocket'
 import type { ChatMessage } from '@/api/types'
+import { ConnectionState } from '@/api/types'
 import { byLocale, getActiveLocale } from '@/i18n/text'
 
 type AgentPhase =
@@ -326,6 +327,45 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function agentIdFromSessionKey(key: string): string {
+    const match = key.match(/^agent:([^:]+):/)
+    return match?.[1] || 'default'
+  }
+
+  function reconcileAgentStatusAfterHistory(key = sessionKey.value) {
+    const normalizedKey = key.trim()
+    if (!normalizedKey) return
+    const agentId = agentIdFromSessionKey(normalizedKey)
+    const status = getOrCreateAgentStatus(agentId)
+    const activePhases: AgentPhase[] = ['waiting', 'sending', 'thinking', 'tool', 'replying']
+    if (!activePhases.includes(status.phase)) return
+
+    const msgs = messages.value
+    if (!msgs.length) return
+
+    let pendingUserIdx = -1
+    if (status.runId) {
+      pendingUserIdx = msgs.findIndex((item) => item.id === status.runId)
+    }
+    if (pendingUserIdx < 0) {
+      for (let i = msgs.length - 1; i >= 0; i -= 1) {
+        if (msgs[i]?.role === 'user') {
+          pendingUserIdx = i
+          break
+        }
+      }
+    }
+    if (pendingUserIdx < 0) return
+
+    for (let i = pendingUserIdx + 1; i < msgs.length; i += 1) {
+      const msg = msgs[i]
+      if (msg?.role === 'assistant' && String(msg.content || '').trim()) {
+        setAgentStatusPhase(agentId, 'done', { runId: null, detail: null })
+        return
+      }
+    }
+  }
+
   async function fetchHistory(
     key = sessionKey.value,
     options?: {
@@ -358,6 +398,7 @@ export const useChatStore = defineStore('chat', () => {
       sessionKey.value = normalizedKey
       messages.value = await wsStore.rpc.listChatHistory(normalizedKey)
       lastSyncedAt.value = Date.now()
+      reconcileAgentStatusAfterHistory(normalizedKey)
     } catch (error) {
       if (!silent || clearError) {
         lastError.value = error instanceof Error ? error.message : String(error)
@@ -401,14 +442,35 @@ export const useChatStore = defineStore('chat', () => {
 
   function schedulePostSendRefreshes() {
     if (!sessionKey.value.trim()) return
-    clearTimers()
-    // 发送后做低频兜底刷新，避免高频回拉导致列表抖动
-    for (const delay of [1400, 4200]) {
+    const key = sessionKey.value.trim()
+    const agentId = agentIdFromSessionKey(key)
+    for (const timer of pollTimers) {
+      clearTimeout(timer)
+    }
+    pollTimers = []
+    const pollDelays = [900, 1800, 3500, 7000, 14000, 28000]
+    for (const delay of pollDelays) {
       const timer = setTimeout(() => {
-        fetchHistory(sessionKey.value, { silent: true, clearError: false })
+        void fetchHistory(key, { silent: true, clearError: false })
       }, delay)
       pollTimers.push(timer)
     }
+    const timeoutTimer = setTimeout(() => {
+      void fetchHistory(key, { silent: true, clearError: false }).then(() => {
+        const status = getOrCreateAgentStatus(agentId)
+        if (status.phase !== 'waiting' && status.phase !== 'sending') return
+        reconcileAgentStatusAfterHistory(key)
+        const after = getOrCreateAgentStatus(agentId)
+        if (after.phase === 'waiting' || after.phase === 'sending') {
+          const locale = getActiveLocale()
+          setAgentStatusPhase(agentId, 'error', {
+            runId: null,
+            detail: byLocale('等待 OpenClaw 回复超时', 'Timed out waiting for OpenClaw', locale),
+          })
+        }
+      })
+    }, 120000)
+    pollTimers.push(timeoutTimer)
   }
 
   function extractSessionKey(payload: unknown): string {
@@ -660,6 +722,10 @@ export const useChatStore = defineStore('chat', () => {
     const runIdInEvent = extractRunId(payload)
     const agentStatus = getOrCreateAgentStatus(agentId)
     const activeRunId = agentStatus.runId
+    const sessionMatches =
+      !keyInEvent ||
+      !sessionKey.value.trim() ||
+      keyInEvent === sessionKey.value.trim()
 
     // 更新 sessionKey
     if (keyInEvent && agentStatus.sessionKey !== keyInEvent) {
@@ -676,7 +742,7 @@ export const useChatStore = defineStore('chat', () => {
       if (!isTerminal && runIdInEvent && isRunFinalized(runIdInEvent)) {
         return
       }
-      if (activeRunId && runIdInEvent && runIdInEvent !== activeRunId && !isTerminal) {
+      if (activeRunId && runIdInEvent && runIdInEvent !== activeRunId && !isTerminal && !sessionMatches) {
         return
       }
       if (state === 'delta') {
@@ -718,6 +784,15 @@ export const useChatStore = defineStore('chat', () => {
         const stream = asString(payloadRow?.stream).trim().toLowerCase()
         const data = asRecord(payloadRow?.data) || {}
         if (runIdInEvent && isRunFinalized(runIdInEvent) && stream !== 'lifecycle') {
+          return
+        }
+        if (
+          activeRunId &&
+          runIdInEvent &&
+          runIdInEvent !== activeRunId &&
+          stream !== 'lifecycle' &&
+          !sessionMatches
+        ) {
           return
         }
         if (stream === 'lifecycle') {
@@ -931,16 +1006,22 @@ export const useChatStore = defineStore('chat', () => {
     sending.value = true
     lastError.value = null
     try {
-      await wsStore.rpc.sendChatMessage({
+      if (wsStore.state !== ConnectionState.CONNECTED) {
+        await wsStore.connect()
+      }
+      const sendResult = await wsStore.rpc.sendChatMessage({
         sessionKey: sessionKey.value.trim(),
         message: text,
         model: model?.trim() || undefined,
         idempotencyKey,
       })
+      const sendRow = asRecord(sendResult)
+      const gatewayRunId = asString(sendRow?.runId).trim() || idempotencyKey
       const agentStatus = getOrCreateAgentStatus(agentId)
       if (agentStatus.phase === 'sending' && agentStatus.runId === idempotencyKey) {
-        setAgentStatusPhase(agentId, 'waiting', { runId: idempotencyKey, detail: null })
+        setAgentStatusPhase(agentId, 'waiting', { runId: gatewayRunId, detail: null })
       }
+      schedulePostSendRefreshes()
     } catch (error) {
       lastError.value = error instanceof Error ? error.message : String(error)
       messages.value = messages.value.filter((item) => item.id !== idempotencyKey)

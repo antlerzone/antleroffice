@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NIcon, NInput, NModal, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NIcon, NInput, NModal, NSpin, NTag, useDialog, useMessage } from 'naive-ui'
 import {
   ArrowForwardOutline,
   BusinessOutline,
@@ -14,10 +14,15 @@ import { useI18n } from 'vue-i18n'
 import { useEcsSessionStore } from '@/stores/ecsSession'
 import { useBossStore } from '@/stores/boss'
 import { useLocalGateway } from '@/composables/useLocalGateway'
+import { useOfficeProfile } from '@/composables/useOfficeProfile'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { officeWebUrl } from '@/lib/office-web'
 
+const PENDING_UNBIND_KEY = 'antleroffice-pending-unbind'
+
 const api = useAntlerApi()
+
+type LocalBindStatus = 'unbound' | 'owned_by_me' | 'owned_by_other'
 
 type PortalDesktop = {
   desktopId: string
@@ -47,21 +52,21 @@ type PortalItem = {
 
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 const ecsSession = useEcsSessionStore()
 const boss = useBossStore()
 const localGateway = useLocalGateway()
+const { desktopDisplayName, load: loadOfficeProfile } = useOfficeProfile()
 
 const loading = ref(true)
 const connecting = ref(false)
 const ownedDesktops = ref<PortalDesktop[]>([])
 const sharedDesktops = ref<PortalDesktop[]>([])
 const localDesktopId = ref('')
+const localBindStatus = ref<LocalBindStatus>('unbound')
 
 const showManualModal = ref(false)
-const showRenameModal = ref(false)
-const renameTarget = ref<PortalDesktop | null>(null)
-const renameValue = ref('')
 const manualForm = ref({
   displayName: '',
   gatewayWsUrl: '',
@@ -82,6 +87,24 @@ const localOfficeDesc = computed(() => {
   return localGateway.live.value ? t('routes.portalLocalLive') : t('routes.portalLocalOffline')
 })
 
+function customDesktopLabel(desk?: PortalDesktop): string {
+  const fromSettings = desktopDisplayName.value.trim()
+  if (fromSettings) return fromSettings
+  const name = String(desk?.displayName || '').trim()
+  if (!name) return ''
+  const host = String(desk?.hostname || '').trim()
+  const id = String(desk?.desktopId || '').trim()
+  if (host && name.toLowerCase() === host.toLowerCase()) return ''
+  if (id && name === id) return ''
+  return name
+}
+
+function formatGatewayTitle(kind: 'local' | 'remote', desk?: PortalDesktop): string {
+  const base = kind === 'local' ? t('routes.portalLocalOffice') : t('routes.portalGateway')
+  const suffix = customDesktopLabel(desk)
+  return suffix ? `${base} (${suffix})` : base
+}
+
 const portalItems = computed<PortalItem[]>(() => {
   const items: PortalItem[] = []
 
@@ -97,24 +120,30 @@ const portalItems = computed<PortalItem[]>(() => {
     })
   }
 
-  items.push({
-    id: 'local',
-    title: t('routes.portalLocalOffice'),
-    desc: localOfficeDesc.value,
-    icon: DesktopOutline,
-    onClick: () => void connectGateway('local'),
-    status: localGateway.checking.value
-      ? 'checking'
-      : localGateway.live.value
-        ? 'live'
-        : 'offline',
-    isCurrent: ownedDesktops.value.some((d) => d.isLocal && d.isCurrent),
-  })
+  if (localBindStatus.value !== 'owned_by_other') {
+    const localDesk = ownedDesktops.value.find((d) => d.isLocal)
+    const localBadge =
+      localBindStatus.value === 'unbound' ? t('routes.portalNewDevice') : undefined
+    items.push({
+      id: 'local',
+      title: formatGatewayTitle('local', localDesk),
+      desc: localOfficeDesc.value,
+      icon: DesktopOutline,
+      onClick: () => void connectGateway('local'),
+      status: localGateway.checking.value
+        ? 'checking'
+        : localGateway.live.value
+          ? 'live'
+          : 'offline',
+      badge: localBadge,
+      isCurrent: ownedDesktops.value.some((d) => d.isLocal && d.isCurrent),
+    })
+  }
 
   for (const desk of ownedDesktops.value.filter((d) => !d.isLocal)) {
     items.push({
       id: desk.desktopId,
-      title: desk.displayName || desk.hostname || desk.desktopId,
+      title: formatGatewayTitle('remote', desk),
       desc: desktopDesc(desk, false),
       icon: BusinessOutline,
       onClick: () => void connectGateway('remote', desk.desktopId),
@@ -188,13 +217,16 @@ async function loadDesktops() {
       owned: PortalDesktop[]
       shared: PortalDesktop[]
       localDesktopId: string
+      localBindStatus?: LocalBindStatus
     }>('/api/portal/desktops')
     ownedDesktops.value = data.owned || []
     sharedDesktops.value = data.shared || []
     localDesktopId.value = data.localDesktopId || ''
+    localBindStatus.value = data.localBindStatus || 'unbound'
   } catch {
     ownedDesktops.value = []
     sharedDesktops.value = []
+    localBindStatus.value = 'unbound'
   }
 }
 
@@ -208,9 +240,17 @@ async function connectGateway(
   try {
     const body: Record<string, string> = { mode }
     if (mode === 'remote' && desktopId) body.desktopId = desktopId
-    await portalFetch('/api/gateway/connect', { method: 'POST', body: JSON.stringify(body) })
+    const connectRes = await portalFetch<{ created?: boolean }>('/api/gateway/connect', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
 
     if (mode === 'local') {
+      await ecsSession.refreshOffices().catch(() => {})
+      await loadDesktops()
+      if (connectRes.created) {
+        message.success(t('routes.portalBindSuccess'))
+      }
       let needsAiSetup = false
       try {
         const st = await api.get<{ needsAiSetup?: boolean }>('/api/onboard/state')
@@ -229,26 +269,6 @@ async function connectGateway(
       connecting.value = false
       void loadDesktops()
     }
-  }
-}
-
-function openRename(desk: PortalDesktop) {
-  renameTarget.value = desk
-  renameValue.value = desk.displayName || ''
-  showRenameModal.value = true
-}
-
-async function submitRename() {
-  if (!renameTarget.value) return
-  try {
-    await portalFetch(`/api/portal/desktops/${encodeURIComponent(renameTarget.value.desktopId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ displayName: renameValue.value.trim() }),
-    })
-    showRenameModal.value = false
-    await loadDesktops()
-  } catch (e) {
-    message.error(e instanceof Error ? e.message : 'Rename failed')
   }
 }
 
@@ -281,15 +301,89 @@ function logout() {
   router.push({ name: 'Login' })
 }
 
-onMounted(() => {
+function clearUnbindPending() {
+  try {
+    localStorage.removeItem(PENDING_UNBIND_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+function localUnbindOfficeCredit(): number {
+  const localDesk = ownedDesktops.value.find((d) => d.isLocal)
+  const officeId = localDesk?.officeId || ecsSession.session?.selectedOfficeId
+  const office = ecsSession.session?.offices?.find((o) => o.id === officeId)
+  if (typeof office?.creditBalance === 'number') return office.creditBalance
+  return boss.session?.creditBalance ?? 0
+}
+
+async function confirmUnbindLocal() {
+  try {
+    const res = await portalFetch<{ creditBalanceRemoved?: number }>('/api/portal/desktops/unbind-local', {
+      method: 'POST',
+    })
+    clearUnbindPending()
+    await ecsSession.refreshOffices().catch(() => {})
+    await loadDesktops()
+    await localGateway.refresh()
+    const removed =
+      typeof res.creditBalanceRemoved === 'number' ? res.creditBalanceRemoved : localUnbindOfficeCredit()
+    message.success(
+      removed > 0
+        ? t('routes.portalUnbindSuccessWithCredits', { balance: removed })
+        : t('routes.portalUnbindSuccess'),
+    )
+    await router.replace({ name: 'Portal' })
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : t('routes.portalUnbindFailed'))
+  }
+}
+
+function maybeShowUnbindConfirm() {
+  const q = router.currentRoute.value.query
+  const fromQuery = q.unbindConfirm === '1' || q.unbindConfirm === 'true'
+  let fromStorage = false
+  try {
+    fromStorage = localStorage.getItem(PENDING_UNBIND_KEY) === '1'
+  } catch {
+    fromStorage = false
+  }
+  if (!fromQuery && !fromStorage) return
+  if (localBindStatus.value !== 'owned_by_me') {
+    clearUnbindPending()
+    if (fromQuery) void router.replace({ name: 'Portal' })
+    return
+  }
+  const creditBalance = localUnbindOfficeCredit()
+  dialog.warning({
+    title: t('routes.portalUnbindConfirmTitle'),
+    content:
+      creditBalance > 0
+        ? t('routes.portalUnbindConfirmBodyWithCredits', { balance: creditBalance })
+        : t('routes.portalUnbindConfirmBody'),
+    positiveText: t('routes.portalUnbindConfirmOk'),
+    negativeText: t('routes.portalUnbindConfirmCancel'),
+    onPositiveClick: () => {
+      void confirmUnbindLocal()
+    },
+    onNegativeClick: () => {
+      clearUnbindPending()
+      if (fromQuery) void router.replace({ name: 'Portal' })
+    },
+  })
+}
+
+onMounted(async () => {
   if (!ecsSession.session) {
     router.replace({ name: 'Login' })
     return
   }
   loading.value = false
   void ecsSession.refreshOffices().catch(() => {})
-  void loadDesktops()
+  void loadOfficeProfile().catch(() => {})
+  await loadDesktops()
   localGateway.startBackground()
+  maybeShowUnbindConfirm()
 })
 </script>
 
@@ -320,6 +414,9 @@ onMounted(() => {
         <h1>{{ t('routes.portalPickGateway') }}</h1>
         <p v-if="!loading">
           {{ t('routes.portalGatewayHint') }}
+        </p>
+        <p v-if="!loading && localBindStatus === 'owned_by_other'" class="portal-bound-other">
+          {{ t('routes.portalComputerBoundOther') }}
         </p>
       </div>
 
@@ -396,7 +493,7 @@ onMounted(() => {
                 class="portal-status-lamp"
                 :class="desk.online ? 'portal-status-lamp--live' : 'portal-status-lamp--offline'"
               />
-              <span>{{ desk.displayName || desk.hostname || desk.desktopId }}</span>
+              <span>{{ formatGatewayTitle('remote', desk) }}</span>
               <NTag size="small" round type="info">{{ t('routes.portalSharedBadge') }}</NTag>
               <NTag
                 v-if="desk.shareStatus === 'pending'"
@@ -431,14 +528,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="!loading && ownedDesktops.length" class="portal-rename-list">
-        <p class="portal-rename-title">{{ t('routes.portalRenameDesktop') }}</p>
-        <div v-for="desk in ownedDesktops" :key="`rename-${desk.desktopId}`" class="portal-rename-row">
-          <span>{{ desk.displayName || desk.desktopId }}</span>
-          <NButton size="tiny" quaternary @click="openRename(desk)">Rename</NButton>
-        </div>
-      </div>
-
       <p v-if="!loading && portalItems.length <= 1 && sharedDesktops.length === 0" class="portal-empty">
         {{ t('routes.portalNoRemote') }}
         <a :href="officeWebUrl('/portal')" target="_blank" rel="noopener">{{ t('routes.portalOpenWebsite') }}</a>
@@ -459,14 +548,6 @@ onMounted(() => {
       <template #action>
         <NButton @click="showManualModal = false">Cancel</NButton>
         <NButton type="primary" @click="submitManualAdd">Add</NButton>
-      </template>
-    </NModal>
-
-    <NModal v-model:show="showRenameModal" preset="dialog" title="Rename desktop">
-      <NInput v-model:value="renameValue" placeholder="Display name" />
-      <template #action>
-        <NButton @click="showRenameModal = false">Cancel</NButton>
-        <NButton type="primary" @click="submitRename">Save</NButton>
       </template>
     </NModal>
   </div>
@@ -680,27 +761,6 @@ onMounted(() => {
   50% {
     opacity: 0.45;
   }
-}
-
-.portal-rename-list {
-  margin-top: 20px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px dashed #2a2f3a;
-}
-
-.portal-rename-title {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #9aa0a6;
-}
-
-.portal-rename-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 13px;
 }
 
 .portal-empty {

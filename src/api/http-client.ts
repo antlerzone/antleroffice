@@ -7,17 +7,19 @@ export interface ApiClientConfig {
   reconnectInterval?: number
   maxReconnectAttempts?: number
   getToken?: () => string | null
+  getBossToken?: () => string | null
 }
 
-const DEFAULT_CONFIG: Required<ApiClientConfig> = {
+const DEFAULT_CONFIG: Required<Omit<ApiClientConfig, 'getBossToken'>> & { getBossToken?: () => string | null } = {
   baseUrl: '',
   reconnectInterval: 3000,
   maxReconnectAttempts: 20,
   getToken: () => null,
+  getBossToken: undefined,
 }
 
 export class ApiClient {
-  private config: Required<ApiClientConfig>
+  private config: Required<Omit<ApiClientConfig, 'getBossToken'>> & { getBossToken?: () => string | null }
   private listeners = new Map<string, Set<EventHandler>>()
   private eventSource: EventSource | null = null
   private reconnectAttempts = 0
@@ -57,8 +59,11 @@ export class ApiClient {
         : '/api/events'
 
       const token = this.config.getToken()
+      const bossToken = this.config.getBossToken?.() || null
       if (token) {
         url += `?token=${encodeURIComponent(token)}`
+      } else if (bossToken) {
+        url += `?token=${encodeURIComponent(bossToken)}`
       }
 
       console.log('[ApiClient] Creating EventSource:', url)
@@ -210,8 +215,12 @@ export class ApiClient {
     }
 
     const token = this.config.getToken()
+    const bossToken = this.config.getBossToken?.() || null
     if (token) {
       headers['Authorization'] = `Bearer ${token}`
+    }
+    if (bossToken) {
+      headers['X-Boss-Token'] = bossToken
     }
 
     const response = await fetch(url, {

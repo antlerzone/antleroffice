@@ -654,6 +654,9 @@ function addAgent(def = {}) {
     templateId: def.templateId || null,
     hiredAt: typeof def.hiredAt === 'number' ? def.hiredAt : null,
     salaryCreditsPerMonth: Number.isFinite(def.salaryCreditsPerMonth) ? def.salaryCreditsPerMonth : null,
+    billingInterval: def.billingInterval || null,
+    billingCreditsByInterval: def.billingCreditsByInterval || null,
+    autoRenew: def.autoRenew !== false,
     nextSalaryDueAt: typeof def.nextSalaryDueAt === 'number' ? def.nextSalaryDueAt : null,
     lastSalaryPaidAt: typeof def.lastSalaryPaidAt === 'number' ? def.lastSalaryPaidAt : null,
     payrollStatus: def.payrollStatus || null,
@@ -690,6 +693,9 @@ function updateAgent(id, patch = {}) {
     'templateId',
     'hiredAt',
     'salaryCreditsPerMonth',
+    'billingInterval',
+    'billingCreditsByInterval',
+    'autoRenew',
     'nextSalaryDueAt',
     'lastSalaryPaidAt',
     'payrollStatus',
@@ -813,13 +819,75 @@ function defaultDeliverableSummary(kind, agentLabel, task) {
   }
 }
 
+function computeProgressPercent(planSteps, explicit) {
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) {
+    return Math.max(0, Math.min(100, Math.round(explicit)));
+  }
+  const steps = Array.isArray(planSteps) ? planSteps : [];
+  if (!steps.length) return null;
+  const done = steps.filter((s) => s && s.done).length;
+  return Math.round((done / steps.length) * 100);
+}
+
+function normalizePlanSteps(planSteps) {
+  if (!Array.isArray(planSteps)) return [];
+  return planSteps
+    .filter((s) => s && (s.label || s.id))
+    .map((s, i) => ({
+      id: String(s.id || `step-${i + 1}`),
+      label: String(s.label || `Step ${i + 1}`),
+      done: !!s.done,
+    }));
+}
+
+function normalizeStandupSections(sections) {
+  if (!Array.isArray(sections)) return [];
+  return sections
+    .filter((s) => s && (s.text || s.label))
+    .map((s) => ({
+      agentId: s.agentId || null,
+      role: s.role || null,
+      label: String(s.label || 'Section'),
+      text: String(s.text || ''),
+      voice: s.voice && typeof s.voice === 'object' ? s.voice : null,
+      followUps: Array.isArray(s.followUps)
+        ? s.followUps.map((fu) => ({
+            text: String(fu?.text || ''),
+            answer: fu?.answer ? String(fu.answer) : '',
+            at: fu?.at || Date.now(),
+          }))
+        : [],
+    }));
+}
+
 function enrichDeliverable(item) {
   const kind = DELIVERABLE_KINDS.has(item.kind) ? item.kind : 'job';
   const task = stripPlanInstruction(item.task);
+  const planSteps = normalizePlanSteps(item.planSteps);
+  const standupSections = normalizeStandupSections(item.standupSections);
+  const progressPercent = computeProgressPercent(planSteps, item.progressPercent);
+  const departmentLabel =
+    item.departmentLabel ||
+    item.agentLabel ||
+    (standupSections.length > 1 ? 'Multi-department' : null) ||
+    'Office';
+  let status = item.status;
+  if (!status) {
+    if (kind === 'plan_complete') status = 'complete';
+    else if (planSteps.length && progressPercent !== null && progressPercent < 100) status = 'in_progress';
+    else status = 'complete';
+  }
   return {
     ...item,
     kind,
     task,
+    department: item.department || null,
+    departmentLabel,
+    status,
+    planSteps,
+    progressPercent,
+    standupSections,
+    reportPeriod: item.reportPeriod && typeof item.reportPeriod === 'object' ? item.reportPeriod : null,
     summary: item.summary || defaultDeliverableSummary(kind, item.agentLabel, task),
   };
 }
@@ -828,14 +896,37 @@ function listDeliverables() {
   return readJson(deliverablesIndexPath(), []).map(enrichDeliverable);
 }
 
-function addDeliverable({ agentId, agentLabel, task, file, kind, summary } = {}) {
+function addDeliverable({
+  agentId,
+  agentLabel,
+  task,
+  file,
+  kind,
+  summary,
+  department,
+  departmentLabel,
+  status,
+  progressPercent,
+  planSteps,
+  standupSections,
+  reportPeriod,
+} = {}) {
   const normalizedKind = DELIVERABLE_KINDS.has(kind) ? kind : 'job';
   const cleanTask = stripPlanInstruction(task);
+  const normalizedSteps = normalizePlanSteps(planSteps);
+  const normalizedSections = normalizeStandupSections(standupSections);
   const item = {
     id: newId('job'),
     kind: normalizedKind,
     agentId: agentId || null,
     agentLabel: agentLabel || 'Agent',
+    department: department || null,
+    departmentLabel: departmentLabel || null,
+    status: status || (normalizedKind === 'plan_complete' ? 'complete' : normalizedSteps.length ? 'in_progress' : 'complete'),
+    progressPercent: computeProgressPercent(normalizedSteps, progressPercent),
+    planSteps: normalizedSteps,
+    standupSections: normalizedSections,
+    reportPeriod: reportPeriod || null,
     task: cleanTask,
     summary: summary || defaultDeliverableSummary(normalizedKind, agentLabel, cleanTask),
     file: file ? path.basename(file) : null,
@@ -850,7 +941,22 @@ function addDeliverable({ agentId, agentLabel, task, file, kind, summary } = {})
   return enrichDeliverable(item);
 }
 
-function addBossSummary({ kind, summary, task, agentId, agentLabel, file, content } = {}) {
+function addBossSummary({
+  kind,
+  summary,
+  task,
+  agentId,
+  agentLabel,
+  file,
+  content,
+  department,
+  departmentLabel,
+  status,
+  progressPercent,
+  planSteps,
+  standupSections,
+  reportPeriod,
+} = {}) {
   const normalizedKind = DELIVERABLE_KINDS.has(kind) ? kind : 'alert';
   let savedFile = file || null;
   if (!savedFile && content) {
@@ -871,6 +977,13 @@ function addBossSummary({ kind, summary, task, agentId, agentLabel, file, conten
     file: savedFile,
     kind: normalizedKind,
     summary,
+    department,
+    departmentLabel,
+    status,
+    progressPercent,
+    planSteps,
+    standupSections,
+    reportPeriod,
   });
 }
 
@@ -889,12 +1002,33 @@ function getDeliverable(id) {
 }
 
 function markForwarded(id, forwarded = true) {
-  const list = listDeliverables();
+  const list = readJson(deliverablesIndexPath(), []);
   const d = list.find((x) => x.id === id);
   if (!d) return null;
   d.forwarded = forwarded;
   writeJson(deliverablesIndexPath(), list);
-  return d;
+  return enrichDeliverable(d);
+}
+
+function updateDeliverableProgress(id, patch = {}) {
+  const list = readJson(deliverablesIndexPath(), []);
+  const d = list.find((x) => x.id === id);
+  if (!d) return null;
+  if (patch.planSteps !== undefined) d.planSteps = normalizePlanSteps(patch.planSteps);
+  if (patch.progressPercent !== undefined) {
+    d.progressPercent = computeProgressPercent(d.planSteps, patch.progressPercent);
+  } else if (patch.planSteps !== undefined) {
+    d.progressPercent = computeProgressPercent(d.planSteps, d.progressPercent);
+  }
+  if (patch.status !== undefined) d.status = patch.status;
+  if (patch.kind !== undefined && DELIVERABLE_KINDS.has(patch.kind)) d.kind = patch.kind;
+  if (patch.summary !== undefined) d.summary = patch.summary;
+  if (patch.standupSections !== undefined) d.standupSections = normalizeStandupSections(patch.standupSections);
+  if (d.status === 'complete' || d.progressPercent === 100) {
+    d.progressPercent = d.progressPercent ?? 100;
+  }
+  writeJson(deliverablesIndexPath(), list);
+  return enrichDeliverable(d);
 }
 
 function listAgentReviews() {
@@ -928,6 +1062,10 @@ function templateReviewKey(templateId) {
   return `template:${templateId}`;
 }
 
+function isOnTeamAgent(agent) {
+  return !!agent && agent.payrollStatus !== 'pending_termination';
+}
+
 function summarizeTemplateReviews(templateId) {
   const all = listAgentReviews();
   const ratings = [];
@@ -938,7 +1076,7 @@ function summarizeTemplateReviews(templateId) {
     const r = all[userAgentReviewKey(a.id)];
     if (r?.rating) ratings.push(r.rating);
   }
-  const hireCount = listAgents().filter((a) => a.templateId === templateId).length;
+  const hireCount = listAgents().filter((a) => a.templateId === templateId && isOnTeamAgent(a)).length;
   if (!ratings.length) return { rating: null, reviewCount: 0, hireCount };
   const sum = ratings.reduce((s, n) => s + n, 0);
   return {
@@ -999,6 +1137,7 @@ module.exports = {
   addBossSummary,
   getDeliverable,
   markForwarded,
+  updateDeliverableProgress,
   getChannelRoutes,
   getChannelRoute,
   setChannelRoute,
@@ -1013,4 +1152,5 @@ module.exports = {
   templateReviewKey,
   summarizeTemplateReviews,
   enrichCatalogTemplate,
+  isOnTeamAgent,
 };

@@ -4094,7 +4094,13 @@ if (existsSync(officePaPath)) {
   app.use('/office-pa', express.static(officePaPath))
 }
 
-registerAntlerRoutes(app, { reconnectGateway: reconnectOpenClawGateway })
+registerAntlerRoutes(app, {
+  reconnectGateway: reconnectOpenClawGateway,
+  disconnectGateway: () => {
+    gateway.disconnect();
+    return Promise.resolve();
+  },
+})
 syncStoreAuthFromEnv()
 attachAntlerOffice(server)
 detachGatewayOfficeSync = attachGatewayOfficeSync(gateway)

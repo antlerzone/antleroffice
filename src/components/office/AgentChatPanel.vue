@@ -2078,6 +2078,10 @@ onMounted(async () => {
   loadQuickReplies()
   document.addEventListener('click', handleCodeCopy)
 
+  if (props.externalSessionKey?.trim()) {
+    void wsStore.connect()
+  }
+
   eventCleanups.push(
     wsStore.subscribe('event', (evt: unknown) => {
       const data = evt as { event?: string; payload?: unknown }
@@ -2118,7 +2122,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   eventCleanups.forEach((cleanup) => cleanup())
-  chatStore.clearTimers()
   cancelPendingScroll()
   if (nowTimer) {
     clearInterval(nowTimer)

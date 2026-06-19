@@ -24,10 +24,20 @@ interface ImportMeta {
   readonly env: ImportMetaEnv
 }
 
+interface VoiceWakeState {
+  mode: 'sleep' | 'active' | 'speaking'
+  globalListen?: boolean
+}
+
 interface AntlerDesktopBridge {
   platform?: string
   isElectron?: boolean
   openExternal?: (url: string) => Promise<{ ok?: boolean }>
+  voiceWakeGetStatus?: () => Promise<{ ok: boolean; state?: VoiceWakeState }>
+  voiceWakeSetMode?: (mode: 'sleep' | 'active') => Promise<{ ok: boolean }>
+  voiceWakeWake?: () => Promise<{ ok: boolean }>
+  onVoiceWakeOpenSettings?: (cb: () => void) => () => void
+  onVoiceWakeState?: (cb: (state: VoiceWakeState) => void) => () => void
 }
 
 interface Window {

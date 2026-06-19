@@ -4,7 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const registry = require('./registry-store');
 const billing = require('./billing');
-const payroll = require('./payroll');
 const openclaw = require('./openclaw-config');
 const office = require('./office-state');
 const mcpProbe = require('./mcp-probe');
@@ -224,7 +223,7 @@ async function resolveTemplate(templateId) {
   return templates.find((t) => t.id === templateId) || getTemplate(templateId);
 }
 
-async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = {}) {
+async function hireFromTemplate({ templateId, name, bossToken, hirePassword, billingInterval, autoRenew } = {}) {
   const template = await resolveTemplate(templateId);
   if (!template) {
     const err = new Error('Unknown NPC template.');
@@ -232,6 +231,7 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
     throw err;
   }
 
+  const billingIntervalMod = require('./billing-interval');
   const ecsSubscriptions = require('./ecs-subscriptions');
   const ecsToken = bossToken ? ecsSubscriptions.ecsTokenFromBossToken(bossToken) : null;
   const useEcsBilling = ecsSubscriptions.isEcsBillingEnabled(bossToken);
@@ -240,11 +240,15 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
   await hirePasswordMod.verifyHirePassword(template, hirePassword, { deferToEcs: useEcsBilling });
 
   const salary = Number(template.salaryCreditsPerMonth) || 0;
-  if (!useEcsBilling && salary > 0 && billing.getBalance() < salary) {
-    const err = new Error('Insufficient credits for first month salary.');
+  const billingCredits = template.billingCreditsByInterval || null;
+  const bill = billingIntervalMod.normalizeBillingInterval(billingInterval);
+  const renew = autoRenew !== false;
+  const charge = billingIntervalMod.creditsPerPeriod(salary, bill, billingCredits);
+  if (!useEcsBilling && charge > 0 && billing.getBalance() < charge) {
+    const err = new Error(`Insufficient credits for first ${billingIntervalMod.intervalLabel(bill)} salary.`);
     err.code = 'INSUFFICIENT_CREDITS';
     err.balance = billing.getBalance();
-    err.required = salary;
+    err.required = charge;
     throw err;
   }
 
@@ -280,7 +284,7 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
   }
 
   const hiredAt = Date.now();
-  let nextSalaryDueAt = payroll.addOneMonth(hiredAt);
+  let nextSalaryDueAt = billingIntervalMod.addBillingPeriod(hiredAt, bill);
   let ecsSubscriptionId = null;
   let creditBalance = billing.getBalance();
 
@@ -310,6 +314,9 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
     templateId: template.id,
     hiredAt,
     salaryCreditsPerMonth: salary,
+    billingInterval: bill,
+    billingCreditsByInterval: billingCredits,
+    autoRenew: renew,
     nextSalaryDueAt,
     lastSalaryPaidAt: null,
     payrollStatus: salary > 0 ? 'active' : null,
@@ -323,11 +330,14 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
   if (useEcsBilling) {
     const ecsResult = await ecsSubscriptions.notifyHire({
       ecsToken,
+      bossToken,
       departmentId: template.id,
       templateId: template.id,
       localAgentId: agent.id,
       agentName: displayName,
       hirePassword,
+      billingInterval: bill,
+      autoRenew: renew,
     });
     if (!ecsResult.ok) {
       registry.removeAgent(agent.id);
@@ -347,14 +357,19 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword } = 
     if (ecsResult.subscription?.nextSalaryDueAt) {
       nextSalaryDueAt = ecsResult.subscription.nextSalaryDueAt;
     }
+    const ecsBill = ecsResult.subscription?.billingInterval
+      ? billingIntervalMod.normalizeBillingInterval(ecsResult.subscription.billingInterval)
+      : bill;
     registry.updateAgent(agent.id, {
       ecsSubscriptionId,
+      billingInterval: ecsBill,
+      autoRenew: ecsResult.subscription?.autoRenew !== false,
       nextSalaryDueAt,
       lastSalaryPaidAt: hiredAt,
     });
-  } else if (salary > 0) {
-    billing.deductCredits(salary, {
-      reason: 'hire_first_month',
+  } else if (charge > 0) {
+    billing.deductCredits(charge, {
+      reason: billingIntervalMod.firstChargeReason(bill),
       templateId,
       agentName: displayName,
       period: new Date(hiredAt).toISOString().slice(0, 7),
@@ -404,7 +419,13 @@ function bundledSkillDef(skillId, templateId) {
 }
 
 function catalogWithStatus() {
-  const hired = new Set(registry.listAgents().map((a) => a.templateId).filter(Boolean));
+  const hired = new Set(
+    registry
+      .listAgents()
+      .filter((a) => registry.isOnTeamAgent(a))
+      .map((a) => a.templateId)
+      .filter(Boolean),
+  );
   return loadCatalog().map((t) => {
     const skillNames = (t.skillIds || [])
       .map((id) => bundledSkillDef(id)?.name || registry.listSkills().find((s) => s.id === id)?.name)

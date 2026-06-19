@@ -10,6 +10,7 @@ function setDataDir(dir) {
   ensureDir(path.join(dataDir, 'notes'));
   ensureDir(path.join(dataDir, 'deliverables'));
   ensureDir(path.join(dataDir, 'materials'));
+  ensureDir(path.join(dataDir, 'voice-profiles'));
   return dataDir;
 }
 
