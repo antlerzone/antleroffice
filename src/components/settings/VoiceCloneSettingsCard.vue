@@ -33,6 +33,7 @@ import {
   TrashOutline,
   CloudUploadOutline,
   CreateOutline,
+  DownloadOutline,
 } from '@vicons/ionicons5'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useVoiceSettings } from '@/composables/useVoiceSettings'
@@ -123,6 +124,7 @@ const previewBusy = computed(() => isSynthesizing.value || (isLoading.value && !
 const lastPlayedEngine = ref<'cosyvoice' | 'kokoro' | 'edgetts' | 'webspeech' | null>(null)
 const playingRefId = ref<string | null>(null)
 const cloningProfileId = ref<string | null>(null)
+const isDownloading = ref(false)
 const showEditScript = ref(false)
 const editingProfile = ref<{ id: string; name: string } | null>(null)
 const editProfileName = ref('')
@@ -370,8 +372,56 @@ async function playProfileRef(profileId: string) {
   }
 }
 
-async function playProfileClone(profileId: string) {
+function validatePreviewClone(profileId: string) {
   const profile = profiles.value.find((p) => p.id === profileId)
+  if (!profile) return null
+  if (!profile.refText) {
+    message.warning(t('pages.settings.voiceClone.rerecordForClone'))
+    return null
+  }
+  if (langMismatchForTexts(profile.refText, previewText.value)) {
+    message.warning(t('pages.settings.voiceClone.refTextLangMismatchBlock'))
+    return null
+  }
+  const norm = (s: string) => s.replace(/\s/g, '')
+  if (norm(profile.refText) === norm(previewText.value)) {
+    message.warning(t('pages.settings.voiceClone.previewSameAsScript'))
+    return null
+  }
+  if (sharesOpening(profile.refText, previewText.value)) {
+    message.warning(t('pages.settings.voiceClone.previewSharesOpening'))
+    return null
+  }
+  if (!ttsAvailable.value) {
+    message.error(t('pages.settings.voiceClone.cosyNotReady'))
+    return null
+  }
+  return profile
+}
+
+function audioExtFromBlob(blob: Blob) {
+  const type = blob.type.toLowerCase()
+  if (type.includes('wav')) return 'wav'
+  if (type.includes('mpeg') || type.includes('mp3')) return 'mp3'
+  if (type.includes('ogg')) return 'ogg'
+  return 'wav'
+}
+
+function safeFilenamePart(value: string) {
+  return value.replace(/[^\w\u4e00-\u9fff-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'clone'
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function playProfileClone(profileId: string) {
+  const profile = validatePreviewClone(profileId)
   if (!profile) return
 
   if (isPlaying.value || previewBusy.value) {
@@ -379,28 +429,6 @@ async function playProfileClone(profileId: string) {
       stop()
       cloningProfileId.value = null
     }
-    return
-  }
-
-  if (!profile.refText) {
-    message.warning(t('pages.settings.voiceClone.rerecordForClone'))
-    return
-  }
-  if (langMismatchForTexts(profile.refText, previewText.value)) {
-    message.warning(t('pages.settings.voiceClone.refTextLangMismatchBlock'))
-    return
-  }
-  const norm = (s: string) => s.replace(/\s/g, '')
-  if (norm(profile.refText) === norm(previewText.value)) {
-    message.warning(t('pages.settings.voiceClone.previewSameAsScript'))
-    return
-  }
-  if (sharesOpening(profile.refText, previewText.value)) {
-    message.warning(t('pages.settings.voiceClone.previewSharesOpening'))
-    return
-  }
-  if (!ttsAvailable.value) {
-    message.error(t('pages.settings.voiceClone.cosyNotReady'))
     return
   }
 
@@ -420,6 +448,46 @@ async function playProfileClone(profileId: string) {
   } finally {
     cloningProfileId.value = null
   }
+}
+
+async function downloadProfileClone(profileId: string) {
+  const profile = validatePreviewClone(profileId)
+  if (!profile || isDownloading.value || previewBusy.value) return
+
+  isDownloading.value = true
+  try {
+    message.info(t('pages.settings.voiceClone.synthStarting', { text: previewText.value.slice(0, 40) }))
+    const result = await api.postBlob(
+      '/api/voice/synthesize',
+      {
+        text: previewText.value.trim(),
+        profileId,
+        engine: 'cosyvoice',
+      },
+      { timeoutMs: 300000 },
+    )
+    if (!('blob' in result)) {
+      throw new Error('error' in result ? result.error : t('pages.settings.voiceClone.downloadFailed'))
+    }
+    if (result.engine && result.engine !== 'cosyvoice') {
+      message.warning(t('pages.settings.voiceClone.previewNotClone'))
+      return
+    }
+    const ext = audioExtFromBlob(result.blob)
+    const filename = `${safeFilenamePart(profile.name)}-${safeFilenamePart(previewText.value)}.${ext}`
+    downloadBlob(result.blob, filename)
+    message.success(t('pages.settings.voiceClone.downloadSuccess'))
+  } catch (e) {
+    console.error('[VoiceCloneSettingsCard] profile clone download error:', e)
+    message.error(e instanceof Error ? e.message : t('pages.settings.voiceClone.downloadFailed'))
+  } finally {
+    isDownloading.value = false
+  }
+}
+
+async function handleDownload() {
+  const profileId = findProfileIdForLang(previewLang.value) || activeId.value
+  await downloadProfileClone(profileId)
 }
 
 function openEditScript(p: { id: string; name: string; refText?: string | null }) {
@@ -715,13 +783,21 @@ onUnmounted(() => {
             <NButton
               :type="isPlaying || previewBusy ? 'error' : 'primary'"
               :loading="previewBusy && !isPlaying"
-              :disabled="isTranscribing || needsRefText || !findProfileIdForLang(previewLang)"
+              :disabled="isTranscribing || needsRefText || !findProfileIdForLang(previewLang) || isDownloading"
               @click="handlePreview"
             >
               <template #icon>
                 <NIcon :component="isPlaying || isLoading ? StopOutline : VolumeHighOutline" />
               </template>
               {{ isPlaying ? t('pages.settings.tts.stop') : t('pages.settings.voiceClone.playClone') }}
+            </NButton>
+            <NButton
+              :loading="isDownloading"
+              :disabled="isTranscribing || needsRefText || !findProfileIdForLang(previewLang) || previewBusy || isPlaying"
+              @click="handleDownload"
+            >
+              <template #icon><NIcon :component="DownloadOutline" /></template>
+              {{ t('pages.settings.voiceClone.download') }}
             </NButton>
           </NSpace>
           <NText v-if="isSynthesizing" depth="3" style="font-size: 13px; display: block; margin-top: 8px">

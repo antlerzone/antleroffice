@@ -69,8 +69,9 @@ interface ChatThread {
 
 const WHO: Record<string, string> = {
   boss: 'Boss',
-  secretary: 'Reception',
-  coo: 'COO',
+  secretary: 'Secretary',
+  ceo: 'CEO',
+  coo: 'CEO',
   it: 'IT',
   worker: 'Worker',
   system: 'System',
@@ -259,14 +260,12 @@ function savePinned() {
 }
 
 const listAgents = computed(() => {
-  const list = agents.value.filter((a) => !a.external)
+  const list = agents.value.filter((a) => !a.external && a.role === 'secretary')
   const pinSet = new Set(pinnedIds.value)
   return [...list].sort((a, b) => {
     const ap = pinSet.has(a.id) ? 0 : 1
     const bp = pinSet.has(b.id) ? 0 : 1
     if (ap !== bp) return ap - bp
-    if (a.role === 'coo') return -1
-    if (b.role === 'coo') return 1
     return a.label.localeCompare(b.label)
   })
 })
@@ -277,7 +276,7 @@ const selectedAgent = computed(
 
 const composerTargetLabel = computed(() => {
   const a = selectedAgent.value
-  if (!a) return 'COO · OpenClaw'
+  if (!a) return 'Secretary'
   return a.label
 })
 
@@ -290,7 +289,7 @@ const agentIsWorking = computed(() => selectedAgent.value?.npcState === 'working
 function openClawAgentIdFor(agent: OfficeAgent | null | undefined): string | null {
   if (!agent || agent.external) return null
   if (agent.openclawAgentId) return agent.openclawAgentId
-  if (agent.role === 'coo') return 'main'
+  if (agent.role === 'secretary') return 'main'
   return null
 }
 
@@ -300,7 +299,7 @@ const useOpenClawBossChat = computed(() => {
   const id = selectedOpenClawAgentId.value
   if (!id) return false
   if (chatMode.value === 'agent') return true
-  if (chatMode.value === 'plan' && selectedAgent.value?.role === 'coo') return true
+  if (chatMode.value === 'plan' && selectedAgent.value?.role === 'secretary') return true
   return false
 })
 
@@ -347,10 +346,34 @@ function togglePin(id: string) {
   savePinned()
 }
 
+function agentForId(agentId: string): OfficeAgent | undefined {
+  return agents.value.find((a) => a.id === agentId || a.role === agentId)
+}
+
+function threadAgentKeys(agent: OfficeAgent | null | undefined): Set<string> {
+  const keys = new Set<string>()
+  if (!agent) return keys
+  keys.add(agent.id)
+  if (agent.role) keys.add(agent.role)
+  if (agent.userAgentId) {
+    keys.add(agent.userAgentId)
+    keys.add(`user:${agent.userAgentId}`)
+  }
+  return keys
+}
+
+function threadMatchesAgent(thread: ChatThread, agentId: string): boolean {
+  if (!agentId) return true
+  if (thread.agentId === agentId) return true
+  const agent = agentForId(agentId)
+  if (!agent) return false
+  return threadAgentKeys(agent).has(thread.agentId)
+}
+
 function ensureDefaultAgent() {
   if (selectedAgentId.value && listAgents.value.some((a) => a.id === selectedAgentId.value)) return
-  const coo = listAgents.value.find((a) => a.role === 'coo')
-  selectedAgentId.value = coo?.id || listAgents.value[0]?.id || ''
+  const secretary = listAgents.value.find((a) => a.role === 'secretary')
+  selectedAgentId.value = secretary?.id || listAgents.value[0]?.id || ''
 }
 
 function ensureDefaultThread() {
@@ -362,27 +385,31 @@ function ensureDefaultThread() {
   const current = selectedThreadId.value
     ? threads.value.find((t) => t.id === selectedThreadId.value)
     : null
-  if (current && current.agentId === selectedAgentId.value) return
+  if (current && threadMatchesAgent(current, selectedAgentId.value)) return
 
   const saved = loadThreadMap()[selectedAgentId.value]
   if (saved) {
-    const savedThread = threads.value.find((t) => t.id === saved && t.agentId === selectedAgentId.value)
+    const savedThread = threads.value.find(
+      (t) => t.id === saved && threadMatchesAgent(t, selectedAgentId.value),
+    )
     if (savedThread) {
       selectedThreadId.value = saved
       return
     }
   }
-  const forAgent = threads.value.find((t) => t.agentId === selectedAgentId.value)
+  const forAgent = threads.value.find((t) => threadMatchesAgent(t, selectedAgentId.value))
   selectedThreadId.value = forAgent?.id || ''
 }
 
 const agentThreads = computed(() => {
   if (!selectedAgentId.value) return threads.value
-  return threads.value.filter((t) => t.agentId === selectedAgentId.value)
+  return threads.value.filter((t) => threadMatchesAgent(t, selectedAgentId.value))
 })
 
 function threadAgentLabel(thread: ChatThread) {
-  const agent = agents.value.find((a) => a.id === thread.agentId)
+  const agent =
+    agents.value.find((a) => a.id === thread.agentId || a.role === thread.agentId) ||
+    agentForId(thread.agentId)
   return agent?.label || thread.agentId
 }
 
@@ -462,7 +489,7 @@ async function poll() {
     }
     if (snap.activeThreadId && !selectedThreadId.value) {
       const active = threads.value.find((t) => t.id === snap.activeThreadId)
-      if (active && active.agentId === selectedAgentId.value) {
+      if (active && threadMatchesAgent(active, selectedAgentId.value)) {
         selectedThreadId.value = snap.activeThreadId
       }
     }
@@ -521,7 +548,8 @@ function toggleOpen() {
 function selectAgent(id: string) {
   selectedAgentId.value = id
   const saved = loadThreadMap()[id]
-  selectedThreadId.value = saved && threads.value.some((t) => t.id === saved && t.agentId === id) ? saved : ''
+  selectedThreadId.value =
+    saved && threads.value.some((t) => t.id === saved && threadMatchesAgent(t, id)) ? saved : ''
   connectEvents()
   void poll()
   void loadOpenClawSession()
@@ -545,9 +573,8 @@ function syncThreadFromStoredSession() {
   )
   if (!match || match.id === selectedThreadId.value) return
   const thread = match
-  if (thread.agentId !== selectedAgentId.value) {
-    selectedAgentId.value = thread.agentId
-  }
+  const agent = agentForId(thread.agentId)
+  if (agent) selectedAgentId.value = agent.id
   selectedThreadId.value = thread.id
   saveThreadForAgent(selectedAgentId.value, thread.id)
   void loadOpenClawSession()
@@ -555,8 +582,9 @@ function syncThreadFromStoredSession() {
 
 function selectThread(id: string) {
   const thread = threads.value.find((t) => t.id === id)
-  if (thread && thread.agentId !== selectedAgentId.value) {
-    selectedAgentId.value = thread.agentId
+  if (thread) {
+    const agent = agentForId(thread.agentId)
+    if (agent) selectedAgentId.value = agent.id
   }
   selectedThreadId.value = id
   saveThreadForAgent(selectedAgentId.value, id)
@@ -570,7 +598,7 @@ async function loadOpenClawSession() {
   openClawSessionKey.value = ''
   if (!useOpenClawBossChat.value || !selectedThreadId.value) return
   const thread = threads.value.find((t) => t.id === selectedThreadId.value)
-  if (!thread || thread.agentId !== selectedAgentId.value) return
+  if (!thread || !threadMatchesAgent(thread, selectedAgentId.value)) return
   openClawSessionLoading.value = true
   try {
     const res = await api.get<{
@@ -958,16 +986,6 @@ onUnmounted(stopPoll)
             <button
               type="button"
               class="boss-chat-side-btn"
-              :class="{ active: showTeamPanel }"
-              title="Team"
-              @click="toggleTeamPanel"
-            >
-              <NIcon :component="PeopleOutline" :size="18" />
-              <span class="boss-chat-side-label">Team</span>
-            </button>
-            <button
-              type="button"
-              class="boss-chat-side-btn"
               :class="{ active: showChatsPanel }"
               title="Chats"
               @click="toggleChatsPanel"
@@ -1085,11 +1103,11 @@ onUnmounted(stopPoll)
               <span v-else>
                 Chatting with <strong>{{ composerTargetLabel }}</strong>
               </span>
-              <span v-if="selectedAgent?.role === 'coo'" class="boss-chat-default-tag">default</span>
+              <span v-if="selectedAgent?.role === 'secretary'" class="boss-chat-default-tag">front door</span>
               <span v-if="useOpenClawBossChat" class="boss-chat-openclaw-tag">OpenClaw</span>
               <span v-if="chatMode === 'plan'" class="boss-chat-plan-tag">Plan</span>
               <NSelect
-                v-if="selectedAgent?.role === 'coo'"
+                v-if="selectedAgent?.role === 'secretary'"
                 v-model:value="chatMode"
                 class="boss-chat-mode-select boss-chat-mode-select--bar"
                 :options="modeOptions"
@@ -1110,6 +1128,7 @@ onUnmounted(stopPoll)
                 compact
                 :plan-mode="chatMode === 'plan'"
                 :external-session-key="openClawSessionKey"
+                :external-thread-id="selectedThreadId || ''"
                 :title="activeThread?.title || composerTargetLabel"
               />
               <p v-else class="boss-chat-empty">Select or create a chat thread.</p>

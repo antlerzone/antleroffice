@@ -8,7 +8,6 @@ import OnboardingWizard from '@/views/antler/OnboardingWizard.vue'
 import BossChatMessenger from '@/components/antler/BossChatMessenger.vue'
 import MemberModeBanner from '@/components/antler/MemberModeBanner.vue'
 import { useWebSocketStore } from '@/stores/websocket'
-import { useHermesConnectionStore } from '@/stores/hermes/connection'
 import { useBossStore } from '@/stores/boss'
 import { useAiSetupStore } from '@/stores/aiSetup'
 import { useAntlerApi } from '@/composables/useAntlerApi'
@@ -16,7 +15,6 @@ import { useLocalGateway } from '@/composables/useLocalGateway'
 
 const collapsed = ref(false)
 const wsStore = useWebSocketStore()
-const connStore = useHermesConnectionStore()
 const bossStore = useBossStore()
 const aiSetup = useAiSetupStore()
 const api = useAntlerApi()
@@ -24,8 +22,6 @@ const localGateway = useLocalGateway()
 const route = useRoute()
 const router = useRouter()
 const showOnboarding = ref(false)
-
-const isOpenClaw = computed(() => connStore.currentGateway === 'openclaw')
 
 const showBossChat = computed(() => route.meta.public !== true)
 
@@ -51,26 +47,20 @@ onMounted(async () => {
     return
   }
   await refreshSetupState(true)
-  if (isOpenClaw.value) {
-    localGateway.startBackground()
-    await wsStore.connect()
-    // Self-heal header badge when SSE auth lags but gateway is already up.
-    const sync = () => {
-      void wsStore.ws.syncGatewayState().then(() => {
-        if (wsStore.state !== wsStore.ws.state) wsStore.state = wsStore.ws.state
-      })
-    }
-    sync()
-    setTimeout(sync, 2000)
-    setTimeout(sync, 5000)
-  } else {
-    connStore.connect()
+  localGateway.startBackground()
+  await wsStore.connect()
+  const sync = () => {
+    void wsStore.ws.syncGatewayState().then(() => {
+      if (wsStore.state !== wsStore.ws.state) wsStore.state = wsStore.ws.state
+    })
   }
+  sync()
+  setTimeout(sync, 2000)
+  setTimeout(sync, 5000)
 
-  const currentGateway = isOpenClaw.value ? 'openclaw' : 'hermes'
   const routeGateway = route.meta?.gateway as string | undefined
-  if (routeGateway && routeGateway !== currentGateway) {
-    router.replace(isOpenClaw.value ? { name: 'PixelOffice' } : '/hermes/chat')
+  if (routeGateway === 'hermes') {
+    void router.replace({ name: 'PixelOffice' })
   }
 })
 
@@ -90,22 +80,6 @@ watch(
     if (open) showOnboarding.value = true
   },
 )
-
-watch(isOpenClaw, (val) => {
-  if (val) {
-    wsStore.connect()
-    connStore.disconnect()
-  } else {
-    wsStore.disconnect()
-    connStore.connect()
-  }
-
-  const currentGateway = val ? 'openclaw' : 'hermes'
-  const routeGateway = route.meta?.gateway as string | undefined
-  if (routeGateway && routeGateway !== currentGateway) {
-    router.push(val ? { name: 'PixelOffice' } : '/hermes/chat')
-  }
-})
 </script>
 
 <template>

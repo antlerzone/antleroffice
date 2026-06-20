@@ -6,9 +6,11 @@ import type { HermesConnectionConfig, HermesStatus } from '@/api/hermes/types'
 const STORAGE_KEY_GATEWAY = 'hermes_gateway'
 const STORAGE_KEY_CONNECTION_CONFIG = 'hermes_connection_config'
 
-function readStoredGateway(): 'openclaw' | 'hermes' {
+function readStoredGateway(): 'openclaw' {
   const raw = localStorage.getItem(STORAGE_KEY_GATEWAY)
-  if (raw === 'hermes') return 'hermes'
+  if (raw === 'hermes') {
+    localStorage.setItem(STORAGE_KEY_GATEWAY, 'openclaw')
+  }
   return 'openclaw'
 }
 
@@ -40,7 +42,7 @@ function readStoredConnectionConfig(): HermesConnectionConfig {
 export const useHermesConnectionStore = defineStore('hermes-connection', () => {
   // ---- 状态 ----
 
-  const currentGateway = ref<'openclaw' | 'hermes'>(readStoredGateway())
+  const currentGateway = ref<'openclaw'>(readStoredGateway())
   const hermesConnected = ref(false)
   const hermesConnecting = ref(false)
   const hermesError = ref<string | null>(null)
@@ -77,11 +79,6 @@ export const useHermesConnectionStore = defineStore('hermes-connection', () => {
     },
     { deep: true },
   )
-
-  // 初始化：如果当前网关是 Hermes，自动加载配置
-  if (currentGateway.value === 'hermes' && !initializedFromBackend.value) {
-    loadConfigFromBackend()
-  }
 
   // ---- 计算属性 ----
 
@@ -146,17 +143,9 @@ export const useHermesConnectionStore = defineStore('hermes-connection', () => {
   /**
    * 切换网关
    */
-  async function switchGateway(gateway: 'openclaw' | 'hermes') {
-    if (gateway === currentGateway.value) return
-    if (gateway === 'openclaw') {
-      disconnect()
-    }
-    currentGateway.value = gateway
-    
-    // 切换到 Hermes 时自动加载配置并连接
-    if (gateway === 'hermes' && !initializedFromBackend.value) {
-      await loadConfigFromBackend()
-    }
+  async function switchGateway(_gateway: 'openclaw' | 'hermes') {
+    disconnect()
+    currentGateway.value = 'openclaw'
   }
 
   /**
@@ -322,7 +311,6 @@ export const useHermesConnectionStore = defineStore('hermes-connection', () => {
       const status = await client.getStatus()
       hermesStatus.value = status
       hermesConnected.value = true
-      currentGateway.value = 'hermes'
       console.log('[HermesConnection] Connected, version:', status.version)
       return true
     } catch (error) {

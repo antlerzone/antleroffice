@@ -174,8 +174,8 @@ async function runVoiceCommand({
   const standup = await tryStandupVoiceCommand({ text: trimmed, ownerKey, threadId });
   if (standup) return standup;
 
-  const cooAgentId = 'coo';
-  const activeThreadId = bossChat.resolveThreadId(cooAgentId, threadId, ownerKey, ownerName);
+  const secretaryAgentId = 'secretary';
+  const activeThreadId = bossChat.resolveThreadId(secretaryAgentId, threadId, ownerKey, ownerName);
   const system = buildSystemPrompt({ personaEnabled, honorific, personaPrompt });
 
   const result = await ocGatewayChat.run({
@@ -188,7 +188,7 @@ async function runVoiceCommand({
   });
 
   if (!result.ok) {
-    return { ok: false, error: result.error || 'COO command failed', available: result.available };
+    return { ok: false, error: result.error || 'Voice command failed', available: result.available };
   }
 
   return {

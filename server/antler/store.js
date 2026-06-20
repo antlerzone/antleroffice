@@ -89,6 +89,28 @@ const DEFAULT_SETTINGS = {
     bossDisplayName: '',
     desktopDisplayName: '',
   },
+  // Local dev pipeline (Cursor CLI + Codex CLI) — Plan A: AntlerOffice spawn, not OpenClaw MCP.
+  dev: {
+    projectRootOverride: null,
+    cursorCommand: 'cursor-agent',
+    cursorVersionDir: null,
+    cursorApiKey: '',
+    codexApiKey: '',
+    claudeApiKey: '',
+    claudeCommand: 'claude',
+    codexCommand: 'codex',
+    maxReviewRounds: 3,
+    cursorModel: 'composer-2.5',
+    claudeModel: '',
+    branchPrefix: 'antleroffice/task-',
+    cursorTimeoutMs: 600000,
+    codexTimeoutMs: 300000,
+    claudeTimeoutMs: 600000,
+    devTeam: {
+      writerAgentId: null,
+      reviewerAgentIds: [],
+    },
+  },
 };
 
 function readSettings() {
@@ -131,6 +153,7 @@ function mergeDefaults(s) {
   if (s.defaultMcpPack) out.defaultMcpPack = { ...out.defaultMcpPack, ...s.defaultMcpPack };
   if (s.onboarding) out.onboarding = { ...out.onboarding, ...s.onboarding };
   if (s.office) out.office = { ...out.office, ...s.office };
+  if (s.dev) out.dev = { ...out.dev, ...s.dev };
   if (typeof s.selectedOfficeId === 'string' || s.selectedOfficeId === null) {
     out.selectedOfficeId = s.selectedOfficeId;
   }

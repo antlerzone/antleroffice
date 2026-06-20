@@ -76,14 +76,26 @@ const ROLE_RESUME: Record<
       'Publish a hidden VIP agent with a UUID and hire password.',
     ],
   },
+  secretary: {
+    description:
+      'Your executive secretary and the only Boss Chat front door. Secretary records what you need and forwards work to your hired CEO.',
+    examples: [
+      'Chat with Secretary about what you want done today.',
+      'After hiring a CEO, tell Secretary your goals — Secretary will pass them along.',
+    ],
+  },
+  ceo: {
+    description:
+      'Your hired CEO runs brainstorm → plan → execute → review and delegates to department workers. Hire from the Agents page.',
+    examples: [
+      'Ask your CEO to plan a launch and assign Marketing.',
+      'Have the CEO research a competitor and summarize findings.',
+    ],
+  },
   coo: {
     description:
-      'Your chief operating officer and default Boss Chat contact. COO talks with you directly, routes tasks to the right hired specialist when possible, saves web login accounts on your behalf, and uses research tools to answer business questions.',
-    examples: [
-      'Tell COO: "Save account — display name Mom\'s house, username xxx, password yyy."',
-      'Ask COO to research a competitor website and summarize what they offer.',
-      'Give COO a marketing task — COO will assign it to your Marketing hire if you have one.',
-    ],
+      'Legacy COO role — now CEO. Hire a CEO from the Agents page.',
+    examples: ['Hire a CEO from Agents → Browse.'],
   },
 }
 

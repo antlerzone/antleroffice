@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const agentCatalog = require('./agent-catalog');
+const ceoPricing = require('./ceo-pricing');
 
 function ecsBaseUrl() {
   const url = (process.env.ECS_BASE_URL || process.env.ECS_SERVER_URL || '').replace(/\/+$/, '');
@@ -74,7 +75,7 @@ function loadLocalPricingOverlayMap() {
     const techById = new Map((catalog.templates || []).map((t) => [t.id, t]));
     for (const dept of seed.departments || []) {
       const bundleId = dept.bundleTemplateId || dept.id;
-      const tech = techById.get(bundleId) || techById.get(dept.id) || {};
+      const tech = techById.get(dept.id) || techById.get(bundleId) || {};
       const pricing = {
         salaryCreditsPerMonth: dept.salaryCreditsPerMonth ?? tech.salaryCreditsPerMonth,
         billingCreditsByInterval: billingCreditsFromDept(dept, tech),
@@ -136,14 +137,58 @@ function inferCategory(template = {}) {
     graphic_design: 'creative',
     web_design: 'creative',
     marketing: 'growth',
+    marketing_editor: 'growth',
+    marketing_junior: 'growth',
+    product_research: 'growth',
+    sales: 'growth',
+    business_development: 'growth',
     web_development: 'digital',
     it: 'digital',
+    ceo: 'executive',
   };
   return roleMap[String(template.role || '').trim().toLowerCase()] || 'operations';
 }
 
 function marketSectionFor(template = {}) {
+  if (template.marketSection === 'leadership' || template.marketSection === 'department') {
+    return template.marketSection;
+  }
+  if (String(template.role || '').trim().toLowerCase() === 'ceo') return 'leadership';
   return inferCategory(template) === 'executive' ? 'leadership' : 'department';
+}
+
+function catalogIdentityKeys(template = {}) {
+  const keys = new Set();
+  for (const k of [template.id, template.departmentId, template.bundleTemplateId, template.templateId]) {
+    if (k) keys.add(String(k));
+  }
+  return keys;
+}
+
+/** CEO and other built-in leadership templates — always listable without a bundle folder. */
+function injectMandatoryLocalTemplates(templates) {
+  const seen = new Set();
+  for (const t of templates || []) {
+    for (const k of catalogIdentityKeys(t)) seen.add(k);
+  }
+  const extras = (agentCatalog.loadCatalog() || [])
+    .filter((t) => isInstallableTemplate(t) || t.role === 'ceo')
+    .filter((t) => ![...catalogIdentityKeys(t)].some((k) => seen.has(k)))
+    .map((t) => ({
+      ...t,
+      departmentId: t.departmentId || t.id,
+      category: inferCategory(t),
+      marketSection: marketSectionFor(t),
+      sortOrder: Number(t.sortOrder) || 999,
+      installable: true,
+      visibility: t.visibility || 'public',
+      hidden: false,
+    }))
+    .map((t) => ceoPricing.applyCeoCatalogPricing(t));
+  if (!extras.length) return templates;
+  return [...extras, ...(templates || [])].sort(
+    (a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || String(a.name).localeCompare(String(b.name)),
+  );
 }
 
 function listInstallableBundleIds() {
@@ -174,13 +219,16 @@ function mergeDepartmentsWithCatalog(departments, technicalTemplates) {
     .filter((dept) => dept.active !== false)
     .map((dept) => {
       const bundleId = dept.bundleTemplateId || dept.id;
-      const tech = techById.get(bundleId) || techById.get(dept.id) || {};
+      const tech = techById.get(dept.id) || techById.get(bundleId) || {};
       const category = inferCategory({ ...tech, ...dept, category: dept.category });
-      const installable = isInstallableTemplate({
-        bundleTemplateId: dept.bundleTemplateId,
-        templateId: bundleId,
-        id: dept.id,
-      });
+      const installable =
+        tech.installable === true
+        || isInstallableTemplate({
+          bundleTemplateId: dept.bundleTemplateId,
+          templateId: bundleId,
+          id: dept.id,
+          installable: tech.installable,
+        });
       const visibility = dept.visibility === 'hidden' ? 'hidden' : 'public';
       const hirePasswordHash = dept.hirePasswordHash || null;
       return {
@@ -246,24 +294,42 @@ async function fetchCatalogFromEcs() {
   }
 }
 
+function mergeLocalMonorepoCatalog(remoteTemplates) {
+  const localMerged = loadLocalDepartmentsMerged();
+  if (!localMerged?.length) return remoteTemplates || [];
+
+  const byId = new Map((remoteTemplates || []).map((t) => [t.id, t]));
+  for (const local of localMerged) {
+    const remote = byId.get(local.id);
+    byId.set(local.id, remote ? { ...remote, ...local } : local);
+  }
+  return [...byId.values()].sort(
+    (a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || String(a.name).localeCompare(String(b.name)),
+  );
+}
+
 async function loadCatalogMerged() {
   const remote = await fetchCatalogFromEcs();
   if (remote?.length) {
-    return applyLocalPricingOverlay(remote.filter(isInstallableTemplate));
+    return injectMandatoryLocalTemplates(
+      mergeLocalMonorepoCatalog(applyLocalPricingOverlay(remote.filter(isInstallableTemplate))),
+    );
   }
   const localMerged = loadLocalDepartmentsMerged();
-  if (localMerged?.length) return localMerged;
-  return agentCatalog
-    .loadCatalog()
-    .map((t) => ({
-      ...t,
-      departmentId: t.departmentId || t.id,
-      category: inferCategory(t),
-      marketSection: marketSectionFor(t),
-      sortOrder: Number(t.sortOrder) || 999,
-      installable: isInstallableTemplate(t),
-    }))
-    .filter(isInstallableTemplate);
+  if (localMerged?.length) return injectMandatoryLocalTemplates(localMerged);
+  return injectMandatoryLocalTemplates(
+    agentCatalog
+      .loadCatalog()
+      .map((t) => ({
+        ...t,
+        departmentId: t.departmentId || t.id,
+        category: inferCategory(t),
+        marketSection: marketSectionFor(t),
+        sortOrder: Number(t.sortOrder) || 999,
+        installable: isInstallableTemplate(t),
+      }))
+      .filter(isInstallableTemplate),
+  );
 }
 
 function templateHiredKeys(template) {
@@ -286,15 +352,16 @@ async function catalogWithStatusMerged() {
   );
 
   return templates.map((t) => {
+    const bundleId = t.bundleTemplateId || t.id;
     const skillNames = (t.skillIds || [])
-      .map((id) => agentCatalog.bundledSkillDef(id)?.name)
+      .map((id) => agentCatalog.skillDisplayName(id, bundleId))
       .filter(Boolean);
     const mcpNames = (t.mcps || []).map((m) => m.name || m.slug).filter(Boolean);
     const category = inferCategory(t);
-    return registry.enrichCatalogTemplate({
+    const priced = ceoPricing.applyCeoCatalogPricing({
       ...t,
       category,
-      marketSection: marketSectionFor({ category }),
+      marketSection: marketSectionFor({ category, role: t.role, marketSection: t.marketSection }),
       departmentId: t.departmentId || t.id,
       installable: isInstallableTemplate(t),
       skillNames,
@@ -308,6 +375,7 @@ async function catalogWithStatusMerged() {
       hired: isTemplateHired(t, hired),
       source: ecsBaseUrl() ? 'ecs' : 'local',
     });
+    return registry.enrichCatalogTemplate(priced);
   });
 }
 

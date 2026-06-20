@@ -14,6 +14,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const office = require('./office-state');
 const officeShare = require('./office-share');
 const officeMemberAuth = require('./office-member-auth');
+const { formatOfficeBubble, jobFingerprint } = require('./office-bubble-label');
 
 const ASSETS_FILE = path.join(__dirname, 'pa-assets.generated.json');
 
@@ -42,7 +43,7 @@ function numFor(stringId) {
 }
 
 // Track last broadcast state per agent for diffing.
-const lastSeen = new Map(); // stringId -> { npcState, bubbleText, num }
+const lastSeen = new Map(); // stringId -> { npcState, bubbleText, jobKey, num }
 const toolIds = new Map(); // stringId -> current toolId
 
 const clients = new Set();
@@ -196,12 +197,13 @@ function emitAgentActivity(ag, num, sink) {
   if (ag.npcState === 'working') {
     const toolId = toolIds.get(ag.id) || `t-${num}-${Date.now()}`;
     toolIds.set(ag.id, toolId);
+    const status = formatOfficeBubble(ag);
     sink({
       type: 'agentToolStart',
       id: num,
       toolId,
-      status: ag.bubbleText || `${ag.label} working…`,
-      toolName: 'Edit',
+      status,
+      toolName: ag.currentJob?.step || 'Work',
     });
     sink({ type: 'agentStatus', id: num, status: 'active' });
   } else {
@@ -226,17 +228,18 @@ function pollAndBroadcast() {
       // New agent appeared at runtime (e.g. IT spawned a temp worker).
       broadcast({ type: 'agentCreated', id: num, folderName: ag.label || ag.role });
       emitAgentActivity(ag, num, broadcast);
-      lastSeen.set(ag.id, { npcState: ag.npcState, bubbleText: ag.bubbleText, num });
+      lastSeen.set(ag.id, { npcState: ag.npcState, bubbleText: ag.bubbleText, jobKey: jobFingerprint(ag), num });
       continue;
     }
 
-    if (prev.npcState !== ag.npcState || prev.bubbleText !== ag.bubbleText) {
+    const jobKey = jobFingerprint(ag);
+    if (prev.npcState !== ag.npcState || prev.bubbleText !== ag.bubbleText || prev.jobKey !== jobKey) {
       // For a fresh tool label while working, rotate the toolId so the bubble updates.
       if (ag.npcState === 'working' && prev.npcState === 'working') {
         toolIds.set(ag.id, `t-${num}-${Date.now()}`);
       }
       emitAgentActivity(ag, num, broadcast);
-      lastSeen.set(ag.id, { npcState: ag.npcState, bubbleText: ag.bubbleText, num });
+      lastSeen.set(ag.id, { npcState: ag.npcState, bubbleText: ag.bubbleText, jobKey, num });
     }
   }
 

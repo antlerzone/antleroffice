@@ -55,6 +55,8 @@ const MCP_DEFS = {
 };
 
 const ROLE_SLUGS = {
+  secretary: ['antleroffice-tools'],
+  ceo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   coo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   admin: ['perplexity', 'firecrawl'],
   it: ['playwright'],
@@ -112,7 +114,11 @@ function getBuiltinRoleBindings(role) {
 }
 
 function resolveBuiltinMcpRuntimeSpec(role) {
-  return resolveMcpRuntimeFromBindings(getBuiltinRoleBindings(role));
+  const key = role === 'ceo' ? 'ceo' : role;
+  const bindings = getBuiltinRoleBindings(key);
+  if (bindings?.length) return resolveMcpRuntimeFromBindings(bindings);
+  if (role === 'ceo') return resolveMcpRuntimeFromBindings(getBuiltinRoleBindings('coo'));
+  return resolveMcpRuntimeFromBindings(bindings);
 }
 
 async function ensurePackMcp(slug, { apiKey, envKey } = {}) {
@@ -209,8 +215,10 @@ async function applyDefaultMcpPack({
   if (enableCoo) {
     const mTools = await ensurePackMcp('antleroffice-tools');
     if (mTools) slugToMcpId['antleroffice-tools'] = mTools.id;
-    const ids = ROLE_SLUGS.coo.map((s) => slugToMcpId[s]).filter(Boolean);
-    setBuiltinRoleBindings('coo', ids.map((mcpId) => ({ mcpId, accountIds: [] })));
+    const ids = ROLE_SLUGS.ceo.map((s) => slugToMcpId[s]).filter(Boolean);
+    const bindings = ids.map((mcpId) => ({ mcpId, accountIds: [] }));
+    setBuiltinRoleBindings('ceo', bindings);
+    setBuiltinRoleBindings('coo', bindings);
   }
 
   if (enableAdmin) {

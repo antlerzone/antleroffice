@@ -340,25 +340,30 @@ function isAuthEnabled() {
   return envConfig.AUTH_USERNAME && envConfig.AUTH_PASSWORD
 }
 
-function checkAuth(req) {
-  if (!isAuthEnabled()) return true
-  let token = req.headers.authorization?.replace('Bearer ', '') || req.cookies?.session
-  if (!token && req.query && req.query.token) {
-    token = req.query.token
-  }
-  if (!token && req.headers['x-boss-token']) {
-    token = String(req.headers['x-boss-token'])
-  }
+function tokenValid(token) {
   if (!token) return false
-
   const legacy = sessions.get(token)
   if (legacy) {
     if (legacy.expires >= Date.now()) return true
     sessions.delete(token)
   }
-
   if (antlerAuth.session(String(token))) return true
+  return false
+}
 
+function checkAuth(req) {
+  if (!isAuthEnabled()) return true
+  const tried = new Set()
+  const tryToken = (raw) => {
+    const t = String(raw || '').trim()
+    if (!t || tried.has(t)) return false
+    tried.add(t)
+    return tokenValid(t)
+  }
+  if (tryToken(req.headers.authorization?.replace(/^Bearer\s+/i, ''))) return true
+  if (tryToken(req.cookies?.session)) return true
+  if (tryToken(req.query?.token)) return true
+  if (tryToken(req.headers['x-boss-token'])) return true
   return false
 }
 
@@ -4143,6 +4148,13 @@ server.listen(envConfig.PORT, () => {
   console.log(`Hermes Home: ${HERMES_HOME || 'NOT FOUND'}`)
   if (!HERMES_CLI_PATH) {
     console.log('WARNING: Hermes CLI not found. Install hermes-agent or set HERMES_CLI_PATH in .env')
+  }
+
+  try {
+    require('./antler/fb-playwright-engine').initScheduler()
+    console.log('[FB] Playwright scheduler restored')
+  } catch (err) {
+    console.log(`[FB] Playwright scheduler skipped: ${err.message}`)
   }
 
   openclawBridge.gatewayStart().then((r) => {

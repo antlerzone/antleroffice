@@ -3,7 +3,8 @@ const registry = require('./registry-store');
 const standupConfig = require('./daily-standup-config-store');
 const { deliverablesContextForParticipant } = require('./standup-deliverable-context');
 const bossChat = require('./boss-chat-store');
-const { runStandupAgentTurn, runStandupCooSummary } = require('./agent-runtime');
+const { runStandupAgentTurn, runStandupCeoSummary } = require('./agent-runtime');
+const orgRoles = require('./org-roles');
 
 const STANDUP_PERIODS = new Set(['yesterday', 'last_week', 'last_7_days']);
 
@@ -68,7 +69,7 @@ function buildStandupMarkdown({ reportPeriod, sections, cooSummary }) {
   for (const s of sections) {
     lines.push(`## ${s.label}`, '', s.text, '');
   }
-  lines.push('## COO summary', '', cooSummary);
+  lines.push('## CEO summary', '', cooSummary);
   return lines.join('\n');
 }
 
@@ -161,35 +162,47 @@ async function runStandup({
         activeRun.completedDepartments += 1;
       }
 
-      activeRun.currentDepartment = 'COO summary';
+      activeRun.currentDepartment = 'CEO summary';
       const deptBlock = sections
         .map((s) => `### ${s.label}\n${s.text}`)
         .join('\n\n');
-      const cooInstruction =
-        standupConfig.applyTemplate(config.prompts.cooSummary, templateVars) +
+      const ceoInstruction =
+        standupConfig.applyTemplate(config.prompts.ceoSummary, templateVars) +
         `\n\n---\n\nDepartment reports:\n\n${deptBlock}`;
 
-      const { text: cooSummary } = await runStandupCooSummary({
-        instruction: cooInstruction,
+      const { text: ceoSummary } = await runStandupCeoSummary({
+        instruction: ceoInstruction,
         ownerKey,
         threadId,
       });
 
-      const coo = office.getAgent('coo');
+      const ceo = orgRoles.ceoAgentOrFallback();
+      const sec = orgRoles.findSecretary();
+      const hostIntro =
+        `Good morning. This is ${sec?.label || 'your Secretary'}. ` +
+        `Here is the ${reportPeriod.label} standup with ${sections.length} department report(s).`;
+
       const markdown = buildStandupMarkdown({
         reportPeriod,
         sections,
-        cooSummary: String(cooSummary || '').trim() || '(No summary generated)',
+        cooSummary: String(ceoSummary || '').trim() || '(No summary generated)',
       });
 
       const standupSections = [
+        {
+          agentId: sec?.id || 'secretary',
+          role: 'secretary',
+          label: sec?.label || 'Secretary',
+          text: hostIntro,
+          voice: config.hostVoice || null,
+        },
         ...sections,
         {
-          agentId: coo?.id || 'coo',
-          role: 'coo',
-          label: coo?.label || 'COO · OpenClaw',
-          text: String(cooSummary || '').trim() || '(No summary generated)',
-          voice: null,
+          agentId: ceo?.id || 'ceo',
+          role: 'ceo',
+          label: ceo?.label || 'CEO',
+          text: String(ceoSummary || '').trim() || '(No summary generated)',
+          voice: config.ceoVoice || null,
         },
       ];
 
@@ -198,8 +211,8 @@ async function runStandup({
         kind,
         summary: `${reportPeriod.label} standup — ${sections.length} departments`,
         task: `Department standup (${reportPeriod.label})`,
-        agentId: coo?.id || null,
-        agentLabel: coo?.label || 'COO · OpenClaw',
+        agentId: ceo?.id || null,
+        agentLabel: ceo?.label || 'CEO',
         department: 'multi',
         departmentLabel: 'Multi-department',
         content: markdown,
@@ -287,7 +300,7 @@ async function runStandupFollowUp({
   const agent =
     (section.agentId && office.getAgent(section.agentId)) ||
     (section.role && office.getAgent(section.role)) ||
-    office.getAgent('coo');
+    orgRoles.findSecretary();
 
   if (!agent) {
     const err = new Error('Agent for section not found');
@@ -317,7 +330,7 @@ async function runStandupFollowUp({
 
   registry.updateDeliverableProgress(deliverableId, { standupSections: sections });
 
-  const chatAgentId = agent.id || agent.role || section.role || 'coo';
+  const chatAgentId = agent.id || agent.role || section.role || 'secretary';
   try {
     const chatThreadId = bossChat.resolveThreadId(chatAgentId, threadId, ownerKey, ownerName);
     if (chatThreadId) {

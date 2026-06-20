@@ -1,6 +1,61 @@
 {
   "templates": [
     {
+      "id": "ceo",
+      "name": "CEO",
+      "tagline": "Company leader — brainstorm, plan, delegate & review",
+      "role": "ceo",
+      "category": "executive",
+      "marketSection": "leadership",
+      "pricingModel": "per_department",
+      "ceoUnitBilling": {
+        "daily": 1
+      },
+      "defaultSkinId": "slate",
+      "sprite": 5,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 30,
+      "currency": "credits",
+      "billingInterval": "daily",
+      "billingCreditsByInterval": {
+        "daily": 1
+      },
+      "skillIds": [
+        "ceo_brainstorm",
+        "ceo_writing_plans",
+        "ceo_executing_plans",
+        "ceo_review"
+      ],
+      "openclawSkillNames": [
+        "antleroffice-ceo-brainstorm",
+        "antleroffice-ceo-writing-plans",
+        "antleroffice-ceo-executing-plans",
+        "antleroffice-ceo-review"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "perplexity", "firecrawl"],
+      "highlights": [
+        "Brainstorm → plan → execute → review pipeline",
+        "Delegates work to department workers",
+        "Per department: $1/day (charged at midnight)"
+      ],
+      "trustedBy": "500+",
+      "rating": 4.9,
+      "reviewCount": 42,
+      "featured": true,
+      "sortOrder": 5,
+      "installable": true
+    },
+    {
       "id": "graphic_design",
       "name": "Graphic Design",
       "tagline": "Pixel art & office NPC skins",
@@ -38,14 +93,16 @@
       "name": "IT Guys",
       "tagline": "MCP wiring, scripts & automation",
       "role": "it",
+      "hidden": true,
+      "installable": false,
       "defaultSkinId": "ocean",
       "sprite": 1,
       "hueShift": 0,
       "runtime": "openclaw",
       "salaryCreditsPerMonth": 15,
       "currency": "credits",
-      "skillIds": ["it_guys", "token_saver"],
-      "openclawSkillNames": ["token-saver"],
+      "skillIds": ["it_guys", "dev_cursor_codex"],
+      "openclawSkillNames": ["antleroffice-it-dev-pipeline"],
       "mcps": [
         {
           "slug": "openclaw",
@@ -87,6 +144,117 @@
       "featured": false
     },
     {
+      "id": "cursor_developer",
+      "name": "Cursor Developer",
+      "tagline": "Write & review code with Cursor CLI",
+      "role": "it",
+      "devEngine": "cursor",
+      "devScopeDefault": { "canWrite": true, "canReview": true },
+      "defaultSkinId": "ocean",
+      "sprite": 1,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 12,
+      "currency": "credits",
+      "skillIds": ["cursor_developer", "dev_cursor_codex"],
+      "openclawSkillNames": ["antleroffice-it-dev-pipeline"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice"],
+      "highlights": [
+        "Cursor CLI writes and reviews code",
+        "Configure Writer / Reviewers in Dev tools",
+        "Boss APPROVED before git push"
+      ],
+      "trustedBy": "400+",
+      "rating": 4.8,
+      "reviewCount": 28,
+      "featured": true,
+      "sortOrder": 12,
+      "installable": true
+    },
+    {
+      "id": "claude_developer",
+      "name": "Claude Developer",
+      "tagline": "Write & review code with Claude Code CLI",
+      "role": "it",
+      "devEngine": "claude",
+      "devScopeDefault": { "canWrite": true, "canReview": true },
+      "defaultSkinId": "forest",
+      "sprite": 2,
+      "hueShift": 15,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 12,
+      "currency": "credits",
+      "skillIds": ["claude_developer", "dev_cursor_codex"],
+      "openclawSkillNames": ["antleroffice-it-dev-pipeline"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice"],
+      "highlights": [
+        "Claude Code CLI writes and reviews code",
+        "Mix with Cursor or Codex reviewers",
+        "Boss APPROVED before git push"
+      ],
+      "trustedBy": "350+",
+      "rating": 4.9,
+      "reviewCount": 22,
+      "featured": true,
+      "sortOrder": 13,
+      "installable": true
+    },
+    {
+      "id": "codex_developer",
+      "name": "Codex Developer",
+      "tagline": "Write & review code with OpenAI Codex CLI",
+      "role": "it",
+      "devEngine": "codex",
+      "devScopeDefault": { "canWrite": true, "canReview": true },
+      "defaultSkinId": "slate",
+      "sprite": 3,
+      "hueShift": 30,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 12,
+      "currency": "credits",
+      "skillIds": ["codex_developer", "dev_cursor_codex"],
+      "openclawSkillNames": ["antleroffice-it-dev-pipeline"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice"],
+      "highlights": [
+        "Codex CLI writes and reviews code",
+        "Dual Codex review or mixed team",
+        "Boss APPROVED before git push"
+      ],
+      "trustedBy": "380+",
+      "rating": 4.8,
+      "reviewCount": 31,
+      "featured": true,
+      "sortOrder": 14,
+      "installable": true
+    },
+    {
       "id": "human_resource",
       "name": "AntlerOffice Human Resource",
       "tagline": "Create SaaS NPC workers — catalog, bundles & departments",
@@ -126,6 +294,302 @@
       "featured": true,
       "version": "1.0.0",
       "bundleUrl": "/api/catalog/agents/human_resource/bundle"
+    },
+    {
+      "id": "marketing_manager",
+      "name": "Marketing Manager",
+      "tagline": "Dept head — plans, sign-off & multi-platform rhythm",
+      "role": "marketing",
+      "category": "growth",
+      "bundleTemplateId": "marketing",
+      "defaultSkinId": "coral",
+      "sprite": 3,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 199,
+      "currency": "credits",
+      "hireTier": "manager",
+      "skillIds": ["marketing_strategist", "marketing_linkedin_content_creator"],
+      "openclawSkillNames": [
+        "antleroffice-marketing-strategist",
+        "antleroffice-marketing-marketing-linkedin-content-creator"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "perplexity"],
+      "highlights": ["Marketing dept head", "Sign-off & channel rhythm", "Coordinates Editor/Design/Junior"],
+      "trustedBy": "1,000+",
+      "rating": 4.8,
+      "reviewCount": 92,
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/marketing/bundle"
+    },
+    {
+      "id": "marketing_editor",
+      "name": "Marketing Editor",
+      "tagline": "Copywriting, captions & publish-ready text",
+      "role": "marketing_editor",
+      "category": "growth",
+      "bundleTemplateId": "marketing_editor",
+      "defaultSkinId": "coral",
+      "sprite": 3,
+      "hueShift": 8,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 149,
+      "currency": "credits",
+      "hireTier": "editor",
+      "skillIds": ["copy_editor"],
+      "openclawSkillNames": ["antleroffice-marketing_editor-copy-editor"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "highlights": ["Copy & captions", "FB / XHS / LinkedIn"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/marketing_editor/bundle"
+    },
+    {
+      "id": "marketing_junior",
+      "name": "Marketing Junior",
+      "tagline": "Upload & schedule — FB & XHS",
+      "role": "marketing_junior",
+      "category": "growth",
+      "bundleTemplateId": "marketing_junior",
+      "defaultSkinId": "coral",
+      "sprite": 3,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 79,
+      "currency": "credits",
+      "hireTier": "junior",
+      "skillIds": ["fb_publish", "xhs_publish"],
+      "openclawSkillNames": [
+        "antleroffice-marketing_junior-fb-publish",
+        "antleroffice-marketing_junior-xhs-publish"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "coliving", "antlerhub"],
+      "highlights": ["FB schedule", "XHS publish pack", "Junior tier"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/marketing_junior/bundle"
+    },
+    {
+      "id": "sales_senior",
+      "name": "Sales Senior",
+      "tagline": "ICP, pipeline & revenue plans",
+      "role": "sales",
+      "category": "growth",
+      "bundleTemplateId": "sales",
+      "defaultSkinId": "gold",
+      "sprite": 3,
+      "hueShift": 15,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 249,
+      "currency": "credits",
+      "skillIds": ["sales_strategist", "sales_pipeline_analyst"],
+      "openclawSkillNames": [
+        "antleroffice-sales-strategist",
+        "antleroffice-sales-sales-pipeline-analyst"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "highlights": ["Sales Senior NPC", "Pipeline & ICP"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/sales/bundle"
+    },
+    {
+      "id": "customer_service_senior",
+      "name": "Customer Service Senior",
+      "tagline": "Support replies, FAQ & complaints",
+      "role": "customer_service",
+      "category": "operations",
+      "bundleTemplateId": "customer_service",
+      "defaultSkinId": "sky",
+      "sprite": 2,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 149,
+      "currency": "credits",
+      "skillIds": ["customer_service", "support_support_responder"],
+      "openclawSkillNames": [
+        "antleroffice-customer-service",
+        "antleroffice-customer_service-support-support-responder"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "highlights": ["Customer Service Senior NPC", "FAQ & triage"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/customer_service/bundle"
+    },
+    {
+      "id": "business_development_manager",
+      "name": "Business Development Manager",
+      "tagline": "Partnerships, channels & negotiations",
+      "role": "business_development",
+      "category": "growth",
+      "bundleTemplateId": "business_development",
+      "defaultSkinId": "ocean",
+      "sprite": 3,
+      "hueShift": 20,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 279,
+      "currency": "credits",
+      "skillIds": ["bd_manager"],
+      "openclawSkillNames": ["antleroffice-bd-manager"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "perplexity"],
+      "highlights": ["BD Manager NPC", "Partnerships & channels"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/business_development/bundle"
+    },
+    {
+      "id": "product_research",
+      "name": "Product Research",
+      "tagline": "Competitive analysis & positioning",
+      "role": "product_research",
+      "category": "product",
+      "defaultSkinId": "slate",
+      "sprite": 4,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 199,
+      "currency": "credits",
+      "skillIds": ["product_researcher", "product_trend_researcher"],
+      "openclawSkillNames": [
+        "antleroffice-product-researcher",
+        "antleroffice-product_research-product-trend-researcher"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["perplexity", "firecrawl"],
+      "highlights": ["OPB-Skills researcher", "Competitor matrices"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/product_research/bundle"
+    },
+    {
+      "id": "accounting_manager",
+      "name": "Accounting Manager",
+      "tagline": "Budgets, bookkeeping & month-end close",
+      "role": "accounting",
+      "category": "finance",
+      "bundleTemplateId": "accounting",
+      "defaultSkinId": "mint",
+      "sprite": 1,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 229,
+      "currency": "credits",
+      "skillIds": ["financial_planner", "bookkeeper_controller"],
+      "openclawSkillNames": [
+        "antleroffice-financial-planner",
+        "antleroffice-bookkeeper-controller"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "highlights": ["Accounting Manager NPC", "Budget & close"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/accounting/bundle"
+    },
+    {
+      "id": "admin_manager",
+      "name": "Admin Manager",
+      "tagline": "Schedules, documents & meeting notes",
+      "role": "admin",
+      "category": "operations",
+      "bundleTemplateId": "admin",
+      "defaultSkinId": "lavender",
+      "sprite": 2,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 129,
+      "currency": "credits",
+      "skillIds": ["admin_assistant", "meeting_notes_pm"],
+      "openclawSkillNames": [
+        "antleroffice-admin-assistant",
+        "antleroffice-meeting-notes-pm"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "highlights": ["Admin Manager NPC", "Meeting notes"],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/admin/bundle"
     }
   ]
 }

@@ -479,7 +479,7 @@ function skinRenames() {
   return readJson('skin-renames.json', {});
 }
 
-const EDITABLE_BUILTIN_ROLES = ['coo'];
+const EDITABLE_BUILTIN_ROLES = ['secretary', 'ceo', 'coo'];
 
 function builtinAgentLabels() {
   return readJson('builtin-agent-labels.json', {});
@@ -612,6 +612,15 @@ function normalizeMcpBindings(agent) {
   return [];
 }
 
+function normalizeRuntime(runtime, fallback = 'openclaw') {
+  const r = String(runtime || '').trim().toLowerCase();
+  if (!r) return fallback;
+  if (r === 'hermes') return 'openclaw';
+  if (r === 'demo') return 'demo';
+  if (r === 'openclaw') return 'openclaw';
+  return fallback;
+}
+
 function enrichAgent(raw) {
   const mcpBindings = normalizeMcpBindings(raw);
   const mcpIds = mcpBindings.length
@@ -621,6 +630,7 @@ function enrichAgent(raw) {
       : [];
   return {
     ...raw,
+    runtime: normalizeRuntime(raw.runtime),
     mcpIds,
     mcpBindings,
   };
@@ -642,7 +652,7 @@ function addAgent(def = {}) {
     id: newId('uagent'),
     name: def.name || 'New Agent',
     role: def.role || 'worker',
-    runtime: def.runtime || 'demo', // openclaw | hermes | demo
+    runtime: normalizeRuntime(def.runtime, 'demo'), // openclaw | demo
     sprite: Number.isInteger(def.sprite) ? def.sprite : 0,
     hueShift: Number.isInteger(def.hueShift) ? def.hueShift : 0,
     skillIds: Array.isArray(def.skillIds) ? def.skillIds : [],
@@ -667,6 +677,8 @@ function addAgent(def = {}) {
       ? def.baselineOpenclawSkillNames
       : null,
     baselineMcpIds: Array.isArray(def.baselineMcpIds) ? def.baselineMcpIds : null,
+    devEngine: def.devEngine || null,
+    devScope: def.devScope || { canWrite: true, canReview: true },
     createdAt: Date.now(),
   };
   agents.push(item);
@@ -704,9 +716,12 @@ function updateAgent(id, patch = {}) {
     'baselineSkillIds',
     'baselineOpenclawSkillNames',
     'baselineMcpIds',
+    'devEngine',
+    'devScope',
   ]) {
     if (patch[k] !== undefined) a[k] = patch[k];
   }
+  if (patch.runtime !== undefined) a.runtime = normalizeRuntime(patch.runtime, 'demo');
   if (patch.mcpBindings !== undefined || patch.mcpIds !== undefined) {
     const merged = enrichAgent({ ...a, ...patch });
     a.mcpBindings = merged.mcpBindings;
@@ -723,9 +738,7 @@ function removeAgent(id) {
   );
 }
 
-// ── Channel routing (which agent an inbound channel talks to) ───────────────
-// Map of "<provider>:<account>" -> agentId. Default front door is the COO, who
-// then delegates to subagents — so a channel need not target a specialist.
+// Map of "<provider>:<account>" -> agentId. Default front door is the Secretary.
 function getChannelRoutes() {
   const m = readJson('channel-routes.json', {});
   return m && typeof m === 'object' ? m : {};
@@ -734,12 +747,12 @@ function getChannelRoutes() {
 function setChannelRoute(provider, account, agentId) {
   const key = `${provider}:${account || 'default'}`;
   const routes = getChannelRoutes();
-  routes[key] = agentId || 'coo';
+  routes[key] = agentId || 'secretary';
   return writeJson('channel-routes.json', routes)[key];
 }
 
 function getChannelRoute(provider, account) {
-  return getChannelRoutes()[`${provider}:${account || 'default'}`] || 'coo';
+  return getChannelRoutes()[`${provider}:${account || 'default'}`] || 'secretary';
 }
 
 // ── Per-agent knowledge (files dragged in to "teach" an agent) ──────────────

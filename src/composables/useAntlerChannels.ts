@@ -81,7 +81,7 @@ export function useAntlerChannels() {
   const waStatusMap = ref<Record<string, WaStatus>>({})
   const gatewayUp = ref(false)
   const gatewayStarting = ref(false)
-  const cooLabel = ref('COO')
+  const secretaryLabel = ref('Secretary')
 
   const viewMode = ref<'list' | 'grid'>(
     localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list',
@@ -103,8 +103,8 @@ export function useAntlerChannels() {
   }
 
   function agentNameForId(agentId: string) {
-    const id = agentId || 'coo'
-    if (id === 'coo') return cooLabel.value
+    const id = agentId || 'secretary'
+    if (id === 'secretary' || id === 'coo') return secretaryLabel.value
     return agents.value.find((a) => a.id === id)?.name || id
   }
 
@@ -134,7 +134,7 @@ export function useAntlerChannels() {
     const phone = isWa ? formatWaPhone(waStatus.phone || c.phone) : null
     const title = displayName || m.label
     const contact = phone || (c.account !== 'default' ? c.account : '')
-    const agentId = c.agentId || 'coo'
+    const agentId = c.agentId || 'secretary'
     const instructionMode = isWa && !!(waStatus.instructionMode || c.instructionMode)
     return {
       provider: c.provider,
@@ -233,8 +233,8 @@ export function useAntlerChannels() {
   })
 
   const agentOptions = computed(() => {
-    const ids = new Set(allRows.value.map((r) => r.agentId || 'coo'))
-    const opts = [{ value: 'coo', label: cooLabel.value }]
+    const ids = new Set(allRows.value.map((r) => r.agentId || 'secretary'))
+    const opts = [{ value: 'secretary', label: secretaryLabel.value }]
     for (const a of agents.value) {
       if (ids.has(a.id)) opts.push({ value: a.id, label: a.name })
     }
@@ -245,7 +245,7 @@ export function useAntlerChannels() {
   })
 
   const routeAgentOptions = computed(() => [
-    { value: 'coo', label: cooLabel.value },
+    { value: 'secretary', label: secretaryLabel.value },
     ...agents.value.map((a) => ({ value: a.id, label: a.name })),
   ])
 
@@ -317,8 +317,8 @@ export function useAntlerChannels() {
         const builtins = await api.get<{ agents?: { role?: string; name?: string }[] }>(
           '/api/config/agents',
         )
-        const coo = (builtins.agents || []).find((a) => a.role === 'coo')
-        if (coo?.name) cooLabel.value = coo.name
+        const sec = (builtins.agents || []).find((a) => a.role === 'secretary')
+        if (sec?.name) secretaryLabel.value = sec.name
       } catch { /* ignore */ }
     } finally {
       loading.value = false

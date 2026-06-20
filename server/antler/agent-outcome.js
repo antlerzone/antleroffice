@@ -71,7 +71,7 @@ function bossInputEscalationBlock() {
   );
 }
 
-function bossInputAskMessage({ agentLabel = 'COO', provider } = {}) {
+function bossInputAskMessage({ agentLabel = 'CEO', provider } = {}) {
   const name = agentLabel || 'Agent';
   const via = provider ? ` (${provider})` : '';
   return `${name} needs your input${via} — reply with the API key or add it under Settings → Models, then send your message again.`;

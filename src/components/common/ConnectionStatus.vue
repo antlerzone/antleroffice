@@ -4,14 +4,12 @@ import { NTag, NSpace, NButton, NSelect, NPopover } from 'naive-ui'
 import { useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useWebSocketStore } from '@/stores/websocket'
-import { useHermesConnectionStore } from '@/stores/hermes/connection'
 import { ConnectionState } from '@/api/types'
 import CreditBalance from '@/components/common/CreditBalance.vue'
 
 const message = useMessage()
 
 const wsStore = useWebSocketStore()
-const hermesConnStore = useHermesConnectionStore()
 const { t } = useI18n()
 const isUpdating = ref(false)
 const selectedVersion = ref('')
@@ -19,18 +17,7 @@ const versionOptions = ref<Array<{ label: string; value: string }>>([])
 const isLoadingVersions = ref(false)
 const latestVersion = ref<string | null>(null)
 
-const isHermes = computed(() => hermesConnStore.currentGateway === 'hermes')
-
 const status = computed(() => {
-  if (isHermes.value) {
-    if (hermesConnStore.hermesConnected) {
-      return { label: t('components.connectionStatus.connected'), type: 'success' as const, pulse: false }
-    }
-    if (hermesConnStore.hermesConnecting) {
-      return { label: t('components.connectionStatus.connecting'), type: 'info' as const, pulse: true }
-    }
-    return { label: t('components.connectionStatus.disconnected'), type: 'error' as const, pulse: false }
-  }
   switch (wsStore.state) {
     case ConnectionState.CONNECTED:
       return { label: t('components.connectionStatus.connected'), type: 'success' as const, pulse: false }

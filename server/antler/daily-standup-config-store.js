@@ -12,7 +12,10 @@ const DEFAULT_PROMPTS = {
     'Cover: completed work, work in progress, blockers, and decisions needed. Use bullet points. ' +
     'Do not greet the boss — this will be read aloud in a meeting.',
   cooSummary:
-    'You are the COO. Below are standup reports from each department for {{periodLabel}}. ' +
+    'You are the CEO. Below are standup reports from each department for {{periodLabel}}. ' +
+    'Write an executive summary: key wins, risks, blockers needing boss decision, and recommended priorities. Keep it concise.',
+  ceoSummary:
+    'You are the CEO. Below are standup reports from each department for {{periodLabel}}. ' +
     'Write an executive summary: key wins, risks, blockers needing boss decision, and recommended priorities. Keep it concise.',
 };
 
@@ -35,7 +38,7 @@ function writeRaw(data) {
 }
 
 function listOfficeStandupCandidates() {
-  const skip = new Set(['coo', 'secretary']);
+  const skip = new Set(['ceo', 'coo', 'secretary']);
   const rosterOrder = roster.DEPARTMENTS.map((d) => d.role);
   const agents = office.state.agents.filter((a) => !skip.has(a.role) && !a.external);
   agents.sort((a, b) => {
@@ -101,6 +104,8 @@ function defaultConfig() {
     defaultPeriod: 'yesterday',
     participants: seedParticipants([]),
     prompts: { ...DEFAULT_PROMPTS },
+    hostVoice: defaultVoice(),
+    ceoVoice: defaultVoice(),
   };
 }
 
@@ -120,9 +125,20 @@ function normalizeConfig(raw) {
       ? src.defaultPeriod
       : base.defaultPeriod,
     participants,
+    hostVoice: {
+      engine: src.hostVoice?.engine || base.hostVoice.engine,
+      ttsVoice: src.hostVoice?.ttsVoice || '',
+      profileId: src.hostVoice?.profileId || '',
+    },
+    ceoVoice: {
+      engine: src.ceoVoice?.engine || base.ceoVoice.engine,
+      ttsVoice: src.ceoVoice?.ttsVoice || '',
+      profileId: src.ceoVoice?.profileId || '',
+    },
     prompts: {
       department: String(src.prompts?.department || DEFAULT_PROMPTS.department),
-      cooSummary: String(src.prompts?.cooSummary || DEFAULT_PROMPTS.cooSummary),
+      cooSummary: String(src.prompts?.cooSummary || src.prompts?.ceoSummary || DEFAULT_PROMPTS.ceoSummary),
+      ceoSummary: String(src.prompts?.ceoSummary || src.prompts?.cooSummary || DEFAULT_PROMPTS.ceoSummary),
     },
   };
 }

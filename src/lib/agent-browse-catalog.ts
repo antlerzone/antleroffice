@@ -1,4 +1,4 @@
-export type BrowseSection = 'department' | 'leadership' | 'all'
+export type BrowseSection = 'department' | 'leadership' | 'vip' | 'all'
 
 export type MarketSection = 'department' | 'leadership'
 
@@ -30,6 +30,8 @@ export type BrowseTemplate = {
   visibility?: 'public' | 'hidden'
   hidden?: boolean
   requiresHirePassword?: boolean
+  pricingModel?: string
+  hireTier?: string
 }
 
 export const BROWSE_SECTIONS: { id: BrowseSection; label: string; hint: string }[] = [
@@ -42,6 +44,11 @@ export const BROWSE_SECTIONS: { id: BrowseSection; label: string; hint: string }
     id: 'leadership',
     label: 'Leadership',
     hint: 'Executive advisors and strategic operators.',
+  },
+  {
+    id: 'vip',
+    label: 'VIP Workers',
+    hint: 'Included free — Coliving, AntlerChat, AntlerHub, and partner tools.',
   },
   {
     id: 'all',
@@ -65,11 +72,20 @@ const ROLE_CATEGORY: Record<string, CatalogCategory> = {
   accounting: 'operations',
   human_resource: 'operations',
   customer_service: 'customer',
+  antlerchat_cs: 'customer',
+  antlerhub_admin: 'operations',
+  coliving_admin: 'operations',
   graphic_design: 'creative',
   web_design: 'creative',
   marketing: 'growth',
+  marketing_editor: 'growth',
+  marketing_junior: 'growth',
+  product_research: 'growth',
+  sales: 'growth',
+  business_development: 'growth',
   web_development: 'digital',
   it: 'digital',
+  ceo: 'executive',
 }
 
 export function normalizeCategory(value?: string | null): CatalogCategory {
@@ -101,6 +117,10 @@ export function templateMarketSection(template: Pick<BrowseTemplate, 'category' 
   if (template.marketSection === 'leadership' || template.marketSection === 'department') {
     return template.marketSection
   }
+  const role = String(template.role || '')
+    .trim()
+    .toLowerCase()
+  if (role === 'ceo') return 'leadership'
   return inferTemplateCategory(template) === 'executive' ? 'leadership' : 'department'
 }
 
@@ -119,6 +139,10 @@ function matchesCatalogUuidSearch(t: BrowseTemplate, query: string) {
   const q = query.trim().toLowerCase()
   if (!uuid || !q) return false
   return uuid === q || uuid.includes(q)
+}
+
+export function isVipTemplate(template: Pick<BrowseTemplate, 'pricingModel' | 'hireTier'>) {
+  return template.pricingModel === 'vip' || template.hireTier === 'vip'
 }
 
 export function filterBrowseTemplates(
@@ -165,6 +189,8 @@ export function filterBrowseTemplates(
     out = out.filter((t) => t.marketSection === 'department')
   } else if (opts.section === 'leadership') {
     out = out.filter((t) => t.marketSection === 'leadership')
+  } else if (opts.section === 'vip') {
+    out = out.filter((t) => isVipTemplate(t))
   }
 
   if (opts.category) {

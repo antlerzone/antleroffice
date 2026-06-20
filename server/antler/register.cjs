@@ -44,7 +44,10 @@ const voiceService = require('./voice-service');
 const standupConfig = require('./daily-standup-config-store');
 const departmentStandup = require('./department-standup-service');
 const dailyStandupScheduler = require('./daily-standup-scheduler');
+const ceoDailyPayrollScheduler = require('./ceo-daily-payroll-scheduler');
 const standupPdf = require('./standup-pdf-export');
+const orgRoles = require('./org-roles');
+const ceoPricing = require('./ceo-pricing');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -157,6 +160,12 @@ function registerAntlerRoutes(app, hooks = {}) {
   defaultMcpPack.ensureAntlerofficeToolsBinding().catch((e) => {
     console.warn('[AntlerOffice] antleroffice-tools MCP bind:', e.message);
   });
+  require('./secretary-boot')
+    .bootSecretaryFbAssets()
+    .then((r) => {
+      console.log('[Secretary] Routing + FB skills installed to main workspace');
+    })
+    .catch((e) => console.warn('[Secretary] FB boot:', e.message));
   try {
     openclaw.ensureValidOpenClawConfig();
   } catch {
@@ -204,8 +213,7 @@ function registerAntlerRoutes(app, hooks = {}) {
     res.json({ ok: true });
   });
 
-  // Seed only the COO · OpenClaw supervisor. Every other worker is hired (added)
-  // by the client from the Agents page, then mirrored into the office below.
+  // Seed Secretary (free front door) + CEO station (vacant until hired from Browse).
   for (const d of roster.defaults()) {
     const a = office.ensureRole(d.role, d.label, d.charSprite);
     const saved = registry.getBuiltinAgentSettings(d.role);
@@ -213,11 +221,14 @@ function registerAntlerRoutes(app, hooks = {}) {
     if (saved.label) bootPatch.label = saved.label;
     if (Number.isInteger(saved.sprite)) bootPatch.charSprite = saved.sprite;
     if (Number.isInteger(saved.hueShift)) bootPatch.hueShift = saved.hueShift;
-    if (d.role === 'coo') bootPatch.openclawAgentId = 'main';
+    if (d.role === 'secretary') bootPatch.openclawAgentId = 'main';
     if (Object.keys(bootPatch).length) office.setAgent(a.id, bootPatch);
   }
+  orgRoles.migrateOfficeAgents();
   // Hydrate user-created agents persisted from previous sessions.
   office.loadUserAgents(registry.listAgents());
+  agentCatalog.migrateHiredCeoSkills();
+  ceoPricing.syncHiredCeoAgent();
   for (const a of registry.listAgents()) {
     if (a.payrollStatus === 'suspended') payroll.syncOfficePayroll(a);
   }
@@ -226,10 +237,21 @@ function registerAntlerRoutes(app, hooks = {}) {
     try {
       await payroll.processPendingFires(openclaw);
       payroll.runPayrollDue();
+      const paygoMeter = require('./paygo-meter');
+      await paygoMeter.flushPendingCharges();
+      await paygoMeter.tickActiveSessions();
     } catch (e) {
       debugLog.logWarn('payroll', e.message);
     }
     auth.refreshAllSessionCredits();
+  }
+
+  async function syncEcsSubscriptionsFromHeartbeat(subscriptions = []) {
+    try {
+      require('./paygo-meter').syncAgentsFromEcsSubscriptions(subscriptions);
+    } catch {
+      /* optional */
+    }
   }
 
   async function applyEcsPayrollResults(results = []) {
@@ -252,6 +274,7 @@ function registerAntlerRoutes(app, hooks = {}) {
           payrollStatus: 'active',
           nextSalaryDueAt: r.nextSalaryDueAt || sub.nextSalaryDueAt,
           ecsSubscriptionId: sub.id || agent.ecsSubscriptionId,
+          billingInterval: sub.billingInterval || agent.billingInterval,
         });
         payroll.syncOfficePayroll(registry.getAgent(localId));
       } else if (sub.status === 'pending_termination') {
@@ -309,6 +332,8 @@ function registerAntlerRoutes(app, hooks = {}) {
             s.creditBalance = ecsResult.creditBalance;
           }
           await applyEcsPayrollResults(ecsResult.payrollResults || []);
+          await syncEcsSubscriptionsFromHeartbeat(ecsResult.subscriptions || []);
+          await require('./paygo-meter').flushPendingCharges();
         } else if (!ecsResult.skipped) {
           auth.syncSessionCredits(s);
           return { ok: false, error: ecsResult.error || 'ecs_heartbeat_failed', ecsError: ecsResult.error, session: auth.publicView(s) };
@@ -321,6 +346,9 @@ function registerAntlerRoutes(app, hooks = {}) {
   }
   refreshBillingAndFires();
   setInterval(refreshBillingAndFires, 15 * 60 * 1000).unref();
+  setInterval(() => {
+    require('./paygo-meter').tickActiveSessions().catch(() => {});
+  }, 60 * 1000).unref();
   setInterval(() => payroll.processPendingFires(openclaw).catch(() => {}), 60 * 60 * 1000).unref();
 
   // Remove imported agents whose desktop stopped sending heartbeats (offline).
@@ -330,6 +358,7 @@ function registerAntlerRoutes(app, hooks = {}) {
   ecssync.refresh();
 
   dailyStandupScheduler.start();
+  ceoDailyPayrollScheduler.start();
 
   hooks.runBossHeartbeat = (token) => runBossHeartbeat(token);
   portalDesktops.registerPortalDesktopRoutes(app, hooks);
@@ -602,8 +631,8 @@ function registerAntlerRoutes(app, hooks = {}) {
     const thread = bossChat.getThreadForOwner(threadId, owner.ownerKey);
     if (!thread) return res.status(404).json({ ok: false, error: 'thread not found' });
     const agent = office.getAgent(thread.agentId);
-    if (!agent || agent.role !== 'coo') {
-      return res.status(400).json({ ok: false, error: 'plan deliverables are COO-only' });
+    if (!agent || !orgRoles.isSecretaryRole(agent.role)) {
+      return res.status(400).json({ ok: false, error: 'plan deliverables are Secretary-only (talk to your Secretary)' });
     }
     const task = String(req.body?.task || '').trim();
     const result = String(req.body?.result || '').trim();
@@ -707,7 +736,17 @@ function registerAntlerRoutes(app, hooks = {}) {
     });
   });
 
-  // ── OpenClaw-compatible command channel ───────────────────────────────────
+  app.post('/api/webhooks/coliving/vacant-room', async (req, res) => {
+    try {
+      const orchestrator = require('./vacant-room-orchestrator');
+      const body = req.body || {};
+      const result = await orchestrator.runVacantRoomPipeline(body);
+      res.json({ ok: true, result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   app.post('/api/office/command', (req, res) => {
     const { action } = req.body || {};
     try {
@@ -778,9 +817,80 @@ function registerAntlerRoutes(app, hooks = {}) {
       res.status(500).json({ ok: false, error: e.message });
     }
   });
+  const portalPartnerOAuth = require('./portal-partner-oauth');
+  const colivingOAuth = require('./coliving-oauth');
+
+  function mountPortalOAuthRoutes(partnerId) {
+    app.get(`/api/config/portal-oauth/${partnerId}/status`, (_req, res) => {
+      res.json({ ok: true, ...portalPartnerOAuth.publicStatus(partnerId) });
+    });
+    app.get(`/api/config/portal-oauth/${partnerId}/start`, (req, res) => {
+      try {
+        const provider = String(req.query?.provider || 'google').trim();
+        res.json({ ok: true, authorizeUrl: portalPartnerOAuth.buildOAuthStartUrl(partnerId, provider), partner: partnerId });
+      } catch (e) {
+        res.status(400).json({ ok: false, error: e.message });
+      }
+    });
+    app.post(`/api/config/portal-oauth/${partnerId}/complete`, async (req, res) => {
+      try {
+        const token = String(req.body?.token || '').trim();
+        if (!token) return res.status(400).json({ ok: false, error: 'Missing portal token' });
+        const result = await portalPartnerOAuth.completeOAuth(partnerId, token);
+        res.json({ ok: true, ...result });
+      } catch (e) {
+        res.status(400).json({
+          ok: false,
+          error: e.message || 'Portal OAuth failed',
+          code: e.code || 'PORTAL_OAUTH_FAILED',
+          partner: partnerId,
+        });
+      }
+    });
+  }
+
+  for (const p of portalPartnerOAuth.listPartners()) {
+    mountPortalOAuthRoutes(p.id);
+  }
+
+  app.get('/api/config/coliving/oauth/status', (_req, res) => {
+    res.json({ ok: true, ...colivingOAuth.publicStatus() });
+  });
+  app.get('/api/config/coliving/oauth/start', (req, res) => {
+    const provider = String(req.query?.provider || 'google').trim();
+    res.json({ ok: true, authorizeUrl: colivingOAuth.buildOAuthStartUrl(provider) });
+  });
+  app.post('/api/config/coliving/oauth/complete', async (req, res) => {
+    try {
+      const token = String(req.body?.token || '').trim();
+      if (!token) return res.status(400).json({ ok: false, error: 'Missing portal token' });
+      const result = await colivingOAuth.completeOAuth(token);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e.message || 'Coliving OAuth failed',
+        code: e.code || 'COLIVING_OAUTH_FAILED',
+      });
+    }
+  });
+
+  app.get('/auth/callback', (req, res) => {
+    const q = req.query || {};
+    const partnerId = portalPartnerOAuth.consumePendingPartner('coliving');
+    if (q.error) {
+      return res
+        .status(400)
+        .type('html')
+        .send(portalPartnerOAuth.callbackHtml({ partnerId, error: String(q.error) }));
+    }
+    return res
+      .type('html')
+      .send(portalPartnerOAuth.callbackHtml({ partnerId, token: q.token ? String(q.token) : '' }));
+  });
   app.post('/api/config/agents/hire', async (req, res) => {
     try {
-      const { templateId, name, hirePassword, billingInterval, autoRenew } = req.body || {};
+      const { templateId, name, hirePassword, billingInterval, autoRenew, devScope } = req.body || {};
       const bossToken = req.headers['x-boss-token'] || req.body?.token;
       const result = await agentCatalog.hireFromTemplate({
         templateId,
@@ -789,6 +899,7 @@ function registerAntlerRoutes(app, hooks = {}) {
         hirePassword,
         billingInterval,
         autoRenew,
+        devScope,
       });
       auth.refreshAllSessionCredits();
       res.json({
@@ -797,6 +908,11 @@ function registerAntlerRoutes(app, hooks = {}) {
         creditBalance: result.balance,
         openclaw: result.openclaw,
         postInstall: result.postInstall || null,
+        codexInstall: result.codexInstall || null,
+        cursorInstall: result.cursorInstall || null,
+        claudeInstall: result.claudeInstall || null,
+        devCliInstall: result.devCliInstall || null,
+        devEngine: result.devEngine || null,
       });
     } catch (e) {
       const status =
@@ -806,6 +922,8 @@ function registerAntlerRoutes(app, hooks = {}) {
             ? 409
             : e.code === 'UNKNOWN_TEMPLATE'
               ? 404
+              : e.code === 'COLIVING_OAUTH_REQUIRED' || e.code === 'PORTAL_OAUTH_REQUIRED'
+                ? 403
               : e.code === 'HIRE_PASSWORD_REQUIRED' || e.code === 'INVALID_HIRE_PASSWORD'
                 ? 403
                 : e.code === 'HIRE_PASSWORD_UNAVAILABLE'
@@ -933,7 +1051,7 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
     const a = registry.addAgent({ ...body, openclawAgentId, runtime });
     defaultMcpPack.applyRoleDefaultsToAgent(a);
-    office.loadUserAgents([a]); // mirror into the office immediately
+    office.attachHiredAgent(a); // mirror into the office immediately
     res.json({ ok: true, agent: redactAgent(a), openclaw: { available: oc.available !== false, agentId: openclawAgentId, error: oc.error } });
   });
   app.get('/api/config/agents/:id', (req, res) => {
@@ -946,8 +1064,10 @@ function registerAntlerRoutes(app, hooks = {}) {
     if (!existing) return res.status(404).json({ ok: false });
     const patch = mergeAgentIncoming(existing, req.body || {});
     const a = registry.updateAgent(req.params.id, patch);
-    // Keep the live office NPC in sync (label, costume).
-    office.setAgent(`user:${a.id}`, {
+    const ceoStation = a.role === 'ceo' ? office.getAgent('ceo') : null;
+    const officeTarget =
+      a.role === 'ceo' && ceoStation?.userAgentId === a.id ? 'ceo' : `user:${a.id}`;
+    office.setAgent(officeTarget, {
       label: a.name,
       role: a.role,
       charSprite: a.sprite,
@@ -957,6 +1077,8 @@ function registerAntlerRoutes(app, hooks = {}) {
       mcpIds: a.mcpIds,
       mcpBindings: a.mcpBindings,
       channels: a.channels,
+      devEngine: a.devEngine,
+      devScope: a.devScope,
     });
     let entitlementWarnings = [];
     try {
@@ -1075,6 +1197,12 @@ function registerAntlerRoutes(app, hooks = {}) {
   app.post('/api/config/agents/:id/contract', async (req, res) => {
     const existing = registry.getAgent(req.params.id);
     if (!existing) return res.status(404).json({ ok: false, error: 'Agent not found' });
+    if (existing.role === 'ceo') {
+      return res.status(400).json({
+        ok: false,
+        error: 'CEO salary is daily only and recalculates automatically at midnight.',
+      });
+    }
     const { billingInterval } = req.body || {};
     if (!billingInterval) {
       return res.status(400).json({ ok: false, error: 'billingInterval required' });
@@ -1421,7 +1549,7 @@ function registerAntlerRoutes(app, hooks = {}) {
     const { provider, ...opts } = req.body || {};
     res.json(await openclaw.channelsAdd(provider, opts));
   });
-  // Set which agent an inbound channel routes to (COO by default; COO delegates).
+  // Set which agent an inbound channel routes to (Secretary by default).
   app.post('/api/channels/route', (req, res) => {
     const { provider, account, agentId } = req.body || {};
     if (!provider) return res.status(400).json({ ok: false, error: 'missing provider' });
@@ -1566,7 +1694,15 @@ function registerAntlerRoutes(app, hooks = {}) {
   app.get('/api/config/agents/:id/memory', (req, res) => {
     const a = registry.getAgent(req.params.id);
     const key = a ? a.id : req.params.id;
-    res.json({ memory: memory.list(key) });
+    res.json({ memory: memory.list(key), pinned: memory.getPinned(key) });
+  });
+  app.post('/api/config/agents/:id/memory', (req, res) => {
+    const a = registry.getAgent(req.params.id);
+    const key = a ? a.id : req.params.id;
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ ok: false, error: 'text required' });
+    const item = memory.append(key, { kind: 'fact', text, pinned: req.body?.pinned !== false });
+    res.json({ ok: !!item, memory: item });
   });
   app.delete('/api/config/agents/:id/memory', (req, res) => {
     const a = registry.getAgent(req.params.id);
@@ -1802,6 +1938,17 @@ function registerAntlerRoutes(app, hooks = {}) {
     res.json({ ...materials.workspaceInfo(), ...result });
   });
 
+  // ── Facebook bound accounts (Chrome profiles; boss-only) ─────────────────
+  app.get('/api/fb/accounts', requireBossOnly, (_req, res) => {
+    try {
+      const fb = require('./fb-playwright-engine');
+      const accounts = fb.listAccountsForBoss();
+      res.json({ ok: true, count: accounts.length, accounts });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   // ── Web login accounts (encrypted local vault; boss-only) ─────────────────
   app.get('/api/accounts', requireBossOnly, (_req, res) => {
     res.json({ ok: true, accounts: webAccounts.listAccountsForBoss() });
@@ -1857,6 +2004,64 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
   });
 
+  // ── Secretary FB intake (Boss Chat / OpenClaw — before generic LLM) ───────
+  app.post('/api/secretary/intake', async (req, res) => {
+    const owner = resolveBossOwner(req);
+    const text = String(req.body?.text || '').trim();
+    const sessionKey = String(req.body?.sessionKey || '').trim();
+    const threadId = String(req.body?.threadId || '').trim() || null;
+    const secretaryIntake = require('./secretary-intake-handler');
+
+    if (!text) return res.status(400).json({ ok: false, error: 'text required' });
+    if (sessionKey && !secretaryIntake.isSecretaryGatewaySession(sessionKey)) {
+      return res.json({ ok: true, handled: false });
+    }
+
+    const recentUserTexts = Array.isArray(req.body?.recentUserTexts)
+      ? req.body.recentUserTexts.map((t) => String(t || '').trim()).filter(Boolean)
+      : [];
+    const recentConversation = Array.isArray(req.body?.recentConversation)
+      ? req.body.recentConversation
+          .map((m) => ({
+            role: String(m?.role || '').trim(),
+            text: String(m?.text || m?.content || '').trim(),
+          }))
+          .filter((m) => m.role && m.text)
+      : [];
+
+    try {
+      const result = await secretaryIntake.handleSecretaryFbIntake(text, {
+        sessionKey,
+        threadId,
+        ownerKey: owner.ownerKey,
+        recentUserTexts,
+        recentConversation,
+      });
+
+      if (result.handled && result.reply) {
+        if (threadId) {
+          bossChat.addMessage(threadId, 'boss', text, { authorName: owner.ownerName || 'Boss' });
+          bossChat.addMessage(threadId, 'secretary', result.reply, { authorName: 'Secretary' });
+        }
+        if (sessionKey) {
+          try {
+            await require('./secretary-intake-session-sync').syncIntakeTurnToOpenClaw({
+              sessionKey,
+              userText: text,
+              assistantText: result.reply,
+            });
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message || String(e) });
+    }
+  });
+
   // ── Boss instruction (optional targetAgentId for directed chat) ───────────
   app.post('/api/chat', async (req, res) => {
     const owner = resolveBossOwner(req);
@@ -1871,7 +2076,7 @@ function registerAntlerRoutes(app, hooks = {}) {
     res.json(result);
   });
 
-  // ── Onboarding: detect + install OpenClaw (execution) + Hermes (memory) ───
+  // ── Onboarding: detect + install OpenClaw (execution) ─────────────────────
   app.get('/api/onboard/state', async (_req, res) => {
     try {
       res.json(await onboard.getAppState());
@@ -1884,6 +2089,97 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
   app.post('/api/onboard/install', (req, res) => {
     res.json(onboard.install((req.body || {}).name));
+  });
+  app.get('/api/dev/tools/status', async (_req, res) => {
+    try {
+      const { probeAll } = require('./runtime/dev-engine-registry');
+      const engines = await probeAll();
+      res.json({ ok: true, ...engines, cursor: engines.cursor, codex: engines.codex, claude: engines.claude });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+  function redactDevSettings(dev = {}) {
+    const out = { ...dev };
+    out.cursorApiKeySet = Boolean(String(out.cursorApiKey || '').trim());
+    out.codexApiKeySet = Boolean(String(out.codexApiKey || '').trim());
+    out.claudeApiKeySet = Boolean(String(out.claudeApiKey || '').trim());
+    delete out.cursorApiKey;
+    delete out.codexApiKey;
+    delete out.claudeApiKey;
+    return out;
+  }
+  app.get('/api/dev/agents', (_req, res) => {
+    try {
+      const devTeamResolver = require('./runtime/dev-team-resolver');
+      const agents = devTeamResolver.listDevAgents();
+      const team = devTeamResolver.getDevTeamSettings();
+      res.json({ ok: true, agents, devTeam: team });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+  app.get('/api/dev/settings', async (_req, res) => {
+    const s = store.readSettings();
+    const dev = redactDevSettings(s.dev || {});
+    try {
+      const codexCli = require('./runtime/codex-cli');
+      dev.codexAuthReady = await codexCli.hasCodexAuth();
+    } catch {
+      dev.codexAuthReady = false;
+    }
+    res.json({ ok: true, dev });
+  });
+  app.put('/api/dev/settings', async (req, res) => {
+    try {
+      const s = store.readSettings();
+      const body = req.body || {};
+      const nextDev = { ...(s.dev || {}), ...body };
+      if (body.projectRootOverride === null || body.projectRootOverride === '') {
+        nextDev.projectRootOverride = null;
+      }
+      if (typeof body.cursorApiKey === 'string' && body.cursorApiKey.trim()) {
+        nextDev.cursorApiKey = body.cursorApiKey.trim();
+      } else {
+        nextDev.cursorApiKey = s.dev?.cursorApiKey || '';
+      }
+      let codexLogin = null;
+      if (typeof body.codexApiKey === 'string' && body.codexApiKey.trim()) {
+        nextDev.codexApiKey = body.codexApiKey.trim();
+        try {
+          const codexCli = require('./runtime/codex-cli');
+          codexLogin = await codexCli.ensureCodexLogin(nextDev.codexApiKey);
+        } catch (e) {
+          codexLogin = { ok: false, error: e.message };
+        }
+      } else {
+        nextDev.codexApiKey = s.dev?.codexApiKey || '';
+      }
+      if (typeof body.claudeApiKey === 'string' && body.claudeApiKey.trim()) {
+        nextDev.claudeApiKey = body.claudeApiKey.trim();
+      } else {
+        nextDev.claudeApiKey = s.dev?.claudeApiKey || '';
+      }
+      if (body.devTeam && typeof body.devTeam === 'object') {
+        nextDev.devTeam = {
+          writerAgentId: body.devTeam.writerAgentId ?? s.dev?.devTeam?.writerAgentId ?? null,
+          reviewerAgentIds: Array.isArray(body.devTeam.reviewerAgentIds)
+            ? body.devTeam.reviewerAgentIds.filter(Boolean)
+            : s.dev?.devTeam?.reviewerAgentIds || [],
+        };
+      }
+      delete nextDev.cursorApiKeySet;
+      delete nextDev.codexApiKeySet;
+      delete nextDev.claudeApiKeySet;
+      s.dev = nextDev;
+      store.writeSettings(s);
+      const dev = redactDevSettings(s.dev);
+      const codexCli = require('./runtime/codex-cli');
+      dev.codexAuthReady = await codexCli.hasCodexAuth();
+      res.json({ ok: true, dev, codexLogin });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
   });
   app.get('/api/onboard/log', (_req, res) => {
     res.json(onboard.getLog());
@@ -2075,6 +2371,18 @@ function registerAntlerRoutes(app, hooks = {}) {
         mcpIds: Array.isArray(mcpIds) ? mcpIds : [],
       });
       res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/usage/paygo', async (req, res) => {
+    if (!requireBossOnlyRoute(req, res)) return;
+    try {
+      const paygoMeter = require('./paygo-meter');
+      const agentId = String(req.query.agentId || '').trim() || undefined;
+      const limit = Number(req.query.limit) || 100;
+      res.json({ ok: true, entries: paygoMeter.listUsage({ agentId, limit }) });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }

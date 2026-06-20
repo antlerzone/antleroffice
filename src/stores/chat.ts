@@ -4,6 +4,7 @@ import { useWebSocketStore } from './websocket'
 import type { ChatMessage } from '@/api/types'
 import { ConnectionState } from '@/api/types'
 import { byLocale, getActiveLocale } from '@/i18n/text'
+import { getApiAuthHeaders } from '@/lib/api-auth'
 
 type AgentPhase =
   | 'idle'
@@ -978,7 +979,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(content: string, model?: string) {
+  async function sendMessage(content: string, model?: string, opts?: { threadId?: string }) {
     const text = content.trim()
     if (!text) return
     if (!sessionKey.value.trim()) {
@@ -1009,6 +1010,68 @@ export const useChatStore = defineStore('chat', () => {
       if (wsStore.state !== ConnectionState.CONNECTED) {
         await wsStore.connect()
       }
+
+      const recentUserTexts = messages.value
+        .filter((m) => m.role === 'user')
+        .slice(-4)
+        .map((m) => String(m.content || ''))
+
+      const recentConversation = messages.value
+        .slice(-12)
+        .filter((m) => {
+          const content = String(m.content || '')
+          if (m.role === 'user' && content.includes('Conversation so far')) return false
+          if (m.role === 'assistant' && !String(m.id || '').startsWith('sec-')) return false
+          return content.trim().length > 0
+        })
+        .slice(-8)
+        .map((m) => ({
+          role: m.role,
+          text: String(m.content || ''),
+        }))
+
+      if (agentId === 'main' || agentId === 'default') {
+        try {
+          const intakeRes = await fetch('/api/secretary/intake', {
+            method: 'POST',
+            headers: getApiAuthHeaders(),
+            signal: AbortSignal.timeout(45000),
+            body: JSON.stringify({
+              text,
+              sessionKey: sessionKey.value.trim(),
+              threadId: opts?.threadId?.trim() || undefined,
+              recentUserTexts,
+              recentConversation,
+            }),
+          })
+          const intakeRaw = await intakeRes.text()
+          let intakeData: { ok?: boolean; handled?: boolean; reply?: string } = {}
+          if (intakeRaw.trim()) {
+            try {
+              intakeData = JSON.parse(intakeRaw) as typeof intakeData
+            } catch {
+              /* non-JSON body — fall through to OpenClaw gateway */
+            }
+          }
+          if (intakeRes.ok && intakeData.handled && intakeData.reply) {
+            const assistantId = `sec-${Date.now()}`
+            messages.value = [
+              ...messages.value,
+              {
+                id: assistantId,
+                role: 'assistant',
+                content: intakeData.reply,
+                timestamp: new Date().toISOString(),
+              },
+            ]
+            setAgentStatusPhase(agentId, 'done', { runId: null, detail: null })
+            return
+          }
+        } catch {
+          /* fall through to OpenClaw gateway */
+        }
+      }
+
       const sendResult = await wsStore.rpc.sendChatMessage({
         sessionKey: sessionKey.value.trim(),
         message: text,

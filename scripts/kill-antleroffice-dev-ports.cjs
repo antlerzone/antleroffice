@@ -4,6 +4,23 @@ const { execSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 
+function killDevElectron() {
+  if (process.platform !== 'win32') return;
+  try {
+    const script =
+      "Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" | " +
+      "Where-Object { $_.CommandLine -match 'AntlerOffice2' -and $_.CommandLine -notmatch '--type=' } | " +
+      'ForEach-Object { Write-Host "[kill-dev-electron] Stopping PID $($_.ProcessId)"; ' +
+      'Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }';
+    execSync(`powershell -NoProfile -Command ${JSON.stringify(script)}`, {
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 function readDevPort() {
   try {
     const envPath = path.join(__dirname, '..', '.env');
@@ -15,6 +32,8 @@ function readDevPort() {
   }
   return 3300;
 }
+
+killDevElectron();
 
 const base = readDevPort();
 const ports = new Set([3020, base, base + 1, base + 2, base + 3, base + 4]);

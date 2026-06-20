@@ -17,7 +17,10 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
   const { formatMcpServersBlock, formatOpenClawBuiltinToolsBlock } = require('../mcp-runtime-helper');
   const { bossInputEscalationBlock } = require('../agent-outcome');
   const mcpBlock = formatMcpServersBlock(mcpServers);
-  const builtinTools = agent.role === 'coo' || agent.id === 'coo' ? formatOpenClawBuiltinToolsBlock() : '';
+  const builtinTools =
+    agent.role === 'ceo' || agent.role === 'coo' || agent.id === 'ceo' || agent.id === 'coo'
+      ? formatOpenClawBuiltinToolsBlock()
+      : '';
 
   // 1) Gather context: relevant long-term memory + retrieved knowledge chunks.
   const mem = hermes.getContext(memoryKey, instruction);
@@ -71,11 +74,19 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
   const { needsBossInput: detectBossInput } = require('../agent-outcome');
   if (!needsInput) needsInput = detectBossInput(result.text, { authError: false });
 
-  // 3) Remember the outcome so the agent learns across tasks/restarts.
-  hermes.record(memoryKey, {
-    kind: 'episode',
-    text: `Task: ${instruction}\nResult: ${String(result.text).slice(0, 400)}`,
-  });
+  // 3) Remember the outcome: summarize + extract facts (not raw episode dumps).
+  try {
+    await hermes.recordAfterTask(memoryKey, {
+      instruction,
+      resultText: result.text,
+      role: agent.role || agent.id,
+    });
+  } catch {
+    hermes.record(memoryKey, {
+      kind: 'summary',
+      text: `Completed: ${String(instruction).slice(0, 120)}`,
+    });
+  }
 
   return { ...result, needsBossInput: needsInput };
 }

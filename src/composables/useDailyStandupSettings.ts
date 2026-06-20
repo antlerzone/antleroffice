@@ -23,7 +23,9 @@ export interface DailyStandupConfig {
   schedule: { cron: string; tz: string }
   defaultPeriod: StandupPeriod
   participants: StandupParticipant[]
-  prompts?: { department?: string; cooSummary?: string }
+  hostVoice?: StandupParticipantVoice
+  ceoVoice?: StandupParticipantVoice
+  prompts?: { department?: string; cooSummary?: string; ceoSummary?: string }
 }
 
 export interface StandupCandidate {

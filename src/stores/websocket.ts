@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { OpenClawWebSocket } from '@/api/websocket'
 import { RPCClient } from '@/api/rpc-client'
 import { ConnectionState } from '@/api/types'
+import { getApiAuthToken } from '@/lib/api-auth'
 import { useAuthStore } from './auth'
 import { useBossStore } from './boss'
 
@@ -35,10 +36,22 @@ export const useWebSocketStore = defineStore('websocket', () => {
   const persistentListeners = new Map<string, Set<(...args: unknown[]) => void>>()
 
   function resolveGatewayAuthToken(): string | null {
+    return getApiAuthToken() || null
+  }
+
+  async function ensureGatewayAuth() {
     const authStore = useAuthStore()
     const bossStore = useBossStore()
-    if (bossStore.token) return bossStore.token
-    return authStore.getToken()
+    await authStore.checkAuthConfig()
+    if (authStore.authEnabled) {
+      const valid = await authStore.checkAuth().catch(() => false)
+      if (!valid) {
+        await authStore.login('admin', 'admin').catch(() => {})
+      }
+    }
+    if (!bossStore.token) {
+      await bossStore.ensureSession().catch(() => {})
+    }
   }
 
   function createWebSocket(): OpenClawWebSocket {
@@ -115,11 +128,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
   }
 
   async function connect(url?: string) {
-    const authStore = useAuthStore()
-    const bossStore = useBossStore()
-    if (!authStore.getToken() && !bossStore.token) {
-      await bossStore.ensureSession().catch(() => {})
-    }
+    await ensureGatewayAuth()
 
     const syncFromHealth = async () => {
       await ws.value.syncGatewayState()

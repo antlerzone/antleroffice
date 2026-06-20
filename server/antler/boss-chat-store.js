@@ -11,6 +11,17 @@ function filePath() {
   return path.join(store.getDataDir(), 'boss-chats.json');
 }
 
+function migrateLegacyAgentIds(data) {
+  let changed = false;
+  for (const t of data.threads) {
+    if (t.agentId === 'coo') {
+      t.agentId = 'secretary';
+      changed = true;
+    }
+  }
+  if (changed) persist();
+}
+
 function load() {
   if (cache) return cache;
   try {
@@ -20,6 +31,7 @@ function load() {
   }
   if (!Array.isArray(cache.threads)) cache.threads = [];
   if (!cache.seq) cache.seq = 1;
+  migrateLegacyAgentIds(cache);
   return cache;
 }
 
@@ -268,7 +280,7 @@ function migrateFromLegacy(legacyMessages = []) {
   if (data.migrated || !legacyMessages.length) return null;
   const thread = {
     id: uid('thread'),
-    agentId: 'coo',
+    agentId: 'secretary',
     ownerKey: 'legacy:office',
     ownerName: null,
     title: titleFromText(legacyMessages[0]?.text) || 'Previous chats',

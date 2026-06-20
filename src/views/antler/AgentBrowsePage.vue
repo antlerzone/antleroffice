@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 
 const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const emit = defineEmits<{ hired: [] }>()
-import { NModal, NButton, NInput, useMessage, useDialog } from 'naive-ui'
+import { NModal, NButton, NInput, NCheckbox, NSpace, useMessage, useDialog } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useBossStore } from '@/stores/boss'
 import { useOfficeShareStore } from '@/stores/officeShare'
@@ -24,6 +24,7 @@ import {
   categoryLabel,
   filterBrowseTemplates,
   groupTemplatesByCategory,
+  isVipTemplate,
   type BrowseSection,
   type CatalogCategory,
   type MarketSection,
@@ -37,12 +38,20 @@ import {
 import { drawModalBorderVignette } from '@/lib/npc-hire-vignette'
 import { looksLikeUuidSearch } from '@/lib/catalog-uuid'
 import {
+  isDevTemplate,
+  waitForDevClisAfterHire,
+  type DevCliInstallBundle,
+} from '@/lib/dev-cli-install'
+import ItGuysSetupModal from '@/components/settings/ItGuysSetupModal.vue'
+import {
   BILLING_INTERVALS,
   creditsPerPeriod,
   listCreditsPerPeriod,
   firstChargeLabel,
   intervalChargeAdjustment,
   intervalTabLabel,
+  paygoRateLabel,
+  isPaygo,
   type BillingInterval,
 } from '@/lib/billing-interval'
 
@@ -65,7 +74,7 @@ interface Template {
   sortOrder?: number
   installable?: boolean
   salaryCreditsPerMonth?: number
-  billingCreditsByInterval?: Partial<Record<'daily' | 'monthly' | 'quarterly' | 'yearly', number>>
+  billingCreditsByInterval?: Partial<Record<BillingInterval, number>>
   currency?: string
   hired?: boolean
   featured?: boolean
@@ -88,6 +97,13 @@ interface Template {
   visibility?: 'public' | 'hidden'
   hidden?: boolean
   requiresHirePassword?: boolean
+  pricingModel?: string
+  hireTier?: string
+  hireRequirements?: { colivingOAuth?: boolean; antlerchatOAuth?: boolean; antlerhubOAuth?: boolean }
+  ceoDepartmentCount?: number
+  ceoPricingNote?: string
+  devEngine?: string
+  devScopeDefault?: { canWrite?: boolean; canReview?: boolean }
 }
 
 const FAV_KEY = 'antleroffice.agentBrowseFavorites'
@@ -150,13 +166,22 @@ function startVignetteObserver() {
   vignetteResizeObserver.observe(modal)
 }
 const hireOpen = ref(false)
+const itSetupOpen = ref(false)
+const itSetupAgentName = ref('')
+const itSetupNeedCursorKey = ref(true)
+const itSetupNeedCodexKey = ref(true)
+const itSetupNeedClaudeKey = ref(true)
+const hireDevScopeCanWrite = ref(true)
+const hireDevScopeCanReview = ref(true)
 const hireTemplate = ref<Template | null>(null)
 const hireName = ref('')
 const hirePassword = ref('')
-const hireBillingInterval = ref<BillingInterval>('monthly')
+const hireBillingInterval = ref<BillingInterval>('yearly')
 const hireError = ref('')
 
 const hireBillingOverrides = computed(() => hireTemplate.value?.billingCreditsByInterval ?? null)
+
+const hireIsPaygo = computed(() => isPaygo(hireBillingInterval.value))
 
 const hireChargeCredits = computed(() => {
   const t = hireTemplate.value
@@ -188,7 +213,12 @@ function loadFilterPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}')
     if (typeof saved.search === 'string') search.value = saved.search
-    if (saved.browseSection === 'department' || saved.browseSection === 'leadership' || saved.browseSection === 'all') {
+    if (
+      saved.browseSection === 'department'
+      || saved.browseSection === 'leadership'
+      || saved.browseSection === 'vip'
+      || saved.browseSection === 'all'
+    ) {
       browseSection.value = saved.browseSection
     }
     if (typeof saved.categoryFilter === 'string') categoryFilter.value = saved.categoryFilter as CatalogCategory | ''
@@ -532,10 +562,20 @@ function detailGlassTitle(t: Template) {
   return t.name || `AntlerOffice ${detailHeroTitle(t)}`
 }
 
+function templateIsVip(t: Template) {
+  return isVipTemplate(t)
+}
+
+function templatePriceLabel(t: Template) {
+  if (templateIsVip(t)) return { main: 'Included', sub: 'VIP · Free', vip: true as const }
+  return { main: String(t.salaryCreditsPerMonth ?? 0), sub: `${t.currency || 'credits'} / month`, vip: false as const }
+}
+
 function detailSalaryDisplay(t: Template) {
+  if (templateIsVip(t)) return { amount: 0, unit: 'included', period: 'vip' as const }
   const amount = t.salaryCreditsPerMonth ?? 0
   const unit = (t.currency || 'credits').toLowerCase()
-  return { amount, unit, period: 'month' }
+  return { amount, unit, period: 'month' as const }
 }
 
 function detailWhatYouGet(t: Template) {
@@ -668,10 +708,124 @@ function openHire(t: Template) {
   hireTemplate.value = t
   hireName.value = defaultHireName(t)
   hirePassword.value = ''
-  hireBillingInterval.value = 'monthly'
+  hireBillingInterval.value = t.pricingModel === 'per_department' ? 'daily' : 'yearly'
   hireError.value = ''
+  if (isDevTemplate(t)) {
+    hireDevScopeCanWrite.value = t.devScopeDefault?.canWrite !== false
+    hireDevScopeCanReview.value = t.devScopeDefault?.canReview !== false
+  }
   hireOpen.value = true
   detailOpen.value = false
+}
+
+const PORTAL_OAUTH_PARTNERS: Record<
+  string,
+  { partner: string; label: string; docsUrl: string }
+> = {
+  vip_coliving_admin: {
+    partner: 'coliving',
+    label: 'Coliving JB',
+    docsUrl: 'https://portal.colivingjb.com/docs?tab=mcp',
+  },
+  vip_antlerchat_cs: {
+    partner: 'antlerchat',
+    label: 'AntlerChat',
+    docsUrl: 'https://chat.antlerzone.com/docs?tab=mcp',
+  },
+  vip_antlerhub_admin: {
+    partner: 'antlerhub',
+    label: 'AntlerHub',
+    docsUrl: 'https://system.antlerzone.com/docs?tab=mcp',
+  },
+}
+
+function templatePortalOAuthMeta(t: Template) {
+  if (PORTAL_OAUTH_PARTNERS[t.id]) return PORTAL_OAUTH_PARTNERS[t.id]
+  const req = t.hireRequirements || {}
+  if (req.colivingOAuth) return PORTAL_OAUTH_PARTNERS.vip_coliving_admin
+  if (req.antlerchatOAuth) return PORTAL_OAUTH_PARTNERS.vip_antlerchat_cs
+  if (req.antlerhubOAuth) return PORTAL_OAUTH_PARTNERS.vip_antlerhub_admin
+  return null
+}
+
+function templateRequiresPortalOAuth(t: Template) {
+  return templatePortalOAuthMeta(t) != null
+}
+
+let portalOAuthPopup: Window | null = null
+let portalOAuthWaiter: ((err: string | null) => void) | null = null
+
+function onPortalOAuthMessage(ev: MessageEvent) {
+  const data = ev.data
+  if (!data || data.type !== 'antleroffice-portal-oauth') return
+  if (portalOAuthPopup && !portalOAuthPopup.closed) portalOAuthPopup.close()
+  portalOAuthPopup = null
+  if (portalOAuthWaiter) {
+    portalOAuthWaiter(data.ok === true ? null : (data.error || 'Portal sign-in failed'))
+    portalOAuthWaiter = null
+  }
+}
+
+async function ensurePortalOAuthForHire(t: Template): Promise<string | null> {
+  const meta = templatePortalOAuthMeta(t)
+  if (!meta) return null
+  try {
+    const status = await api.send<{ ok?: boolean; connected?: boolean }>(
+      'GET',
+      `/api/config/portal-oauth/${meta.partner}/status`,
+    )
+    if (status.connected) return null
+  } catch {
+    /* proceed to OAuth popup */
+  }
+
+  const start = await api.send<{ ok?: boolean; authorizeUrl?: string }>(
+    'GET',
+    `/api/config/portal-oauth/${meta.partner}/start?provider=google`,
+  )
+  if (!start.authorizeUrl) return `Could not start ${meta.label} sign-in`
+
+  return new Promise((resolve) => {
+    portalOAuthWaiter = resolve
+    if (portalOAuthPopup && !portalOAuthPopup.closed) portalOAuthPopup.close()
+    portalOAuthPopup = window.open(
+      start.authorizeUrl,
+      `antleroffice-portal-oauth-${meta.partner}`,
+      'width=520,height=720,noopener',
+    )
+    if (!portalOAuthPopup) {
+      portalOAuthWaiter = null
+      resolve('Allow pop-ups to sign in to the partner portal')
+      return
+    }
+    window.setTimeout(() => {
+      if (portalOAuthWaiter && portalOAuthPopup?.closed) {
+        portalOAuthWaiter(`${meta.label} sign-in was cancelled`)
+        portalOAuthWaiter = null
+        portalOAuthPopup = null
+      }
+    }, 120000)
+  })
+}
+
+async function maybeShowItGuysSetup(agentName: string, devEngine?: string) {
+  try {
+    const res = await fetch('/api/dev/tools/status')
+    const data = await res.json()
+    if (!res.ok || !data.ok) return
+    const engine = devEngine || 'cursor'
+    const needCursorKey = engine === 'cursor' && !data.cursor?.apiKeySet
+    const needCodexKey = engine === 'codex' && !data.codex?.authReady
+    const needClaudeKey = engine === 'claude' && !data.claude?.apiKeySet
+    if (!needCursorKey && !needCodexKey && !needClaudeKey) return
+    itSetupAgentName.value = agentName
+    itSetupNeedCursorKey.value = needCursorKey
+    itSetupNeedCodexKey.value = needCodexKey
+    itSetupNeedClaudeKey.value = needClaudeKey
+    itSetupOpen.value = true
+  } catch {
+    /* non-fatal */
+  }
 }
 
 async function confirmHire() {
@@ -680,15 +834,39 @@ async function confirmHire() {
   hiring.value = t.id
   hireError.value = ''
   try {
+    if (templateRequiresPortalOAuth(t)) {
+      const oauthErr = await ensurePortalOAuthForHire(t)
+      if (oauthErr) {
+        hireError.value = oauthErr
+        return
+      }
+    }
+    const hireBody: Record<string, unknown> = {
+      templateId: t.id,
+      name: hireName.value.trim() || t.name,
+      hirePassword: hirePassword.value.trim() || undefined,
+      billingInterval: hireBillingInterval.value,
+    }
+    if (isDevTemplate(t)) {
+      hireBody.devScope = {
+        canWrite: hireDevScopeCanWrite.value,
+        canReview: hireDevScopeCanReview.value,
+      }
+    }
     const r = await api.send<{
       ok: boolean
       creditBalance?: number
       error?: string
       postInstall?: { mcps?: { mcpId: string; name: string; hint?: string }[] } | null
+      codexInstall?: DevCliInstallBundle['codex']
+      cursorInstall?: DevCliInstallBundle['cursor']
+      claudeInstall?: DevCliInstallBundle['claude']
+      devCliInstall?: DevCliInstallBundle
+      devEngine?: string
     }>(
       'POST',
       '/api/config/agents/hire',
-      { templateId: t.id, name: hireName.value.trim() || t.name, hirePassword: hirePassword.value.trim() || undefined, billingInterval: hireBillingInterval.value },
+      hireBody,
     )
     if (boss.session && r.creditBalance !== undefined) {
       boss.session.creditBalance = r.creditBalance
@@ -696,8 +874,10 @@ async function confirmHire() {
     hireOpen.value = false
     await load()
     emit('hired')
+
     const mcps = r.postInstall?.mcps || []
-    if (mcps.length) {
+    const showMcpDialog = () => {
+      if (!mcps.length) return
       dialog.info({
         title: `${t.name} hired — add MCP accounts`,
         content:
@@ -708,11 +888,56 @@ async function confirmHire() {
           void router.push({ name: 'AntlerSkills', query: { tab: 'mcps' } })
         },
       })
+    }
+
+    if (isDevTemplate(t)) {
+      const bundle = r.devCliInstall || { cursor: r.cursorInstall, codex: r.codexInstall, claude: r.claudeInstall }
+      const engine = r.devEngine || t.devEngine || 'cursor'
+      const needsInstall =
+        (bundle?.cursor?.ok && !bundle.cursor.skipped && !bundle.cursor.alreadyInstalled) ||
+        (bundle?.codex?.ok && !bundle.codex.skipped && !bundle.codex.alreadyInstalled) ||
+        (bundle?.claude?.ok && !bundle.claude.skipped && !bundle.claude.alreadyInstalled)
+      let loading: ReturnType<typeof message.loading> | null = null
+      if (needsInstall) {
+        loading = message.loading(`正在安装 ${engine} CLI…`, { duration: 0 })
+      }
+      const { cursor, codex, claude, lines } = await waitForDevClisAfterHire(bundle, (label, logLines) => {
+        const last = logLines[logLines.length - 1]
+        if (loading) {
+          loading.content = last ? `正在安装 ${label}…\n${last}` : `正在安装 ${label}…`
+        }
+      })
+      loading?.destroy()
+      const installed =
+        (engine === 'cursor' && cursor) ||
+        (engine === 'codex' && codex) ||
+        (engine === 'claude' && claude)
+      if (installed) {
+        message.success(`${t.name} 已加入办公室 · ${engine} CLI 已就绪`)
+      } else if (needsInstall) {
+        message.warning(
+          `${t.name} 已加入办公室。${engine} CLI 可能未安装完成 — 请到 Settings → Dev tools 重试。` +
+            (lines.length ? `\n${lines.slice(-2).join('\n')}` : ''),
+          { duration: 8000 },
+        )
+      } else {
+        message.success(`${t.name} 已加入办公室！请到 Settings → Dev tools 安装开发 CLI。`)
+      }
+      await maybeShowItGuysSetup(t.name, engine)
+      showMcpDialog()
+    } else if (mcps.length) {
+      showMcpDialog()
     } else {
       message.success(`${t.name} joined your office!`)
     }
   } catch (e) {
-    hireError.value = e instanceof Error ? e.message : 'Hire failed'
+    const raw = e instanceof Error ? e.message : 'Hire failed'
+    hireError.value =
+      raw === '500' || raw === 'HTTP 500'
+        ? 'Server error (500). Restart AntlerOffice backend, or try again in a moment.'
+        : /^HTTP \d+/.test(raw) && !raw.includes(' ')
+          ? `Server error (${raw.replace('HTTP ', '')}). Check backend logs.`
+          : raw
   } finally {
     hiring.value = null
   }
@@ -759,6 +984,7 @@ watch(listTotalPages, (pages) => {
 watch(viewMode, () => void mountPreviews())
 
 onMounted(() => {
+  window.addEventListener('message', onPortalOAuthMessage)
   loadFilterPrefs()
   loadListPagePrefs()
   load().catch(() => message.error('Could not load catalog'))
@@ -769,6 +995,8 @@ onMounted(() => {
   })
 })
 onUnmounted(() => {
+  window.removeEventListener('message', onPortalOAuthMessage)
+  if (portalOAuthPopup && !portalOAuthPopup.closed) portalOAuthPopup.close()
   stopSkinPreviews()
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onDetailKeydown)
@@ -983,8 +1211,14 @@ onUnmounted(() => {
                   <span class="tag">{{ categoryLabel(t.category) }}</span>
                 </td>
                 <td>
-                  <strong>{{ t.salaryCreditsPerMonth ?? 0 }}</strong>
-                  {{ t.currency || 'credits' }}/mo
+                  <template v-if="templateIsVip(t)">
+                    <strong class="npc-vip-price">Included</strong>
+                    <span class="hint browse-list-sub">VIP · Free</span>
+                  </template>
+                  <template v-else>
+                    <strong>{{ t.salaryCreditsPerMonth ?? 0 }}</strong>
+                    {{ t.currency || 'credits' }}/mo
+                  </template>
                 </td>
                 <td><span class="npc-market-star">★</span> {{ formatRating(t) }}</td>
                 <td>
@@ -1098,7 +1332,10 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="npc-market-body">
-            <h3 class="npc-market-name">{{ t.name }}</h3>
+            <h3 class="npc-market-name">
+              {{ t.name }}
+              <span v-if="templateIsVip(t)" class="tag npc-vip-badge">VIP</span>
+            </h3>
             <div class="npc-market-tagline">
               <span class="npc-market-tagline-icon">◆</span>
               {{ t.tagline }}
@@ -1108,8 +1345,17 @@ onUnmounted(() => {
               <div class="npc-market-price">
                 <div class="npc-market-price-icon">◎</div>
                 <div class="npc-market-price-text">
-                  <strong>{{ t.salaryCreditsPerMonth ?? 0 }}</strong>
-                  <span>{{ t.currency || 'credits' }} / month</span>
+                  <template v-if="templateIsVip(t)">
+                    <strong class="npc-vip-price">Included</strong>
+                    <span>VIP Worker · no salary</span>
+                  </template>
+                  <template v-else>
+                    <strong>{{ t.salaryCreditsPerMonth ?? 0 }}</strong>
+                    <span>{{ t.currency || 'credits' }} / month</span>
+                  </template>
+                  <span v-if="t.pricingModel === 'per_department'" class="npc-market-price-sub">
+                    {{ t.ceoPricingNote || '$1/day per department' }}
+                  </span>
                 </div>
               </div>
               <ul class="npc-market-features">
@@ -1327,6 +1573,16 @@ onUnmounted(() => {
         </p>
         <label class="channels-filter-label">Display name</label>
         <NInput v-model:value="hireName" style="margin: 8px 0 12px" />
+        <template v-if="isDevTemplate(hireTemplate)">
+          <label class="channels-filter-label">Job scope</label>
+          <NSpace vertical style="margin: 8px 0 12px">
+            <NCheckbox v-model:checked="hireDevScopeCanWrite">Can write code</NCheckbox>
+            <NCheckbox v-model:checked="hireDevScopeCanReview">Can review code</NCheckbox>
+          </NSpace>
+          <p class="hint sm" style="margin-top: 0">
+            Configure <strong>Writer</strong> and <strong>Reviewer(s)</strong> in Settings → Dev tools after hire.
+          </p>
+        </template>
         <template v-if="hireTemplate.requiresHirePassword || hireTemplate.hidden">
           <label class="channels-filter-label">Hire password</label>
           <NInput
@@ -1336,9 +1592,18 @@ onUnmounted(() => {
             style="margin: 8px 0 12px"
           />
         </template>
-        <template v-if="(hireTemplate.salaryCreditsPerMonth ?? 0) > 0">
+        <p v-if="templateRequiresPortalOAuth(hireTemplate) && templatePortalOAuthMeta(hireTemplate)" class="hint sm" style="margin-top: 0">
+          <strong>{{ templatePortalOAuthMeta(hireTemplate)!.label }} sign-in required.</strong>
+          Confirm hire opens Google sign-in for
+          <a :href="templatePortalOAuthMeta(hireTemplate)!.docsUrl" target="_blank" rel="noopener">MCP docs</a>.
+          If sign-in fails or is cancelled, hire is blocked.
+        </p>
+        <p v-if="templateIsVip(hireTemplate)" class="hint sm" style="margin-top: 0">
+          <strong>VIP Worker</strong> — included at no salary. Does not add to CEO $1/day department billing.
+        </p>
+        <template v-if="(hireTemplate.salaryCreditsPerMonth ?? 0) > 0 && hireTemplate.pricingModel !== 'per_department'">
           <div class="hire-billing-field">
-            <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+            <p class="hire-billing-byline">by daily, monthly, quarterly, yearly, or pay as you go</p>
             <div class="hire-billing-tabs">
               <button
                 v-for="interval in BILLING_INTERVALS"
@@ -1357,17 +1622,32 @@ onUnmounted(() => {
             </div>
           </div>
         </template>
-        <p class="hint sm" style="margin-top: 0">
+        <p v-if="hireTemplate.pricingModel === 'per_department'" class="hint sm" style="margin-top: 0">
+          CEO salary: <strong>$1/day per hired department</strong> (1 credit = $1 USD). Charged today on hire, then every day at 12:00 AM local time.
+          {{ hireTemplate.ceoPricingNote ? `Current: ${hireTemplate.ceoPricingNote}.` : '' }}
+        </p>
+        <p v-if="hireIsPaygo" class="hint sm" style="margin-top: 0">
+          {{ paygoRateLabel() }}. Usage is tracked on your PC; ECS syncs on recovery and only ever catches up (never reduces).
+        </p>
+        <p v-else class="hint sm" style="margin-top: 0">
           Credits auto-renew each billing period. Use <strong>Resign</strong> on My Agents to stop renewal.
         </p>
         <dl class="agent-browse-detail-list">
-          <div class="agent-browse-detail-row">
+          <div v-if="hireIsPaygo" class="agent-browse-detail-row">
+            <dt>Rate</dt>
+            <dd><strong>{{ paygoRateLabel() }}</strong></dd>
+          </div>
+          <div v-else class="agent-browse-detail-row">
             <dt>{{ hireFirstChargeLabel }}</dt>
             <dd>
               <span v-if="hireShowListPrice" class="hire-price-was">{{ hireListCredits }}</span>
               <strong>{{ hireChargeCredits }}</strong>
               credits (charged today)<span v-if="hireChargeAdjustment" class="hire-price-adjust">{{ hireChargeAdjustment }}</span>
             </dd>
+          </div>
+          <div v-if="hireIsPaygo" class="agent-browse-detail-row">
+            <dt>{{ hireFirstChargeLabel }}</dt>
+            <dd><strong>0</strong> credits (no upfront charge)</dd>
           </div>
           <div class="agent-browse-detail-row">
             <dt>Your balance</dt>
@@ -1381,6 +1661,15 @@ onUnmounted(() => {
         <NButton type="primary" :loading="!!hiring" @click="confirmHire">Confirm hire</NButton>
       </template>
     </NModal>
+
+    <ItGuysSetupModal
+      v-model:show="itSetupOpen"
+      :agent-name="itSetupAgentName"
+      :need-cursor-key="itSetupNeedCursorKey"
+      :need-codex-key="itSetupNeedCodexKey"
+      :need-claude-key="itSetupNeedClaudeKey"
+      @skip="message.info('可稍后在 Settings → Dev tools 配置，或跟 Secretary 说「配置开发工具」')"
+    />
   </div>
 </template>
 
@@ -1487,6 +1776,13 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
 }
+.npc-market-price-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+}
 .apply-error {
   color: #e88080;
   font-size: 13px;
@@ -1511,6 +1807,18 @@ onUnmounted(() => {
   background: rgba(70, 209, 96, 0.15);
   color: var(--accent-2);
   border: 1px solid rgba(70, 209, 96, 0.35);
+}
+.npc-vip-badge {
+  margin-left: 6px;
+  vertical-align: middle;
+  background: rgba(255, 193, 7, 0.18);
+  color: #c9a227;
+  border-color: rgba(255, 193, 7, 0.45);
+  font-size: 11px;
+  font-weight: 600;
+}
+.npc-vip-price {
+  color: var(--accent-2);
 }
 .btn.ghost {
   background: transparent;

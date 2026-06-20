@@ -39,6 +39,10 @@ export default defineConfig(({ mode }) => {
             })
           },
         },
+        '/auth/callback': {
+          target: `http://localhost:${backendPort}`,
+          changeOrigin: true,
+        },
         '/office-pa': {
           target: `http://localhost:${backendPort}`,
           changeOrigin: true,

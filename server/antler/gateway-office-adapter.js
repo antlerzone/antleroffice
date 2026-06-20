@@ -4,6 +4,7 @@
 
 const office = require('./office-state');
 const debugLog = require('./debug-log');
+const { classifyToolName, formatPhaseLine } = require('./office-bubble-label');
 
 /** @type {Map<string, number>} openclawAgentId → active run count */
 const activeRuns = new Map();
@@ -46,7 +47,7 @@ function resolveOfficeAgent(openclawId) {
 
   let hit = agents.find((a) => a.openclawAgentId === id);
   if (!hit && (id === 'main' || id === 'default')) {
-    hit = office.getAgent('coo');
+    hit = office.getAgent('secretary');
   }
   if (!hit) {
     hit = agents.find((a) => !a.external && (a.id === `user:${id}` || a.id === id));
@@ -91,12 +92,24 @@ function scheduleIdle(officeAgent, delayMs = 2200) {
   );
 }
 
-function setWorking(officeAgent, bubbleText, step) {
+function setWorking(officeAgent, bubbleText, step, taskLabel) {
   clearIdleTimer(officeAgent.id);
-  office.work(officeAgent.id, bubbleText || 'Working…', step
-    ? { label: step, step, progress: 1, total: 2 }
-    : null);
+  const job = officeAgent.currentJob || {};
+  const label = taskLabel || job.label || '';
+  const normalizedStep = step || 'Processing';
+  office.work(officeAgent.id, bubbleText || formatPhaseLine('Processing', label), {
+    label,
+    step: normalizedStep,
+    progress: 1,
+    total: 2,
+  });
   triggerOfficeRefresh();
+}
+
+function setWorkingTool(officeAgent, toolName, taskLabel) {
+  const { step, prefix, detail } = classifyToolName(toolName);
+  const label = taskLabel || officeAgent.currentJob?.label || '';
+  setWorking(officeAgent, formatPhaseLine(prefix, detail || label), step, label || detail);
 }
 
 function resolveChatState(eventName, row) {
@@ -106,6 +119,12 @@ function resolveChatState(eventName, row) {
 }
 
 function handleGatewayEvent(event, payload) {
+  try {
+    require('./paygo-meter').handleGatewayEvent(event, payload);
+  } catch {
+    /* paygo optional */
+  }
+
   const ev = asString(event).toLowerCase();
   if (!ev) return;
 
@@ -124,7 +143,7 @@ function handleGatewayEvent(event, payload) {
         const phase = asString(data.phase).toLowerCase();
         if (phase === 'start') {
           bumpRun(openclawId);
-          setWorking(officeAgent, 'Thinking…', 'Thinking');
+          setWorking(officeAgent, 'Processing…', 'Processing', officeAgent.currentJob?.label);
           return;
         }
         if (phase === 'end' || phase === 'error') {
@@ -139,11 +158,11 @@ function handleGatewayEvent(event, payload) {
         const phase = asString(data.phase || data.state).toLowerCase();
         if (phase === 'start' || phase === 'update') {
           bumpRun(openclawId);
-          setWorking(officeAgent, toolName ? `Using ${toolName}…` : 'Using tool…', toolName || 'Tool');
+          setWorkingTool(officeAgent, toolName, officeAgent.currentJob?.label);
           return;
         }
         if (phase === 'result') {
-          setWorking(officeAgent, toolName ? `${toolName} done` : 'Tool done', 'Thinking');
+          setWorking(officeAgent, 'Validating results…', 'Validating', officeAgent.currentJob?.label);
           return;
         }
       }
@@ -152,14 +171,14 @@ function handleGatewayEvent(event, payload) {
         bumpRun(openclawId);
         const raw = asString(data.content || data.text || data.delta);
         const preview = raw.length > 52 ? `${raw.slice(0, 52)}…` : raw;
-        setWorking(officeAgent, preview || 'Replying…', 'Replying');
+        setWorking(officeAgent, preview ? `Writing: ${preview}` : 'Writing…', 'Writing', officeAgent.currentJob?.label);
         return;
       }
 
       if (stream === 'compaction') {
         const phase = asString(data.phase).toLowerCase();
         if (phase === 'start') {
-          setWorking(officeAgent, 'Organizing context…', 'Context');
+          setWorking(officeAgent, 'Organizing context…', 'Context', officeAgent.currentJob?.label);
         }
         return;
       }
@@ -169,7 +188,7 @@ function handleGatewayEvent(event, payload) {
 
     if (ev === 'agent.started' || ev === 'agent.thinking') {
       bumpRun(openclawId);
-      setWorking(officeAgent, 'Thinking…', 'Thinking');
+      setWorking(officeAgent, 'Processing…', 'Processing', officeAgent.currentJob?.label);
       return;
     }
     if (ev === 'agent.done') {
@@ -183,7 +202,7 @@ function handleGatewayEvent(event, payload) {
     const state = resolveChatState(ev, row);
     if (state === 'delta') {
       bumpRun(openclawId);
-      setWorking(officeAgent, 'Replying…', 'Replying');
+      setWorking(officeAgent, 'Writing…', 'Writing', officeAgent.currentJob?.label);
       return;
     }
     if (state === 'final' || state === 'done' || state === 'aborted' || state === 'error') {
@@ -198,11 +217,11 @@ function handleGatewayEvent(event, payload) {
       bumpRun(openclawId);
       const d = asRecord(row.payload) || row;
       const toolName = asString(d.name || d.tool || d.toolName);
-      setWorking(officeAgent, toolName ? `Using ${toolName}…` : 'Using tool…', toolName || 'Tool');
+      setWorkingTool(officeAgent, toolName, officeAgent.currentJob?.label);
       return;
     }
     if (ev === 'tool.result') {
-      setWorking(officeAgent, 'Thinking…', 'Thinking');
+      setWorking(officeAgent, 'Processing…', 'Processing', officeAgent.currentJob?.label);
     }
     return;
   }

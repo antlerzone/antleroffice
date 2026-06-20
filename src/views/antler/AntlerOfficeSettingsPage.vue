@@ -10,6 +10,7 @@ import SummonSettingsTab from '@/components/settings/SummonSettingsTab.vue'
 import VoiceSettingsTab from '@/components/settings/VoiceSettingsTab.vue'
 import PersonaSettingsTab from '@/components/settings/PersonaSettingsTab.vue'
 import DailyStandupSettingsTab from '@/components/settings/DailyStandupSettingsTab.vue'
+import DevToolsSettingsTab from '@/components/settings/DevToolsSettingsTab.vue'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
 import { buildDesktopUnbindSignInUrl } from '@/lib/office-web'
 import { openExternalUrl } from '@/lib/desktop-shell'
@@ -203,6 +204,10 @@ async function onSave() {
 
         <NTabPane name="standup" :tab="t('pages.settings.voiceAssistant.tabs.standup')">
           <DailyStandupSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+
+        <NTabPane name="devtools" tab="Dev tools">
+          <DevToolsSettingsTab card-class="office-settings-card" />
         </NTabPane>
       </NTabs>
     </NSpin>

@@ -172,7 +172,31 @@ function resolveNode(dept: RosterDept): OrgNode {
   if (snap) {
     const isHired = !!snap.userAgentId
     const user = isHired ? userAgents.value.find((u) => u.id === snap.userAgentId) : null
-    const isBuiltinSupervisor = !isHired && dept.role === 'coo'
+
+    if (dept.role === 'secretary') {
+      return {
+        role: dept.role,
+        deptLabel: dept.label,
+        occupantName: user?.name || snap.label || 'Secretary',
+        npcState: snap.npcState === 'working' ? 'working' : 'idle',
+        charSprite: snap.charSprite ?? user?.sprite ?? dept.charSprite,
+        hueShift: snap.hueShift ?? user?.hueShift ?? 0,
+        kind: 'builtin',
+      }
+    }
+
+    if (dept.role === 'ceo' && !isHired) {
+      return {
+        role: dept.role,
+        deptLabel: dept.label,
+        occupantName: null,
+        npcState: 'vacant',
+        charSprite: snap.charSprite ?? dept.charSprite,
+        hueShift: snap.hueShift ?? 0,
+        kind: 'vacant',
+      }
+    }
+
     return {
       role: dept.role,
       deptLabel: dept.label,
@@ -180,7 +204,7 @@ function resolveNode(dept: RosterDept): OrgNode {
       npcState: snap.npcState === 'working' ? 'working' : 'idle',
       charSprite: snap.charSprite ?? user?.sprite ?? dept.charSprite,
       hueShift: snap.hueShift ?? user?.hueShift ?? 0,
-      kind: isHired ? 'hired' : isBuiltinSupervisor ? 'builtin' : 'hired',
+      kind: isHired ? 'hired' : 'builtin',
     }
   }
 
@@ -217,11 +241,12 @@ const bossNode = computed<OrgNode>(() => ({
   kind: 'boss',
 }))
 
-const frontDeskGroups = computed(() =>
-  roster.value.filter((d) => !d.routable && d.role !== 'coo').map(buildDepartmentGroup),
-)
-const cooNode = computed(() => {
-  const dept = roster.value.find((d) => d.role === 'coo')
+const secretaryNode = computed(() => {
+  const dept = roster.value.find((d) => d.role === 'secretary')
+  return dept ? resolveNode(dept) : null
+})
+const ceoNode = computed(() => {
+  const dept = roster.value.find((d) => d.role === 'ceo')
   return dept ? resolveNode(dept) : null
 })
 const departmentGroups = computed(() =>
@@ -364,7 +389,7 @@ defineExpose({ refresh })
     <template v-else>
       <div class="tab-toolbar org-toolbar">
         <p class="hint">
-          <strong>{{ resolvedDesktopName }}</strong> · Boss → COO → departments.
+          <strong>{{ resolvedDesktopName }}</strong> · Boss → Secretary → CEO → departments.
           {{ filledDeptCount }} of {{ departmentGroups.length }} departments ·
           {{ hiredEmployeeCount }} employees hired.
         </p>
@@ -399,74 +424,61 @@ defineExpose({ refresh })
 
           <div class="org-connector org-connector-down" aria-hidden="true" />
 
-          <!-- Front desk + COO -->
-          <div class="org-level org-level-exec">
-            <div
-              v-for="dept in frontDeskGroups"
-              :key="dept.role"
-              class="org-dept-column org-dept-column-exec"
-              :class="dept.hasEmployees ? 'org-dept-active' : 'org-dept-inactive'"
-            >
-              <div class="org-dept-label">{{ dept.label }}</div>
-              <div class="org-dept-staff">
-                <article
-                  v-for="emp in dept.employees"
-                  :key="emp.id"
-                  class="org-node org-node-employee org-node-active"
-                >
-                  <div class="org-node-avatar">
-                    <canvas
-                      :width="AGENT_SKIN_CANVAS"
-                      :height="AGENT_SKIN_CANVAS"
-                      :data-palette="emp.charSprite"
-                      :data-hue="emp.hueShift"
-                      :aria-label="emp.name"
-                    />
-                  </div>
-                  <div class="org-node-body">
-                    <strong class="org-node-name">{{ emp.name }}</strong>
-                    <span class="pill" :class="{ ok: emp.npcState === 'working' }">
-                      {{ emp.npcState === 'working' ? 'Working' : 'Idle' }}
-                    </span>
-                  </div>
-                </article>
-                <article v-if="!dept.employees.length" class="org-node org-node-employee org-node-inactive">
-                  <div class="org-node-avatar">
-                    <canvas
-                      :width="AGENT_SKIN_CANVAS"
-                      :height="AGENT_SKIN_CANVAS"
-                      :data-palette="dept.charSprite"
-                      data-hue="0"
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <div class="org-node-body">
-                    <strong class="org-node-name">Vacant</strong>
-                    <span class="tag">Not hired</span>
-                  </div>
-                </article>
-              </div>
-            </div>
-
+          <!-- Secretary (front door, below Boss) -->
+          <div class="org-level org-level-leader">
             <article
-              v-if="cooNode"
-              class="org-node org-node-coo org-node-active"
+              v-if="secretaryNode"
+              class="org-node org-node-secretary org-node-active"
             >
               <div class="org-node-avatar">
                 <canvas
                   :width="AGENT_SKIN_CANVAS"
                   :height="AGENT_SKIN_CANVAS"
-                  :data-palette="cooNode.charSprite"
-                  :data-hue="cooNode.hueShift"
-                  :aria-label="cooNode.occupantName || cooNode.deptLabel"
+                  :data-palette="secretaryNode.charSprite"
+                  :data-hue="secretaryNode.hueShift"
+                  :aria-label="secretaryNode.occupantName || secretaryNode.deptLabel"
                 />
               </div>
               <div class="org-node-body">
-                <span class="org-node-dept">{{ cooNode.deptLabel }}</span>
-                <strong class="org-node-name">{{ cooNode.occupantName || 'Vacant' }}</strong>
-                <span class="tag built">Supervisor</span>
-                <span class="pill" :class="{ ok: cooNode.npcState === 'working' }">
-                  {{ cooNode.npcState === 'working' ? 'Working' : 'Idle' }}
+                <span class="org-node-dept">{{ secretaryNode.deptLabel }}</span>
+                <strong class="org-node-name">{{ secretaryNode.occupantName || 'Secretary' }}</strong>
+                <span class="tag built">Front door · OpenClaw main</span>
+                <span class="pill" :class="{ ok: secretaryNode.npcState === 'working' }">
+                  {{ secretaryNode.npcState === 'working' ? 'Working' : 'Idle' }}
+                </span>
+              </div>
+            </article>
+          </div>
+
+          <div class="org-connector org-connector-down" aria-hidden="true" />
+
+          <!-- CEO (below Secretary) -->
+          <div class="org-level org-level-leader">
+            <article
+              v-if="ceoNode"
+              class="org-node org-node-ceo"
+              :class="ceoNode.kind === 'vacant' ? 'org-node-inactive' : 'org-node-active'"
+            >
+              <div class="org-node-avatar">
+                <canvas
+                  :width="AGENT_SKIN_CANVAS"
+                  :height="AGENT_SKIN_CANVAS"
+                  :data-palette="ceoNode.charSprite"
+                  :data-hue="ceoNode.hueShift"
+                  :aria-label="ceoNode.occupantName || ceoNode.deptLabel"
+                />
+              </div>
+              <div class="org-node-body">
+                <span class="org-node-dept">{{ ceoNode.deptLabel }}</span>
+                <strong class="org-node-name">{{ ceoNode.occupantName || 'Vacant' }}</strong>
+                <span v-if="ceoNode.kind === 'vacant'" class="tag">Hire from Browse</span>
+                <span v-else class="tag">Hired</span>
+                <span
+                  v-if="ceoNode.kind !== 'vacant'"
+                  class="pill"
+                  :class="{ ok: ceoNode.npcState === 'working' }"
+                >
+                  {{ ceoNode.npcState === 'working' ? 'Working' : 'Idle' }}
                 </span>
               </div>
             </article>
@@ -476,7 +488,7 @@ defineExpose({ refresh })
             <span class="org-connector-bar" />
           </div>
 
-          <!-- Departments under COO — each column can have multiple employees -->
+          <!-- Departments under CEO — each column can have multiple employees -->
           <div class="org-level org-level-depts">
             <div
               v-for="dept in departmentGroups"
@@ -600,6 +612,10 @@ defineExpose({ refresh })
   justify-content: center;
   gap: 16px;
   width: 100%;
+}
+
+.org-level-leader {
+  max-width: 200px;
 }
 
 .org-level-exec {
@@ -757,7 +773,12 @@ defineExpose({ refresh })
   min-width: 160px;
 }
 
-.org-node-coo {
+.org-node-secretary {
+  border-color: rgba(70, 209, 96, 0.45);
+  background: rgba(70, 209, 96, 0.08);
+}
+
+.org-node-ceo {
   border-color: rgba(100, 180, 255, 0.45);
   background: rgba(100, 180, 255, 0.08);
 }

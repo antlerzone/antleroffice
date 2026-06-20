@@ -131,7 +131,7 @@ async function skipForNow() {
   >
     <p class="hint">
       Choose any OpenClaw-supported model and paste your provider API key.
-      OpenClaw, Hermes, and MCP tools are already installed on this PC.
+      OpenClaw and MCP tools are already installed on this PC.
     </p>
     <p v-if="aiSetup.reason" class="hint warn">{{ aiSetup.reason }}</p>
 

@@ -1,6 +1,4 @@
-// First-run onboarding: detect the stack (OpenClaw = execution, Hermes = memory)
-// and one-click install whatever is missing, streaming a live log. Non-technical
-// users see plain status + a friendly log; they never touch the CLI.
+// First-run onboarding: detect OpenClaw (execution) and one-click install if missing.
 
 const { spawnCmd } = require('./spawn-util');
 const store = require('./store');
@@ -27,6 +25,14 @@ function log(line) {
 function runtimeCmd(name) {
   const rt = store.readSettings().runtimes?.[name] || {};
   return (rt.cmd || name).trim() || name;
+}
+
+function devCmd(name, fallback) {
+  const dev = store.readSettings().dev || {};
+  if (name === 'cursor') return String(dev.cursorCommand || fallback || 'cursor-agent').trim();
+  if (name === 'codex') return String(dev.codexCommand || fallback || 'codex').trim();
+  if (name === 'claude') return String(dev.claudeCommand || fallback || 'claude').trim();
+  return fallback || name;
 }
 
 // Probe a runtime's `--version`. Returns { installed, version }.
@@ -68,8 +74,11 @@ function probe(name) {
 }
 
 async function detect() {
-  const [openclaw, hermes] = await Promise.all([probe('openclaw'), probe('hermes')]);
-  return { openclaw, hermes };
+  const openclaw = await probe('openclaw');
+  const cursor = await probe(devCmd('cursor', 'cursor-agent'));
+  const codex = await probe(devCmd('codex', 'codex'));
+  const claude = await probe(devCmd('claude', 'claude'));
+  return { openclaw, cursor, codex, claude };
 }
 
 // Install command per runtime. OpenClaw is npm-based and cross-platform.
@@ -77,9 +86,44 @@ function installSpec(name) {
   if (name === 'openclaw') {
     return { cmd: 'npm', args: ['install', '-g', 'openclaw@latest'] };
   }
-  if (name === 'hermes') {
-    // Hermes install command per its docs (configurable / best-effort).
-    return { cmd: 'hermes', args: ['setup'] };
+  if (name === 'codex') {
+    if (process.platform === 'win32') {
+      return {
+        cmd: 'powershell.exe',
+        args: [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          'irm https://chatgpt.com/codex/install.ps1 | iex',
+        ],
+      };
+    }
+    return {
+      cmd: process.platform === 'win32' ? 'sh' : 'bash',
+      args: ['-c', 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'],
+    };
+  }
+  if (name === 'cursor') {
+    if (process.platform === 'win32') {
+      return {
+        cmd: 'powershell.exe',
+        args: [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          "irm 'https://cursor.com/install?win32=true' | iex",
+        ],
+      };
+    }
+    return {
+      cmd: 'bash',
+      args: ['-c', 'curl https://cursor.com/install -fsS | bash'],
+    };
+  }
+  if (name === 'claude') {
+    return { cmd: 'npm', args: ['install', '-g', '@anthropic-ai/claude-code@latest'] };
   }
   return null;
 }
@@ -138,7 +182,43 @@ function startInstall(name, cmd, args, opts) {
 function install(name) {
   const spec = installSpec(name);
   if (!spec) return { ok: false, error: `unknown runtime: ${name}` };
-  return runInstallJob(name, spec.cmd, spec.args);
+  const onDone =
+    name === 'codex'
+      ? (code) => {
+          if (code === 0) {
+            try {
+              const codexCli = require('./runtime/codex-cli');
+              codexCli.probe().catch(() => {});
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      : name === 'cursor'
+        ? (code) => {
+            if (code === 0) {
+              try {
+                const cursorCli = require('./runtime/cursor-cli');
+                cursorCli.patchCursorWindowsLaunchers();
+                cursorCli.probe().catch(() => {});
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        : name === 'claude'
+          ? (code) => {
+              if (code === 0) {
+                try {
+                  const claudeCli = require('./runtime/claude-cli');
+                  claudeCli.probe().catch(() => {});
+                } catch {
+                  /* ignore */
+                }
+              }
+            }
+          : undefined;
+  return runInstallJob(name, spec.cmd, spec.args, { onDone });
 }
 
 function getLog() {
@@ -242,6 +322,9 @@ async function getAppState() {
   ]);
   const onboarding = readOnboarding();
   const openclawReady = !!runtimes.openclaw?.installed;
+  const cursorReady = !!runtimes.cursor?.installed;
+  const codexReady = !!runtimes.codex?.installed;
+  const claudeReady = !!runtimes.claude?.installed;
   const mcpReady = !!packStatus.pack?.enabled;
   const stackReady = openclawReady && mcpReady;
   const aiConfigured = !!onboarding.aiConfigured || hasKey;
@@ -260,6 +343,9 @@ async function getAppState() {
     runtimes,
     stackReady,
     openclawReady,
+    cursorReady,
+    codexReady,
+    claudeReady,
     mcpReady,
     aiConfigured,
     aiSkipped,

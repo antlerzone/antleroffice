@@ -6,7 +6,7 @@ import OfficeOrgChart from '@/components/antler/OfficeOrgChart.vue'
 import AgentResumeModal from '@/components/antler/AgentResumeModal.vue'
 import AgentUsageBars from '@/components/antler/AgentUsageBars.vue'
 import AgentHireCompareCard from '@/components/antler/AgentHireCompareCard.vue'
-import { NDropdown, NModal, NButton, NInput, useMessage, useDialog, type DropdownOption } from 'naive-ui'
+import { NDropdown, NModal, NButton, NInput, NCheckbox, NSpace, useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { formatTokenCount, useAntlerAgentTokens } from '@/composables/useAntlerAgentTokens'
 import {
@@ -25,8 +25,10 @@ import {
   intervalChargeAdjustment,
   intervalLabel,
   intervalTabLabel,
+  isPaygo,
   listCreditsPerPeriod,
   normalizeBillingInterval,
+  paygoRateLabel,
   type BillingInterval,
 } from '@/lib/billing-interval'
 
@@ -58,6 +60,8 @@ interface UserAgent {
   payrollStatus?: string | null
   fireAt?: number | null
   templateId?: string | null
+  devEngine?: string | null
+  devScope?: { canWrite?: boolean; canReview?: boolean } | null
 }
 
 interface CatalogTemplate {
@@ -150,17 +154,23 @@ const renameModalAgent = ref<UserAgent | null>(null)
 const renameName = ref('')
 const renameBusy = ref(false)
 const renameError = ref('')
+const scopeModalOpen = ref(false)
+const scopeModalAgent = ref<UserAgent | null>(null)
+const scopeCanWrite = ref(true)
+const scopeCanReview = ref(true)
+const scopeBusy = ref(false)
+const scopeError = ref('')
 const resumeOpen = ref(false)
 const resumeAgent = ref<UserAgent | null>(null)
 const resumeBuiltinRole = ref<string | null>(null)
 const hireBackOpen = ref(false)
 const hireBackAgent = ref<UserAgent | null>(null)
-const hireBackInterval = ref<BillingInterval>('monthly')
+const hireBackInterval = ref<BillingInterval>('yearly')
 const hireBackBusy = ref(false)
 const hireBackError = ref('')
 const changeContractOpen = ref(false)
 const changeContractAgent = ref<UserAgent | null>(null)
-const changeContractInterval = ref<BillingInterval>('monthly')
+const changeContractInterval = ref<BillingInterval>('yearly')
 const changeContractBusy = ref(false)
 const changeContractError = ref('')
 const gridRef = ref<HTMLElement | null>(null)
@@ -365,7 +375,7 @@ function confirmFire(agent: UserAgent) {
 
 function openHireBack(agent: UserAgent) {
   hireBackAgent.value = agent
-  hireBackInterval.value = normalizeBillingInterval(agent.billingInterval || 'monthly')
+  hireBackInterval.value = normalizeBillingInterval(agent.billingInterval || 'yearly')
   hireBackError.value = ''
   hireBackOpen.value = true
 }
@@ -423,7 +433,7 @@ async function confirmHireBack() {
 
 function openChangeContract(agent: UserAgent) {
   changeContractAgent.value = agent
-  changeContractInterval.value = normalizeBillingInterval(agent.billingInterval || 'monthly')
+  changeContractInterval.value = normalizeBillingInterval(agent.billingInterval || 'yearly')
   changeContractError.value = ''
   changeContractOpen.value = true
 }
@@ -585,6 +595,11 @@ function mcpSummary(agent: UserAgent) {
   return parts.join(', ')
 }
 
+function isDevAgent(agent: UserAgent) {
+  const devTemplates = new Set(['cursor_developer', 'claude_developer', 'codex_developer', 'it_guys'])
+  return !!agent.devEngine || (agent.templateId ? devTemplates.has(agent.templateId) : false) || agent.role === 'it'
+}
+
 function userMenuOptions(agent: UserAgent): DropdownOption[] {
   const opts: DropdownOption[] = [
     { label: 'View overview', key: 'view' },
@@ -593,7 +608,10 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
     { label: 'Review', key: 'review' },
     { label: 'MCP accounts', key: 'mcps' },
   ]
-  if (agent.salaryCreditsPerMonth && agent.salaryCreditsPerMonth > 0) {
+  if (isDevAgent(agent)) {
+    opts.splice(2, 0, { label: 'Job scope', key: 'scope' })
+  }
+  if (agent.salaryCreditsPerMonth && agent.salaryCreditsPerMonth > 0 && agent.role !== 'ceo') {
     opts.push({ label: 'Change contract', key: 'change-contract' })
   }
   if (agent.payrollStatus === 'pending_termination') {
@@ -642,6 +660,33 @@ function openRename(agent: UserAgent) {
   renameName.value = agent.name
   renameError.value = ''
   renameModalOpen.value = true
+}
+
+function openScope(agent: UserAgent) {
+  scopeModalAgent.value = agent
+  scopeCanWrite.value = agent.devScope?.canWrite !== false
+  scopeCanReview.value = agent.devScope?.canReview !== false
+  scopeError.value = ''
+  scopeModalOpen.value = true
+}
+
+async function saveScope() {
+  if (!scopeModalAgent.value) return
+  scopeBusy.value = true
+  scopeError.value = ''
+  try {
+    const r = await api.send<{ agent?: UserAgent }>('PUT', `/api/config/agents/${scopeModalAgent.value.id}`, {
+      devScope: { canWrite: scopeCanWrite.value, canReview: scopeCanReview.value },
+    })
+    const hit = agents.value.find((a) => a.id === scopeModalAgent.value!.id)
+    if (hit && r.agent?.devScope) hit.devScope = r.agent.devScope
+    message.success('Job scope updated')
+    scopeModalOpen.value = false
+  } catch (e) {
+    scopeError.value = e instanceof Error ? e.message : 'Could not save job scope'
+  } finally {
+    scopeBusy.value = false
+  }
 }
 
 async function saveRename() {
@@ -717,6 +762,7 @@ function onUserMenu(key: string, agent: UserAgent) {
   else if (key === 'change-contract') openChangeContract(agent)
   else if (key === 'view') openOverview(agent)
   else if (key === 'rename') openRename(agent)
+  else if (key === 'scope') openScope(agent)
   else if (key === 'skin') void router.push({ name: 'AntlerSkins', query: { agent: agent.id } })
   else if (key === 'review') void openReview(agent)
   else if (key === 'mcps') openMcpBindings(agent)
@@ -779,7 +825,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-show="agentTab === 'mine'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Your hired NPC employees and built-in departments. Salary auto-renews each billing period until you resign at contract end.
+          Your hired NPC employees plus built-in Secretary and CEO station. Salary auto-renews each billing period until you resign at contract end.
         </p>
         <div class="inline">
           <div class="seg">
@@ -1072,6 +1118,11 @@ onUnmounted(() => stopSkinPreviews())
     </div>
 
     <div v-if="agentTab === 'hierarchy'" class="skilltab">
+      <div class="tab-toolbar">
+        <p class="hint">
+          Boss → Secretary (front door) → CEO (hire from Browse) → department workers.
+        </p>
+      </div>
       <OfficeOrgChart :snapshot="officeSnapshot" :user-agents="agents" />
     </div>
 
@@ -1128,6 +1179,24 @@ onUnmounted(() => stopSkinPreviews())
         >
           Save
         </NButton>
+      </template>
+    </NModal>
+
+    <NModal
+      v-model:show="scopeModalOpen"
+      preset="card"
+      :title="`Job scope — ${scopeModalAgent?.name || ''}`"
+      style="max-width: 420px"
+    >
+      <p class="hint">Control whether this developer can write code, review code, or both.</p>
+      <NSpace vertical>
+        <NCheckbox v-model:checked="scopeCanWrite">Can write code</NCheckbox>
+        <NCheckbox v-model:checked="scopeCanReview">Can review code</NCheckbox>
+      </NSpace>
+      <p v-if="scopeError" class="modal-error">{{ scopeError }}</p>
+      <template #footer>
+        <NButton @click="scopeModalOpen = false">Cancel</NButton>
+        <NButton type="primary" :loading="scopeBusy" @click="saveScope">Save</NButton>
       </template>
     </NModal>
 
@@ -1207,7 +1276,7 @@ onUnmounted(() => stopSkinPreviews())
           Current contract still ends {{ fmtDate(hireBackAgent.fireAt) }} if you do not hire back.
         </p>
         <div v-if="(hireBackAgent.salaryCreditsPerMonth ?? 0) > 0" class="hire-billing-field">
-          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly, or pay as you go</p>
           <div class="hire-billing-tabs">
             <button
               v-for="interval in BILLING_INTERVALS"
@@ -1226,7 +1295,11 @@ onUnmounted(() => stopSkinPreviews())
           </div>
         </div>
         <dl class="agent-browse-detail-list">
-          <div class="agent-browse-detail-row">
+          <div v-if="isPaygo(hireBackInterval)" class="agent-browse-detail-row">
+            <dt>Rate</dt>
+            <dd><strong>{{ paygoRateLabel() }}</strong></dd>
+          </div>
+          <div v-else class="agent-browse-detail-row">
             <dt>{{ hireBackRenewLabel }} renewal</dt>
             <dd>
               <span v-if="hireBackShowListPrice" class="hire-price-was">{{ hireBackListCredits }}</span>
@@ -1263,7 +1336,7 @@ onUnmounted(() => stopSkinPreviews())
           </span>
         </p>
         <div class="hire-billing-field">
-          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly</p>
+          <p class="hire-billing-byline">by daily, monthly, quarterly, yearly, or pay as you go</p>
           <div class="hire-billing-tabs">
             <button
               v-for="interval in BILLING_INTERVALS"
@@ -1282,7 +1355,11 @@ onUnmounted(() => stopSkinPreviews())
           </div>
         </div>
         <dl class="agent-browse-detail-list">
-          <div class="agent-browse-detail-row">
+          <div v-if="isPaygo(changeContractInterval)" class="agent-browse-detail-row">
+            <dt>Rate</dt>
+            <dd><strong>{{ paygoRateLabel() }}</strong></dd>
+          </div>
+          <div v-else class="agent-browse-detail-row">
             <dt>{{ changeContractRenewLabel }} renewal</dt>
             <dd>
               <span v-if="changeContractShowListPrice" class="hire-price-was">{{ changeContractListCredits }}</span>

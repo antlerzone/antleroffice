@@ -46,6 +46,8 @@ function addAgent({
   channels = null,
   userAgentId = null,
   openclawAgentId = null,
+  devEngine = null,
+  devScope = null,
 }) {
   const agent = {
     id: id || uid('npc'),
@@ -64,32 +66,77 @@ function addAgent({
     channels,
     userAgentId,
     openclawAgentId,
+    devEngine,
+    devScope: devScope || { canWrite: true, canReview: true },
   };
   state.agents.push(agent);
   touch();
   return agent;
 }
 
+function agentPatchFromDef(d) {
+  return {
+    label: d.name || d.role,
+    role: d.role || 'worker',
+    charSprite: Number.isInteger(d.sprite) ? d.sprite : 0,
+    hueShift: Number.isInteger(d.hueShift) ? d.hueShift : 0,
+    runtime: d.runtime || 'demo',
+    skillIds: d.skillIds || [],
+    openclawSkillNames: d.openclawSkillNames || [],
+    mcpIds: d.mcpIds || [],
+    mcpBindings: d.mcpBindings || [],
+    channels: d.channels || null,
+    userAgentId: d.id,
+    openclawAgentId: d.openclawAgentId || null,
+    devEngine: d.devEngine || null,
+    devScope: d.devScope || { canWrite: true, canReview: true },
+  };
+}
+
+/** CEO uses a fixed office station; other hires get user:{id} NPCs. */
+function attachHiredAgent(def) {
+  if (!def?.id) return null;
+  if (def.role === 'ceo') {
+    const station = state.agents.find((a) => a.role === 'ceo' && !a.external);
+    if (station) {
+      setAgent(station.id, agentPatchFromDef(def));
+      removeAgent(`user:${def.id}`);
+      return station;
+    }
+  }
+  const id = `user:${def.id}`;
+  if (state.agents.find((a) => a.id === id)) return getAgent(id);
+  return addAgent({ id, ...agentPatchFromDef(def) });
+}
+
+function clearRoleStation(role, { label, charSprite } = {}) {
+  const station = state.agents.find((a) => a.role === role && !a.external && a.userAgentId);
+  if (!station) return null;
+  const roster = require('./roster');
+  const dept = roster.byRole(role);
+  setAgent(station.id, {
+    userAgentId: null,
+    label: label || dept?.label || role,
+    charSprite: Number.isInteger(charSprite) ? charSprite : dept?.charSprite ?? station.charSprite,
+    openclawAgentId: null,
+    runtime: null,
+    skillIds: [],
+    openclawSkillNames: [],
+    mcpIds: [],
+    mcpBindings: [],
+    channels: null,
+    npcState: 'resting',
+    bubbleText: '',
+    currentJob: null,
+    awaitingBossInput: false,
+  });
+  return station;
+}
+
 // Mirror the persisted user-created agents into the office on boot (idempotent).
 function loadUserAgents(defs = []) {
   for (const d of defs) {
-    const id = `user:${d.id}`;
-    if (state.agents.find((a) => a.id === id)) continue;
-    addAgent({
-      id,
-      label: d.name || d.role,
-      role: d.role || 'worker',
-      charSprite: Number.isInteger(d.sprite) ? d.sprite : 0,
-      hueShift: Number.isInteger(d.hueShift) ? d.hueShift : 0,
-      runtime: d.runtime || 'demo',
-      skillIds: d.skillIds || [],
-      openclawSkillNames: d.openclawSkillNames || [],
-      mcpIds: d.mcpIds || [],
-      mcpBindings: d.mcpBindings || [],
-      channels: d.channels || null,
-      userAgentId: d.id,
-      openclawAgentId: d.openclawAgentId || null,
-    });
+    attachHiredAgent(d);
   }
 }
 
@@ -105,9 +152,12 @@ function pickSprite() {
 }
 
 function getAgent(idOrRole) {
+  const key = String(idOrRole || '');
+  const roleAlias = key === 'coo' ? 'ceo' : key;
   return (
-    state.agents.find((a) => a.id === idOrRole) ||
-    state.agents.find((a) => a.role === idOrRole) ||
+    state.agents.find((a) => a.id === key) ||
+    state.agents.find((a) => a.role === key) ||
+    state.agents.find((a) => a.role === roleAlias) ||
     null
   );
 }
@@ -117,7 +167,7 @@ function resolveOpenClawAgentId(agentIdOrRole) {
   const agent = getAgent(agentIdOrRole);
   if (!agent || agent.external) return null;
   if (agent.openclawAgentId) return agent.openclawAgentId;
-  if (agent.role === 'coo') return 'main';
+  if (agent.role === 'secretary') return 'main';
   return null;
 }
 
@@ -268,6 +318,8 @@ module.exports = {
   uid,
   addAgent,
   loadUserAgents,
+  attachHiredAgent,
+  clearRoleStation,
   setSelected,
   getAgent,
   resolveOpenClawAgentId,

@@ -348,10 +348,13 @@ function setupUpdaterIpc() {
   });
 }
 
-// Dev skips single-instance lock so `dev:electron` can open even if an installed copy is running.
-const gotLock = isDev || app.requestSingleInstanceLock();
+const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  console.error('[AntlerOffice] Another instance is already running. Quit it, then retry.');
+  console.error(
+    isDev
+      ? '[AntlerOffice] Dev Electron is already running. Close the existing window (tray → Quit), then retry.'
+      : '[AntlerOffice] Another instance is already running. Quit it, then retry.',
+  );
   app.quit();
 } else {
   app.on('second-instance', (_e, argv) => {

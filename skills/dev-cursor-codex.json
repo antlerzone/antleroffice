@@ -1,0 +1,5 @@
+{
+  "id": "dev_cursor_codex",
+  "name": "Cursor + Codex dev pipeline",
+  "system": "IT dev pipeline: Cursor CLI writes code, Codex CLI reviews diff. AntlerOffice desktop spawns both locally."
+}

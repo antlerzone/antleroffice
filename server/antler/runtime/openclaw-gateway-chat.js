@@ -3,6 +3,7 @@
 
 const oc = require('../openclaw-config');
 const { needsBossInput, scanMessagesForToolAuthBlock } = require('../agent-outcome');
+const { classifyToolName, formatPhaseLine } = require('../office-bubble-label');
 
 function parseJson(s) {
   try {
@@ -63,11 +64,8 @@ function isRunComplete(messages) {
 }
 
 function toolActivityLabel(toolName) {
-  const n = String(toolName || '').toLowerCase();
-  if (/exec|bash|shell|command/.test(n)) return 'Running commands…';
-  if (/browser|web|fetch|curl|search|firecrawl|perplexity/.test(n)) return 'Searching the web…';
-  if (/read|file|grep/.test(n)) return 'Reading files…';
-  return toolName ? `Using ${toolName}…` : 'Using tools…';
+  const { prefix, detail } = classifyToolName(toolName);
+  return formatPhaseLine(prefix, detail);
 }
 
 function liveStatusFromMessages(messages) {
@@ -80,12 +78,12 @@ function liveStatusFromMessages(messages) {
       for (let j = parts.length - 1; j >= 0; j -= 1) {
         const p = parts[j];
         if (p?.type === 'toolCall' && p.name) {
-          return { bubble: toolActivityLabel(p.name), step: 'Searching' };
+          return { bubble: toolActivityLabel(p.name), step: classifyToolName(p.name).step };
         }
         if (p?.type === 'text' && String(p.text || '').trim()) {
           const preview = String(p.text).trim();
-          const short = preview.length > 48 ? `${preview.slice(0, 48)}…` : preview;
-          return { bubble: short || 'Typing…', step: 'Typing' };
+          const short = preview.length > 40 ? `${preview.slice(0, 40)}…` : preview;
+          return { bubble: formatPhaseLine('Writing', short), step: 'Writing' };
         }
       }
       const reason = String(m.stopReason || '').toLowerCase();
@@ -94,21 +92,24 @@ function liveStatusFromMessages(messages) {
       }
     }
     if (role === 'toolresult' || role === 'tool_result') {
-      return { bubble: 'Processing results…', step: 'Searching' };
+      return { bubble: 'Validating results…', step: 'Validating' };
     }
   }
-  return { bubble: 'Thinking…', step: 'Thinking' };
+  return { bubble: 'Processing…', step: 'Processing' };
 }
 
 function pushCooLiveStatus(messages) {
   try {
     const office = require('../office-state');
+    const sec = office.getAgent('secretary');
     const { bubble, step } = liveStatusFromMessages(messages);
-    office.setAgent('coo', {
+    const label = sec?.currentJob?.label || '';
+    office.setAgent('secretary', {
       npcState: 'working',
       bubbleText: bubble,
-      currentJob: { label: step, step, progress: 2, total: 2 },
+      currentJob: { label, step, progress: 2, total: 2 },
     });
+    require('../pa-bridge').refreshOfficeBroadcast();
   } catch {
     /* best-effort */
   }

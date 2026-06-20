@@ -9,7 +9,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useLocaleStore } from '@/stores/locale'
 import { useWebSocketStore } from '@/stores/websocket'
 import ConnectionStatus from '@/components/common/ConnectionStatus.vue'
-import GatewaySwitcher from '@/components/common/GatewaySwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -78,7 +77,6 @@ async function handleLogout() {
 
     <NSpace :size="8" align="center">
       <ConnectionStatus />
-      <GatewaySwitcher />
 
       <NTooltip>
         <template #trigger>

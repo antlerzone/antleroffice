@@ -1,9 +1,10 @@
-// Hermes layer = memory capability. For now AntlerOffice's local memory-store
-// IS the Hermes stand-in: it gathers relevant memories before a task and records
-// an episode after. When the real Hermes memory API is provided, wire it here
-// (settings.runtimes.hermes) while keeping this same interface.
+// Hermes layer = memory capability. Local memory-store is the stand-in until the
+// real Hermes memory API is wired (settings.runtimes.hermes). Interface:
+//   getContext(memoryKey, query) — inject before tasks
+//   recordAfterTask(...)         — summarize + extract facts after tasks
 
 const memory = require('../memory-store');
+const { recordAfterTask } = require('../memory-record');
 
 function getContext(memoryKey, query) {
   return memory.context(memoryKey, query);
@@ -13,4 +14,4 @@ function record(memoryKey, entry) {
   return memory.append(memoryKey, entry);
 }
 
-module.exports = { getContext, record };
+module.exports = { getContext, record, recordAfterTask };

@@ -42,9 +42,59 @@ function writeBundle(templateId, { manifest, files }) {
   return root;
 }
 
+function collectMonorepoBundle(templateId) {
+  const mono = monorepoBundlesRoot();
+  if (!mono) return null;
+  const root = path.join(mono, templateId);
+  const manifestPath = path.join(root, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) return null;
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  const files = {};
+  function walk(relDir) {
+    const dir = relDir ? path.join(root, relDir) : root;
+    for (const name of fs.readdirSync(dir)) {
+      if (!relDir && name === 'manifest.json') continue;
+      const relPath = relDir ? `${relDir}/${name}` : name;
+      const full = path.join(root, relPath);
+      if (fs.statSync(full).isDirectory()) {
+        walk(relPath);
+      } else {
+        files[relPath.replace(/\\/g, '/')] = fs.readFileSync(full, 'utf8');
+      }
+    }
+  }
+  walk('');
+  return { manifest, files };
+}
+
+/** Dev fallback when ECS has not published the bundle yet (e.g. local Antlermarket/server/bundles). */
+function installFromMonorepo(templateId) {
+  const payload = collectMonorepoBundle(templateId);
+  if (!payload) return null;
+  const dest = writeBundle(templateId, payload);
+  return {
+    ok: true,
+    source: 'monorepo',
+    path: dest,
+    version: payload.manifest.version || null,
+    fileCount: Object.keys(payload.files).length,
+  };
+}
+
 async function downloadAndInstall(template) {
   const url = resolveBundleUrl(template);
-  if (!url) return { ok: false, skipped: true, reason: 'no_ecs_bundle_url' };
+  if (!url) {
+    const mono = installFromMonorepo(template.id);
+    if (mono?.ok) return mono;
+    return { ok: false, skipped: true, reason: 'no_ecs_bundle_url' };
+  }
 
   const local = readLocalManifest(template.id);
   if (local?.version && template.version && local.version === template.version) {
@@ -54,9 +104,13 @@ async function downloadAndInstall(template) {
   const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) {
+    const mono = installFromMonorepo(template.id);
+    if (mono?.ok) return mono;
     throw new Error(data.error || `Bundle download failed (${res.status})`);
   }
   if (!data.manifest || !data.files) {
+    const mono = installFromMonorepo(template.id);
+    if (mono?.ok) return mono;
     throw new Error('Invalid bundle payload from ECS');
   }
 
@@ -70,16 +124,37 @@ async function downloadAndInstall(template) {
   };
 }
 
+function monorepoBundlesRoot() {
+  const candidates = [
+    path.join(__dirname, '..', '..', '..', 'server', 'bundles'),
+    path.join(__dirname, '..', '..', 'server', 'bundles'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 function skillFilePath(templateId, skillId) {
   const slug = String(skillId || '').replace(/_/g, '-');
   const bundled = path.join(bundleDir(templateId), 'skills', `${slug}.json`);
   if (fs.existsSync(bundled)) return bundled;
+  const mono = monorepoBundlesRoot();
+  if (mono) {
+    const p = path.join(mono, templateId, 'skills', `${slug}.json`);
+    if (fs.existsSync(p)) return p;
+  }
   return null;
 }
 
 function openclawSkillDir(templateId, folderName) {
   const bundled = path.join(bundleDir(templateId), 'openclaw-skills', folderName);
   if (fs.existsSync(bundled)) return bundled;
+  const mono = monorepoBundlesRoot();
+  if (mono) {
+    const p = path.join(mono, templateId, 'openclaw-skills', folderName);
+    if (fs.existsSync(p)) return p;
+  }
   return null;
 }
 
@@ -88,6 +163,7 @@ module.exports = {
   bundleDir,
   resolveBundleUrl,
   downloadAndInstall,
+  installFromMonorepo,
   readLocalManifest,
   skillFilePath,
   openclawSkillDir,

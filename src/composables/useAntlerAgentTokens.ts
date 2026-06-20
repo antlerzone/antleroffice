@@ -38,7 +38,7 @@ export function useAntlerAgentTokens() {
   }
 
   function lookupTokens(openclawAgentId?: string | null, fallbackRole?: string) {
-    const key = openclawAgentId || (fallbackRole === 'coo' ? 'main' : '') || ''
+    const key = openclawAgentId || (fallbackRole === 'secretary' || fallbackRole === 'coo' ? 'main' : '') || ''
     if (!key) return null
     const hit = byOpenClawId.value[key]
     if (!hit || !hit.total) return hit || { input: 0, output: 0, total: 0 }

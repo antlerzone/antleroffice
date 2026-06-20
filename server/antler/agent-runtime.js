@@ -16,6 +16,12 @@ const {
 
 const bossChat = require('./boss-chat-store');
 const taskMeter = require('./task-meter');
+const orgRoles = require('./org-roles');
+const secretaryFbIntake = require('./secretary-fb-intake');
+const secretaryItIntake = require('./secretary-it-intake');
+const ceoPipelinePending = require('./ceo-pipeline-pending');
+const devPipeline = require('./runtime/dev-pipeline');
+const workflowContext = require('./workflow-context');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -65,10 +71,7 @@ function chat(from, text, threadId, meta) {
   office.addChat(from, text, threadId, meta);
 }
 
-// End-to-end loop:
-// boss -> COO · OpenClaw. If the client hired a specialist for this kind of
-// work, the COO routes the task to that NPC; otherwise the COO answers the boss
-// directly (it is the OpenClaw executor). No throwaway worker NPCs are created.
+// boss -> Secretary (OpenClaw main). Secretary forwards to hired CEO, who routes to department workers.
 async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId, authorName, ownerKey } = {}) {
   const raw = String(text || '').trim();
   if (!raw) return { ok: false, error: 'empty instruction' };
@@ -78,7 +81,11 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
     ? `Produce a clear, step-by-step PLAN to accomplish the task below. Do NOT execute it or generate the final deliverable — only outline the approach, the steps, and anything you'd need.\n\nTask: ${raw}`
     : raw;
 
-  const resolvedAgentId = targetAgentId || 'coo';
+  let resolvedAgentId = targetAgentId || orgRoles.SECRETARY_ROLE;
+  const agentForTarget = office.getAgent(resolvedAgentId);
+  if (!orgRoles.isSecretaryRole(resolvedAgentId) && !orgRoles.isSecretaryRole(agentForTarget?.role)) {
+    resolvedAgentId = orgRoles.SECRETARY_ROLE;
+  }
   const userKey = ownerKey || 'local:boss';
 
   if (mode === 'agent' || mode === 'plan') {
@@ -111,24 +118,43 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
   }
 
   runQueued(queueKey, async () => {
-    if (targetAgentId) {
+    const secretary = orgRoles.findSecretary();
+    const secretaryId = secretary?.id || orgRoles.SECRETARY_ROLE;
+
+    if (targetAgentId && orgRoles.isCeoRole(office.getAgent(targetAgentId)?.role)) {
       const agent = office.getAgent(targetAgentId);
       if (!agent) throw new Error('Agent not found');
-      // Direct COO chat must use runAsCoo — it carries the COO system prompt and
-      // builtin MCP pack (web research). directToAgent treats COO like a generic NPC.
-      if (agent.id === 'coo' || agent.role === 'coo') {
-        await runAsCoo({ instruction, shortTask, planning, rawTask: raw, threadId: activeThreadId, ownerKey: userKey });
-        return { routedTo: agent.role, agentId: agent.id };
-      }
-      await directToAgent({
-        instruction,
-        agent,
+      const resumed = await tryResumeCeoPipeline({
+        raw,
+        threadId: activeThreadId,
+        ownerKey: userKey,
         shortTask,
         planning,
-        rawTask: raw,
-        threadId: activeThreadId,
       });
+      if (!resumed?.handled) {
+        await runAsCeo({
+          instruction,
+          shortTask,
+          planning,
+          rawTask: raw,
+          threadId: activeThreadId,
+          ownerKey: userKey,
+        });
+      }
       return { routedTo: agent.role, agentId: agent.id };
+    }
+
+    if (targetAgentId && !orgRoles.isSecretaryRole(targetAgentId)) {
+      const agent = office.getAgent(targetAgentId);
+      if (agent && orgRoles.isSecretaryRole(agent.role)) {
+        await runAsSecretary({ instruction, shortTask, planning, rawTask: raw, threadId: activeThreadId, ownerKey: userKey });
+        return { routedTo: 'secretary', agentId: agent.id };
+      }
+    }
+
+    if (!targetAgentId || orgRoles.isSecretaryRole(resolvedAgentId)) {
+      await runAsSecretary({ instruction, shortTask, planning, rawTask: raw, threadId: activeThreadId, ownerKey: userKey });
+      return { routedTo: 'secretary', agentId: secretaryId };
     }
 
     const dept = roster.route(instruction);
@@ -144,7 +170,7 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
   }).catch((err) => {
     chat('system', `Error: ${err.message}`, activeThreadId, { authorName: 'Office' });
     if (targetAgentId) office.rest(targetAgentId, '');
-    else office.rest('coo', '');
+    else office.rest(orgRoles.SECRETARY_ROLE, '');
   });
 
   return {
@@ -214,10 +240,10 @@ async function runAgentTask({ agent, instruction, system, mcpServers = [], threa
 async function runTaskSteps({ agent, steps, baseSystem, mcpServers, shortTask, planning, rawTask }) {
   const parallel = steps.length > 1;
   office.setAgent(agent.id, {
-    bubbleText: parallel ? `Running ${steps.length} tasks…` : 'Producing output…',
+    bubbleText: parallel ? `Processing: ${steps.length} parallel tasks` : 'Processing…',
     currentJob: {
       label: shortTask,
-      step: parallel ? `${steps.length} parallel subtasks` : 'Producing deliverable',
+      step: 'Processing',
       progress: 2,
       total: 2,
     },
@@ -255,8 +281,16 @@ async function runTaskSteps({ agent, steps, baseSystem, mcpServers, shortTask, p
 // and relays to OpenClaw (the real executor) via the runtime adapter; the
 // adapter injects this agent's memory + learned knowledge and falls back to the
 // local demo executor when OpenClaw isn't installed.
-async function directToAgent({ instruction, agent, shortTask, planning = false, rawTask = '', threadId = null }) {
-  office.work(agent.id, 'Working on it…', { label: shortTask, step: 'Thinking', progress: 1, total: 2 });
+async function runWorkerTask({
+  instruction,
+  agent,
+  shortTask,
+  planning = false,
+  rawTask = '',
+  threadId = null,
+  ownerKey = null,
+}) {
+  office.work(agent.id, 'Processing…', { label: shortTask, step: 'Processing', progress: 1, total: 2 });
 
   const notes = skills.readSharedNotes();
   let baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
@@ -294,8 +328,8 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
         const mcpBlock = mcpContextForStep(step, mcpServers);
         const system = [baseSystem, mcpBlock].filter(Boolean).join('\n\n');
         office.setAgent(agent.id, {
-          bubbleText: 'Producing output…',
-          currentJob: { label: shortTask, step: 'Producing deliverable', progress: 2, total: 2 },
+          bubbleText: 'Processing…',
+          currentJob: { label: shortTask, step: 'Processing', progress: 2, total: 2 },
         });
         return runAgentTask({
           agent,
@@ -303,10 +337,24 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
           system,
           mcpServers,
           threadId,
+          ownerKey,
         });
       })();
 
   const { text, provider, needsBossInput: waitingOnBoss } = await taskP;
+  return { text, provider, needsBossInput: waitingOnBoss };
+}
+
+async function directToAgent({ instruction, agent, shortTask, planning = false, rawTask = '', threadId = null, ownerKey = null }) {
+  const { text, provider, needsBossInput: waitingOnBoss } = await runWorkerTask({
+    instruction,
+    agent,
+    shortTask,
+    planning,
+    rawTask,
+    threadId,
+    ownerKey,
+  });
 
   const file = saveDeliverable(agent.role || 'agent', rawTask || instruction, text);
   if (planning) {
@@ -377,19 +425,17 @@ function recordDeliverable(agent, task, file, { kind = 'plan_complete' } = {}) {
 }
 
 async function choreograph({ instruction, dept, shortTask, planning = false, rawTask = '', threadId = null }) {
-  // If the client has hired a specialist for this kind of work, the COO routes
-  // the task to them. Otherwise the COO · OpenClaw simply answers it itself —
-  // it IS the OpenClaw executor, so it never spawns throwaway worker NPCs.
+  const ceo = orgRoles.ceoAgentOrFallback();
   const hired = findHiredAgentFor(dept);
   if (hired) {
-    office.work('coo', `Routing: ${shortTask}`);
-    chat('coo', `Assigning this to ${hired.label}.`, threadId);
-    office.rest('coo', '');
+    office.work(ceo.id, `Processing: ${shortTask}`, { label: shortTask, step: 'Processing', progress: 1, total: 2 });
+    chat('ceo', `Assigning this to ${hired.label}.`, threadId);
+    office.rest(ceo.id, '');
     await directToAgent({ instruction, agent: hired, shortTask, planning, rawTask, threadId });
     return;
   }
 
-  await runAsCoo({ instruction, shortTask, planning, rawTask, threadId });
+  await runAsCeo({ instruction, shortTask, planning, rawTask, threadId });
 }
 
 function skillFor(dept) {
@@ -431,59 +477,862 @@ async function saasNpcBlock() {
   }
 }
 
-// The COO · OpenClaw answers the boss directly (chat / general requests, or any
-// task with no hired specialist). It's the built-in OpenClaw agent, so this is a
-// plain reply — no new NPC is created.
-async function runAsCoo({ instruction, shortTask, planning = false, rawTask = '', threadId = null, ownerKey = null }) {
-  const coo = office.getAgent('coo') || { id: 'coo', role: 'coo', label: 'COO · OpenClaw' };
-  const cooName = coo.label || 'COO · OpenClaw';
-  office.work('coo', 'OpenClaw working…', { label: shortTask, step: 'Gateway', progress: 1, total: 2 });
+function secretaryMcpRuntime() {
+  const { mcpHasCredentials } = require('./mcp-runtime-helper');
+  const bindings = defaultMcpPack.getBuiltinRoleBindings('secretary');
+  const { mcpServers: allMcp } = require('./mcp-runtime-helper').resolveMcpRuntimeFromBindings(
+    bindings?.length ? bindings : defaultMcpPack.getBuiltinRoleBindings('coo'),
+  );
+  const mcpServers = (allMcp || []).filter(mcpHasCredentials);
+  const unconfiguredMcpBlock = formatUnconfiguredMcpAskBlock(allMcp);
+  return { mcpServers, unconfiguredMcpBlock };
+}
 
-  const notes = skills.readSharedNotes();
-  const webAccounts = require('./web-accounts-store');
-  const accountsBlock = webAccounts.formatAgentBlock();
-  const system =
-    `You are ${cooName}, the boss's right-hand operator inside AntlerOffice. ` +
-    `Reply to the boss directly, helpfully and concisely. For small talk, just chat back. ` +
-    `When the boss shares a URL or asks you to review something (GitHub repo, docs, product), ` +
-    `research it with OpenClaw built-in tools (exec, browser) and give a substantive summary. ` +
-    `If a request truly needs a specialist the office hasn't hired yet, say so and suggest hiring one.` +
-    `When the boss shares website login credentials (username/password), ask for a display name if not provided, then use AntlerOffice Tools MCP ` +
-    '`save_web_account` (display_name required) to store them — confirm with display name/alias only, never repeat the password in chat.' +
-    `\n\nShared office knowledge:\n${notes || '(none yet)'}` +
-    (accountsBlock ? `\n\n${accountsBlock}` : '');
+async function runSecretaryFbLoginTurn({
+  sec,
+  secName,
+  instruction,
+  rawTask,
+  threadId,
+  ownerKey,
+  planning,
+}) {
+  const text = rawTask || instruction;
+  const accountKey = secretaryFbIntake.extractAccountKey(text);
+  const fb = require('./fb-playwright-engine');
 
-  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
+  office.work(sec.id, 'Opening Facebook…', {
+    label: 'FB login',
+    step: 'Browser',
+    progress: 1,
+    total: 2,
+  });
+  try {
+    const open = await fb.openAccount(accountKey);
+    if (open.alreadyOpen) {
+      finalizeAgentTurn({
+        agent: sec,
+        text:
+          open.message ||
+          (open.onHome
+            ? 'Chrome **已在 Facebook 首页**。请回复「**登好了**」完成群组抓取（不要加「吗」）。'
+            : 'Chrome **已打开**。请完成登录、进到首页后回复「**登好了**」。'),
+        provider: 'local',
+        threadId,
+        planning,
+        needsBossInput: true,
+      });
+      return;
+    }
+    finalizeAgentTurn({
+      agent: sec,
+      text:
+        open.message ||
+        ('已为您打开 **Facebook**（Chrome 会保持打开，直到您回复「登好了」）。\n\n' +
+          '请在 Chrome 窗口**自行输入账号和密码**（含 2FA）。\n\n' +
+          '**进入 https://www.facebook.com/ 首页（Home）后**，请回复「登好了」。系统会抓取群组并回复成功或失败。'),
+      provider: 'local',
+      threadId,
+      planning,
+      needsBossInput: true,
+    });
+  } catch (e) {
+    finalizeAgentTurn({
+      agent: sec,
+      text: `无法打开 Facebook：${e.message}\n\n请确认已运行 \`npx playwright install chrome\`（在 AntlerOffice2 目录）。`,
+      provider: 'local',
+      threadId,
+      planning,
+      needsBossInput: false,
+    });
+  }
+}
+
+async function runAsSecretary({
+  instruction,
+  shortTask,
+  planning = false,
+  rawTask = '',
+  threadId = null,
+  ownerKey = null,
+}) {
+  const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'Secretary' };
+  const ceo = orgRoles.findHiredCeo();
+  const secName = sec.label || 'Secretary';
+  const taskText = rawTask || instruction;
+
+  if (!planning) {
+    const itIntent = secretaryItIntake.classifyItMessage(taskText);
+    if (itIntent) {
+      const readiness = await secretaryItIntake.getItDevReadiness();
+      if (itIntent === 'it_setup' || itIntent === 'it_status' || itIntent === 'it_setup_done') {
+        office.work(sec.id, 'IT dev tools…', { label: shortTask, step: 'IT', progress: 1, total: 1 });
+        finalizeAgentTurn({
+          agent: sec,
+          text: secretaryItIntake.buildSetupGuide(readiness),
+          provider: 'local',
+          threadId,
+          planning,
+          needsBossInput: !readiness.ready,
+        });
+        return;
+      }
+      if (itIntent === 'it_dev_request') {
+        if (!readiness.ready) {
+          office.work(sec.id, 'IT setup needed', { label: shortTask, step: 'IT', progress: 1, total: 2 });
+          finalizeAgentTurn({
+            agent: sec,
+            text: secretaryItIntake.buildSetupRequiredReply(taskText, readiness),
+            provider: 'local',
+            threadId,
+            planning,
+            needsBossInput: true,
+          });
+          return;
+        }
+        if (ceo) {
+          chat('secretary', '好的，IT Guys 已配置完成。我交给 CEO 安排开发任务。', threadId);
+          office.rest(sec.id, '');
+          const resumed = await tryResumeCeoPipeline({
+            raw: rawTask || instruction,
+            threadId,
+            ownerKey,
+            shortTask,
+            planning,
+          });
+          if (!resumed?.handled) {
+            await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  const fbIntent = planning ? null : secretaryFbIntake.classifySecretaryMessage(taskText);
+
+  if (fbIntent === 'fb_list_accounts') {
+    finalizeAgentTurn({
+      agent: sec,
+      text: secretaryFbIntake.buildFbAccountsListReply(),
+      provider: 'local',
+      threadId,
+      planning,
+      needsBossInput: false,
+    });
+    return;
+  }
+
+  if (fbIntent === 'fb_login_status') {
+    const check = await require('./fb-playwright-engine').detectFacebookHome();
+    const reply = secretaryFbIntake.buildLoginStatusReply(check, {
+      hasOpenSession: require('./fb-playwright-engine').hasOpenSession(),
+    });
+    finalizeAgentTurn({
+      agent: sec,
+      text: reply,
+      provider: 'local',
+      threadId,
+      planning,
+      needsBossInput: true,
+    });
+    return;
+  }
+
+  if (fbIntent === 'fb_login') {
+    await runSecretaryFbLoginTurn({
+      sec,
+      secName,
+      instruction,
+      rawTask: taskText,
+      threadId,
+      ownerKey,
+      planning,
+    });
+    return;
+  }
+
+  if (fbIntent === 'fb_login_done') {
+    office.work(sec.id, 'Confirming login…', { label: shortTask, step: 'Groups', progress: 2, total: 3 });
+    const result = await require('./fb-playwright-engine').completeLoginFlow();
+    finalizeAgentTurn({
+      agent: sec,
+      text: result.message,
+      provider: 'local',
+      threadId,
+      planning,
+      needsBossInput: true,
+    });
+    return;
+  }
+
+  if (fbIntent === 'fb_post') {
+    const readiness = secretaryFbIntake.getFbPostingReadiness();
+    if (!readiness.ready) {
+      office.work(sec.id, 'Checking Facebook…', { label: shortTask, step: 'FB', progress: 1, total: 2 });
+      finalizeAgentTurn({
+        agent: sec,
+        text: secretaryFbIntake.buildLoginRequiredReply(taskText, readiness),
+        provider: 'local',
+        threadId,
+        planning,
+        needsBossInput: true,
+      });
+      return;
+    }
+
+    if (ceo) {
+      chat('secretary', '好的，我交给 CEO 安排 Marketing 发到群组。', threadId);
+      office.rest(sec.id, '');
+      const resumed = await tryResumeCeoPipeline({
+        raw: rawTask || instruction,
+        threadId,
+        ownerKey,
+        shortTask,
+        planning,
+      });
+      if (!resumed?.handled) {
+        await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+      }
+      return;
+    }
+  }
+
+  if (!ceo) {
+    office.work(sec.id, 'Listening…', { label: shortTask, step: 'Reception', progress: 1, total: 2 });
+    const fbHint = secretaryFbIntake.secretaryFbSystem(secName);
+    const system =
+      `You are ${secName}, the executive secretary and the boss's only front-door contact in AntlerOffice. ` +
+      `Be warm, concise, and professional. Record what the boss asks for. ` +
+      `There is no CEO hired yet — you cannot dispatch group posting to departments. ` +
+      `For posting tasks (after FB login), explain they should hire a CEO from the Hire page first. ` +
+      `Small talk and clarifying questions are fine.\n\n${fbHint}`;
+    const { mcpServers, unconfiguredMcpBlock } = secretaryMcpRuntime();
+    const { text, provider, needsBossInput: waitingOnBoss } = await runtime.runTask({
+      agent: sec,
+      instruction,
+      system: `${system}${unconfiguredMcpBlock ? `\n\n${unconfiguredMcpBlock}` : ''}`,
+      mcpServers,
+      threadId,
+      ownerKey,
+    });
+    finalizeAgentTurn({
+      agent: sec,
+      text,
+      provider,
+      threadId,
+      planning,
+      needsBossInput: waitingOnBoss,
+    });
+    return;
+  }
+
+  chat('secretary', "I'll pass this to the CEO.", threadId);
+  office.rest(sec.id, '');
+
+  const resumed = await tryResumeCeoPipeline({
+    raw: rawTask || instruction,
+    threadId,
+    ownerKey,
+    shortTask,
+    planning,
+  });
+  if (resumed?.handled) return;
+
+  await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+}
+
+async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planning }) {
+  if (planning) return null;
+  const pending = ceoPipelinePending.get(threadId);
+  if (!pending?.phase) return null;
+
+  const outcome = workflowContext.parseReviewOutcome(raw);
+  const ceo = orgRoles.ceoAgentOrFallback();
+
+  if (pending.phase === 'plan_approval') {
+    if (!outcome.approved && !outcome.needsRevision) {
+      chat('ceo', 'Reply **APPROVED** to execute the plan, or **REVISION:** with your changes.', threadId);
+      office.rest(ceo.id, 'Awaiting plan approval…');
+      return { handled: true };
+    }
+    ceoPipelinePending.clear(threadId);
+    if (outcome.needsRevision) {
+      await runAsCeo({
+        instruction: `${pending.instruction || raw}\n\nBoss revision:\n${raw}`,
+        shortTask: pending.shortTask || shortTask,
+        planning: false,
+        rawTask: `${pending.rawTask || raw}\n\nRevision: ${raw}`,
+        threadId,
+        ownerKey,
+      });
+      return { handled: true };
+    }
+    await runAsCeo({
+      instruction: pending.instruction || raw,
+      shortTask: pending.shortTask || shortTask,
+      planning: false,
+      rawTask: pending.rawTask || raw,
+      threadId,
+      ownerKey,
+      resumeFrom: 'execute',
+      brief: pending.brief || '',
+      plan: pending.plan || '',
+    });
+    return { handled: true };
+  }
+
+  if (pending.phase === 'push_approval') {
+    if (!outcome.approved && !outcome.needsRevision) {
+      chat(
+        'ceo',
+        'Codex approved the code. Reply **APPROVED** to push to GitHub, or **REVISION:** with changes for IT.',
+        threadId,
+      );
+      office.rest(ceo.id, 'Awaiting push approval…');
+      return { handled: true };
+    }
+    if (outcome.approved) {
+      const push = await devPipeline.pushApprovedDev(threadId);
+      chat('system', push.ok ? `✓ ${push.text}` : `Push failed: ${push.error}`, threadId, {
+        authorName: 'Office',
+      });
+      ceoPipelinePending.clear(threadId);
+      office.rest(ceo.id, push.ok ? 'Pushed ✓' : 'Push failed');
+      return { handled: true };
+    }
+    ceoPipelinePending.patch(threadId, { phase: 'it_revision', revisionNote: raw });
+    chat('ceo', 'Understood — IT will revise based on your feedback.', threadId);
+    const agent = office.getAgent(pending.agentId) || office.state.agents.find((a) => a.role === 'it');
+    if (agent) {
+      await runItDevPipelineStep({
+        hired: agent,
+        instruction: `Boss revision after Codex approval:\n${raw}`,
+        plan: pending.plan || '',
+        brief: pending.brief || '',
+        rawTask: pending.rawTask || raw,
+        shortTask: pending.shortTask || shortTask,
+        threadId,
+        ownerKey,
+      });
+    }
+    return { handled: true };
+  }
+
+  if (pending.phase === 'project_path') {
+    const root = devPipeline.tryResolveProjectFromBossMessage(raw, threadId);
+    if (!root) {
+      chat('system', 'Could not resolve that path. Reply with a full path or list number.', threadId, {
+        authorName: 'Office',
+      });
+      return { handled: true };
+    }
+    const agent = office.getAgent(pending.agentId) || office.state.agents.find((a) => a.role === 'it');
+    if (!agent) {
+      chat('system', 'IT worker not found — hire IT Guys and try again.', threadId, { authorName: 'Office' });
+      ceoPipelinePending.clear(threadId);
+      return { handled: true };
+    }
+    await runItDevPipelineStep({
+      hired: agent,
+      instruction: pending.instruction || raw,
+      plan: pending.plan || '',
+      brief: pending.brief || '',
+      rawTask: pending.rawTask || raw,
+      shortTask: pending.shortTask || shortTask,
+      threadId,
+      ownerKey,
+      projectRoot: root,
+    });
+    return { handled: true };
+  }
+
+  return null;
+}
+
+async function runItDevPipelineStep({
+  hired,
+  instruction,
+  plan,
+  brief,
+  rawTask,
+  shortTask,
+  threadId,
+  ownerKey,
+  projectRoot,
+}) {
+  office.work(hired.id, 'Dev pipeline…', {
+    label: shortTask,
+    step: 'Writer + reviewers',
+    progress: 1,
+    total: 3,
+  });
+  chat('ceo', `Execute · dev pipeline → ${hired.label}`, threadId);
+
+  const result = await devPipeline.runDevPipeline({
+    agent: hired,
+    instruction,
+    plan,
+    brief,
+    rawTask,
+    threadId,
+    projectRoot,
+    onLog: (line) => chat('system', line, threadId, { authorName: 'IT' }),
+  });
+
+  chat(hired.role, result.text, threadId);
+  office.rest(hired.id, result.needsBossInput ? 'Awaiting boss…' : result.ok ? 'Done ✓' : 'Failed');
+
+  if (result.awaitingPushApproval) {
+    ceoPipelinePending.patch(threadId, {
+      phase: 'push_approval',
+      plan,
+      brief,
+      rawTask,
+      shortTask,
+      agentId: hired.id,
+      projectRoot: result.projectRoot,
+      branchName: result.branchName,
+    });
+    chat(
+      'ceo',
+      `Dev finished on branch \`${result.branchName}\`. Review **APPROVED**.\n\nReply **APPROVED** to push to GitHub, or **REVISION:** for more changes.`,
+      threadId,
+    );
+    office.rest(orgRoles.ceoAgentOrFallback().id, 'Awaiting push approval…');
+  }
+
+  return result;
+}
+
+const CEO_PHASES = [
+  { skillId: 'ceo_brainstorm', label: 'Brainstorm' },
+  { skillId: 'ceo_writing_plans', label: 'Plan' },
+  { skillId: 'ceo_executing_plans', label: 'Execute' },
+  { skillId: 'ceo_review', label: 'Review' },
+];
+
+function ensureCeoPhaseSkill(skillId) {
+  const agentCatalog = require('./agent-catalog');
+  return agentCatalog.ensureBundledSkill(skillId, 'ceo');
+}
+
+function ceoPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlock }) {
+  const sk =
+    ensureCeoPhaseSkill(skillId) || registry.listSkills().find((s) => s.id === skillId);
+  const name = ceo.label || 'CEO';
+  let system = `You are ${name}, CEO of AntlerOffice.\n\n${sk?.system || ''}`;
+  system += `\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  if (accountsBlock) system += `\n\n${accountsBlock}`;
+  if (unconfiguredMcpBlock) system += `\n\n${unconfiguredMcpBlock}`;
+  return system;
+}
+
+function ceoMcpRuntime() {
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('ceo');
   const { mcpHasCredentials } = require('./mcp-runtime-helper');
   const mcpServers = (allMcp || []).filter(mcpHasCredentials);
   const unconfiguredMcpBlock = formatUnconfiguredMcpAskBlock(allMcp);
-  const fullSystem = unconfiguredMcpBlock ? `${system}\n\n${unconfiguredMcpBlock}` : system;
+  return { mcpServers, unconfiguredMcpBlock };
+}
 
-  // Start the model call immediately; overlap it with the brief "thinking" beat.
-  const taskP = runtime.runTask({
-    agent: coo,
+async function runCeoPhaseTurn({
+  ceo,
+  skillId,
+  phaseLabel,
+  instruction,
+  threadId,
+  ownerKey,
+  systemExtras = '',
+}) {
+  const notes = skills.readSharedNotes();
+  const webAccounts = require('./web-accounts-store');
+  const accountsBlock = webAccounts.formatAgentBlock();
+  const { mcpServers, unconfiguredMcpBlock } = ceoMcpRuntime();
+  const system = `${ceoPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlock })}${
+    systemExtras ? `\n\n${systemExtras}` : ''
+  }`;
+
+  const taskP = runAgentTask({
+    agent: ceo,
     instruction,
-    system: fullSystem,
+    system,
     mcpServers,
     threadId,
     ownerKey,
   });
-  await sleep(500);
-  office.setAgent('coo', { bubbleText: 'OpenClaw running…', currentJob: { label: shortTask, step: 'Tools', progress: 2, total: 2 } });
-  const { text, provider, needsBossInput: waitingOnBoss } = await taskP;
+  await sleep(400);
+  office.setAgent(ceo.id, {
+    bubbleText: phaseLabel,
+    currentJob: { label: phaseLabel, step: phaseLabel, progress: 2, total: 4 },
+  });
+  return taskP;
+}
 
-  if (planning) {
-    const file = saveDeliverable('coo', rawTask || instruction, text);
-    recordDeliverable(coo, rawTask || instruction, file, { kind: 'plan_complete' });
+async function runCeoExecutePhase({
+  ceo,
+  instruction,
+  brief,
+  plan,
+  shortTask,
+  rawTask,
+  threadId,
+  ownerKey,
+}) {
+  const planParser = require('./ceo-plan-parser');
+  const steps = planParser.parsePlanSteps(plan);
+
+  if (!steps.length) {
+    const routeText = `${instruction}\n\n${plan}`;
+    const dept = roster.route(routeText);
+    const hired = findHiredAgentFor(dept);
+
+    if (hired) {
+      chat('ceo', `Execute · delegating to ${hired.label}.`, threadId);
+      const workerInstruction =
+        `## CEO brief\n${brief}\n\n## Plan\n${plan}\n\n## Your assignment\n` +
+        `Execute the parts of this plan that match your role (${hired.label}).\n\n` +
+        `Original ask: ${rawTask || instruction}`;
+
+      if (hired.role === 'it') {
+        const result = await runItDevPipelineStep({
+          hired,
+          instruction: workerInstruction,
+          plan,
+          brief,
+          rawTask,
+          shortTask,
+          threadId,
+          ownerKey,
+        });
+        return {
+          text: result.text || '',
+          provider: result.provider || 'dev-pipeline',
+          needsBossInput: !!result.needsBossInput,
+        };
+      }
+
+      const { text, provider, needsBossInput: stepBoss } = await runWorkerTask({
+        instruction: workerInstruction,
+        agent: hired,
+        shortTask,
+        rawTask,
+        threadId,
+        ownerKey,
+      });
+      chat(hired.role, text, threadId);
+      office.rest(hired.id, stepBoss ? 'Waiting…' : 'Done ✓');
+      return {
+        text: `## Delegated to ${hired.label}\n\n${text}`,
+        provider,
+        needsBossInput: stepBoss,
+      };
+    }
+
+    return runCeoPhaseTurn({
+      ceo,
+      skillId: 'ceo_executing_plans',
+      phaseLabel: 'Execute',
+      instruction:
+        `Original request:\n${rawTask || instruction}\n\n## Brainstorm\n${brief}\n\n## Plan\n${plan}\n\n` +
+        'No matching department worker is hired. List HIRE: <template_id> gaps — CEO does not execute worker tasks.',
+      threadId,
+      ownerKey,
+    });
   }
+
+  const workflow = require('./workflow-context');
+  const delegated = [];
+  const blocked = [];
+  let priorOutputs = '';
+  let lastProvider = 'demo';
+  let needsBossInput = false;
+
+  function managerHandoff(fromAgent, toRoleLabel, note) {
+    chat(fromAgent.role, `→ ${toRoleLabel}: ${note}`, threadId, { handoff: true, toRole: toRoleLabel });
+  }
+
+  async function delegateStep(step, hired, extra = '') {
+    const downgradeNote = extra || '';
+    chat('ceo', `Execute · step → ${hired.label}${downgradeNote}`, threadId);
+
+    if (hired.role === 'it' && !planning) {
+      const workerInstruction =
+        `## CEO brief\n${brief}\n\n## Plan\n${plan}\n\n## This step\n${step.instruction}\n\n` +
+        `Original ask: ${rawTask || instruction}`;
+      const result = await runItDevPipelineStep({
+        hired,
+        instruction: workerInstruction,
+        plan,
+        brief,
+        rawTask,
+        shortTask,
+        threadId,
+        ownerKey,
+      });
+      const text = result.text || '';
+      delegated.push({ step, agent: hired.label, text });
+      priorOutputs += `\n### ${step.roleLabel || hired.label}\n${text}\n`;
+      if (result.needsBossInput) needsBossInput = true;
+      return text;
+    }
+
+    const artifactBlock = workflow.artifactsBlock(threadId, hired.role);
+    let workerInstruction =
+      `## CEO brief\n${brief}\n\n## Plan\n${plan}\n\n## This step\n${step.instruction}\n\n` +
+      (artifactBlock ? `## Workflow context\n${artifactBlock}\n\n` : '') +
+      (priorOutputs ? `## Prior step outputs\n${priorOutputs}\n\n` : '') +
+      `## Your assignment\nComplete only this step as ${hired.label}.\n\n` +
+      `Original ask: ${rawTask || instruction}`;
+
+    if (step.kind === 'review') {
+      workerInstruction +=
+        '\n\n**Review output:** Reply with `APPROVED` or `REVISION` and specific feedback for the worker.';
+    }
+
+    const { text, provider, needsBossInput: stepBoss } = await runWorkerTask({
+      instruction: workerInstruction,
+      agent: hired,
+      shortTask,
+      rawTask,
+      threadId,
+      ownerKey,
+    });
+    lastProvider = provider || lastProvider;
+    if (stepBoss) needsBossInput = true;
+
+    chat(hired.role, text, threadId);
+    office.rest(hired.id, stepBoss ? 'Waiting…' : 'Done ✓');
+    workflow.storeArtifact(threadId, hired.role, text);
+
+    if (hired.role === 'marketing') {
+      const ctx = workflow.getWorkflowContext(threadId);
+      const copyDir = workflow.extractCopyDirection(text);
+      if (copyDir) ctx.artifacts.copyDirection = copyDir;
+      const designBrief = workflow.extractDesignBrief(text);
+      if (designBrief) ctx.artifacts.designBrief = designBrief;
+      if (/editor|copy/i.test(step.instruction)) {
+        managerHandoff(hired, 'Marketing Editor', 'Copy direction / review notes ready.');
+      }
+      if (/design|visual/i.test(step.instruction)) {
+        managerHandoff(hired, 'Graphic Design', 'Visual brief / design review ready.');
+      }
+    }
+
+    delegated.push({ step, agent: hired.label, text });
+    priorOutputs += `\n### ${step.roleLabel || hired.label}\n${text}\n`;
+    return text;
+  }
+
+  for (const step of steps) {
+    const resolved = planParser.resolveStepAgent(step, { office, roster, findHiredAgentFor });
+
+    if (!resolved.agent) {
+      blocked.push({ step, reason: resolved.reason, hireTemplate: resolved.hireTemplate });
+      chat('ceo', resolved.message || `Blocked: ${step.raw}`, threadId);
+      if (resolved.reason === 'boss') needsBossInput = true;
+      continue;
+    }
+
+    const hired = resolved.agent;
+    const downgradeNote = resolved.downgraded
+      ? ` (Manager not hired — downgraded to ${hired.label})`
+      : '';
+    const text = await delegateStep(step, hired, downgradeNote);
+
+    if (step.kind === 'review') {
+      const outcome = workflow.parseReviewOutcome(text);
+      const revRole = step.revisionRole;
+      if (outcome.needsRevision && revRole && workflow.getRevisionCount(threadId, revRole) < 2) {
+        const revStep = {
+          role: revRole,
+          roleLabel: revRole,
+          instruction: `Revise based on manager feedback.\n\n${text}`,
+          kind: 'execute',
+        };
+        const revResolved = planParser.resolveStepAgent(revStep, { office, roster, findHiredAgentFor });
+        if (revResolved.agent) {
+          workflow.bumpRevisionCount(threadId, revRole);
+          chat('ceo', `REVISION loop → ${revResolved.agent.label}`, threadId);
+          await delegateStep(revStep, revResolved.agent, ' (revision)');
+        } else {
+          blocked.push({
+            step: revStep,
+            reason: 'hire',
+            hireTemplate: planParser.HIRE_TEMPLATE_BY_ROLE[revRole] || revRole,
+          });
+          chat('ceo', `REVISION blocked — hire ${revRole} for revision loop.`, threadId);
+        }
+      }
+    }
+  }
+
+  const lines = ['## Execution summary', `Steps parsed: ${steps.length}`];
+  if (delegated.length) {
+    lines.push('', '## Delegated');
+    for (const d of delegated) {
+      lines.push(`- **${d.agent}**: ${d.step.instruction}`);
+    }
+  }
+  if (blocked.length) {
+    lines.push('', '## Blocked / needs hire');
+    for (const b of blocked) {
+      const tag = b.reason === 'boss' ? 'BOSS' : `HIRE: ${b.hireTemplate || b.step.role}`;
+      lines.push(`- ${tag} — ${b.step.instruction}`);
+    }
+  }
+  if (delegated.length === 1) {
+    lines.push('', '## Output', '', delegated[0].text);
+  } else if (delegated.length > 1) {
+    lines.push('', '## Outputs');
+    for (const d of delegated) {
+      lines.push(`\n### ${d.agent}\n${d.text}`);
+    }
+  }
+
+  return { text: lines.join('\n'), provider: lastProvider, needsBossInput };
+}
+
+// Hired CEO runs the company pipeline (brainstorm → plan → execute → review) and delegates to workers.
+async function runAsCeo({
+  instruction,
+  shortTask,
+  planning = false,
+  rawTask = '',
+  threadId = null,
+  ownerKey = null,
+  resumeFrom = null,
+  brief: briefIn = '',
+  plan: planIn = '',
+} = {}) {
+  const ceo = orgRoles.ceoAgentOrFallback();
+  const ceoName = ceo.label || 'CEO';
+  let phaseList = planning ? CEO_PHASES.slice(0, 2) : CEO_PHASES;
+  if (resumeFrom === 'execute') {
+    phaseList = CEO_PHASES.filter((p) => p.skillId === 'ceo_executing_plans' || p.skillId === 'ceo_review');
+  }
+  office.work(ceo.id, 'Brainstorm…', { label: shortTask, step: 'Brainstorm', progress: 1, total: phaseList.length });
+
+  let brief = briefIn || '';
+  let plan = planIn || '';
+  let execution = '';
+  let lastProvider = 'demo';
+  let waitingOnBoss = false;
+
+  for (let i = 0; i < phaseList.length; i++) {
+    const { skillId, label } = phaseList[i];
+    office.work(ceo.id, `${label}…`, {
+      label: shortTask,
+      step: label,
+      progress: i + 1,
+      total: phaseList.length,
+    });
+    chat('system', `${ceoName} · ${label}`, threadId, { authorName: 'Office' });
+
+    if (skillId === 'ceo_executing_plans') {
+      const result = await runCeoExecutePhase({
+        ceo,
+        instruction,
+        brief,
+        plan,
+        shortTask,
+        rawTask,
+        threadId,
+        ownerKey,
+      });
+      execution = result.text;
+      lastProvider = result.provider || lastProvider;
+      waitingOnBoss = result.needsBossInput;
+      if (waitingOnBoss) break;
+      continue;
+    }
+
+    let phaseInstruction = rawTask || instruction;
+    let extras = '';
+    if (skillId === 'ceo_writing_plans') {
+      extras = `## Brainstorm output\n${brief}`;
+    }
+    if (skillId === 'ceo_review') {
+      const pushPending = ceoPipelinePending.get(threadId);
+      extras =
+        `## Brainstorm\n${brief}\n\n## Plan\n${plan}\n\n## Execution\n${execution}` +
+        (pushPending?.phase === 'push_approval'
+          ? `\n\n## Dev push gate\nCodex approved IT changes on branch \`${pushPending.branchName}\`. ` +
+            `Ask the boss to reply APPROVED to push to GitHub, or REVISION for more IT work. Do NOT re-review code quality.`
+          : '');
+      phaseInstruction =
+        `Summarize outcomes for the boss. If IT dev completed with Codex approval, ask boss APPROVED to push GitHub.\n\nOriginal request:\n${rawTask || instruction}`;
+    }
+
+    const { text, provider, needsBossInput } = await runCeoPhaseTurn({
+      ceo,
+      skillId,
+      phaseLabel: label,
+      instruction: phaseInstruction,
+      threadId,
+      ownerKey,
+      systemExtras: extras,
+    });
+    lastProvider = provider || lastProvider;
+    waitingOnBoss = needsBossInput;
+
+    if (skillId === 'ceo_brainstorm') brief = text;
+    if (skillId === 'ceo_writing_plans') {
+      plan = text;
+      if (!planning) {
+        ceoPipelinePending.set(threadId, {
+          phase: 'plan_approval',
+          brief,
+          plan,
+          instruction,
+          shortTask,
+          rawTask,
+          threadId,
+          ownerKey,
+        });
+        chat(
+          'ceo',
+          `## Plan\n\n${plan}\n\n---\n**Boss:** Reply **APPROVED** to delegate to department workers, or **REVISION:** with changes.`,
+          threadId,
+        );
+        office.rest(ceo.id, 'Awaiting plan approval…');
+        return;
+      }
+    }
+    if (skillId === 'ceo_review') {
+      finalizeAgentTurn({
+        agent: ceo,
+        text,
+        provider: lastProvider,
+        threadId,
+        planning: false,
+        needsBossInput: waitingOnBoss,
+      });
+      return;
+    }
+
+    if (waitingOnBoss) break;
+  }
+
+  const finalText = planning ? plan : execution || plan || brief;
+  if (planning && plan) {
+    const file = saveDeliverable('ceo', rawTask || instruction, plan);
+    recordDeliverable(ceo, rawTask || instruction, file, { kind: 'plan_complete' });
+  }
+
   finalizeAgentTurn({
-    agent: coo,
-    text,
-    provider,
+    agent: ceo,
+    text: finalText,
+    provider: lastProvider,
     threadId,
     planning,
     needsBossInput: waitingOnBoss,
   });
+}
+
+/** @deprecated use runAsCeo */
+async function runAsCoo(opts) {
+  return runAsCeo(opts);
 }
 
 function saveDeliverable(skillId, instruction, text) {
@@ -499,9 +1348,9 @@ function saveDeliverable(skillId, instruction, text) {
   return file;
 }
 
-function savePlanDeliverable({ agentIdOrRole = 'coo', task, result }) {
-  const agent = office.getAgent(agentIdOrRole) || office.getAgent('coo');
-  const skillId = agent?.role || 'coo';
+function savePlanDeliverable({ agentIdOrRole = 'ceo', task, result }) {
+  const agent = office.getAgent(agentIdOrRole) || office.getAgent('ceo');
+  const skillId = agent?.role || 'ceo';
   const file = saveDeliverable(skillId, task, result);
   if (agent) recordDeliverable(agent, task, file, { kind: 'plan_complete' });
   return file;
@@ -574,11 +1423,11 @@ async function runStandupAgentTurn({ agent, instruction, ownerKey, threadId }) {
   return { text, provider };
 }
 
-async function runStandupCooSummary({ instruction, ownerKey, threadId }) {
-  const coo = office.getAgent('coo') || { id: 'coo', role: 'coo', label: 'COO · OpenClaw' };
-  const cooName = coo.label || 'COO · OpenClaw';
-  office.work('coo', 'Summarizing standup…', {
-    label: 'COO summary',
+async function runStandupCeoSummary({ instruction, ownerKey, threadId }) {
+  const ceo = orgRoles.ceoAgentOrFallback();
+  const ceoName = ceo.label || 'CEO';
+  office.work(ceo.id, 'Summarizing standup…', {
+    label: 'CEO summary',
     step: 'Gateway',
     progress: 1,
     total: 2,
@@ -586,21 +1435,21 @@ async function runStandupCooSummary({ instruction, ownerKey, threadId }) {
 
   const notes = skills.readSharedNotes();
   const system =
-    `You are ${cooName}, the COO inside AntlerOffice. Summarize department standup reports clearly for the boss. ` +
+    `You are ${ceoName}, the CEO inside AntlerOffice. Summarize department standup reports clearly for the boss. ` +
     `Focus on decisions needed, risks, and priorities.\n\nShared office knowledge:\n${notes || '(none yet)'}`;
 
-  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('ceo');
   const { mcpHasCredentials } = require('./mcp-runtime-helper');
   const mcpServers = (allMcp || []).filter(mcpHasCredentials);
 
   await sleep(300);
-  office.setAgent('coo', {
+  office.setAgent(ceo.id, {
     bubbleText: 'Writing summary…',
-    currentJob: { label: 'COO summary', step: 'Tools', progress: 2, total: 2 },
+    currentJob: { label: 'CEO summary', step: 'Tools', progress: 2, total: 2 },
   });
 
   const { text, provider } = await runAgentTask({
-    agent: coo,
+    agent: ceo,
     instruction,
     system,
     mcpServers,
@@ -608,13 +1457,19 @@ async function runStandupCooSummary({ instruction, ownerKey, threadId }) {
     ownerKey,
   });
 
-  office.rest('coo', '');
+  office.rest(ceo.id, '');
   return { text, provider };
+}
+
+/** @deprecated */
+async function runStandupCooSummary(opts) {
+  return runStandupCeoSummary(opts);
 }
 
 module.exports = {
   handleInstruction,
   savePlanDeliverable,
   runStandupAgentTurn,
+  runStandupCeoSummary,
   runStandupCooSummary,
 };

@@ -101,6 +101,34 @@ function updateParticipantVoice(agentId: string, patch: Partial<StandupParticipa
   void patchParticipants(list)
 }
 
+const hostVoiceParticipant = computed<StandupParticipant>(() => ({
+  agentId: 'secretary',
+  role: 'secretary',
+  label: t('pages.settings.voiceAssistant.standup.hostVoiceLabel'),
+  order: -2,
+  enabled: true,
+  voice: config.value?.hostVoice || { engine: 'edgetts', ttsVoice: '', profileId: '' },
+}))
+
+const ceoVoiceParticipant = computed<StandupParticipant>(() => ({
+  agentId: 'ceo',
+  role: 'ceo',
+  label: t('pages.settings.voiceAssistant.standup.ceoVoiceLabel'),
+  order: -1,
+  enabled: true,
+  voice: config.value?.ceoVoice || { engine: 'edgetts', ttsVoice: '', profileId: '' },
+}))
+
+async function updateHostVoice(patch: Partial<StandupParticipant['voice']>) {
+  const next = { ...(config.value?.hostVoice || { engine: 'edgetts' }), ...patch }
+  await save({ hostVoice: next })
+}
+
+async function updateCeoVoice(patch: Partial<StandupParticipant['voice']>) {
+  const next = { ...(config.value?.ceoVoice || { engine: 'edgetts' }), ...patch }
+  await save({ ceoVoice: next })
+}
+
 async function onScheduleChange(hour: number, minute: number) {
   await save({ schedule: { ...config.value!.schedule, cron: buildCron(hour, minute) } })
 }
@@ -227,6 +255,35 @@ async function onRunNow() {
           >
             {{ t('pages.settings.voiceAssistant.standup.newAgentsHint') }}
           </NAlert>
+        </div>
+
+        <NDivider style="margin: 8px 0" />
+
+        <div>
+          <NText strong>{{ t('pages.settings.voiceAssistant.standup.hostVoices') }}</NText>
+          <NText depth="3" style="display: block; font-size: 13px; margin-top: 4px">
+            {{ t('pages.settings.voiceAssistant.standup.hostVoicesHint') }}
+          </NText>
+          <NSpace vertical :size="10" style="margin-top: 12px">
+            <div class="participant-row">
+              <NText strong>{{ hostVoiceParticipant.label }}</NText>
+              <StandupParticipantVoiceRow
+                :participant="hostVoiceParticipant"
+                :profiles="profiles"
+                :disabled="saving"
+                @update="(patch) => updateHostVoice(patch)"
+              />
+            </div>
+            <div class="participant-row">
+              <NText strong>{{ ceoVoiceParticipant.label }}</NText>
+              <StandupParticipantVoiceRow
+                :participant="ceoVoiceParticipant"
+                :profiles="profiles"
+                :disabled="saving"
+                @update="(patch) => updateCeoVoice(patch)"
+              />
+            </div>
+          </NSpace>
         </div>
 
         <NDivider style="margin: 8px 0" />

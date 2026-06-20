@@ -46,6 +46,8 @@ const props = withDefaults(
     title?: string
     /** When set, bypasses officeStore session picker — used by Boss Chat embed */
     externalSessionKey?: string
+    /** Boss Chat thread id — secretary intake mirrors messages into inbox */
+    externalThreadId?: string
     /** Compact layout for embedded panels (Boss Chat) */
     compact?: boolean
     /** Boss Chat plan mode — wrap outbound user text as a planning prompt */
@@ -54,6 +56,7 @@ const props = withDefaults(
   {
     title: '',
     externalSessionKey: '',
+    externalThreadId: '',
     compact: false,
     planMode: false,
   }
@@ -2007,16 +2010,19 @@ async function handleSend() {
   if (!content) return
   if (agentBusy.value) return
 
+  const sessionKey = selectedSessionKey.value || (selectedAgent.value ? `${selectedAgent.value.id}:main` : 'main')
+  draft.value = ''
   try {
-    const sessionKey = selectedSessionKey.value || (selectedAgent.value ? `${selectedAgent.value.id}:main` : 'main')
     chatStore.setSessionKey(sessionKey)
-    await chatStore.sendMessage(formatOutboundMessage(content))
+    await chatStore.sendMessage(formatOutboundMessage(content), undefined, {
+      threadId: props.externalThreadId || undefined,
+    })
     void fetchSessionTokenUsage(sessionKey)
-    draft.value = ''
     await nextTick()
     autoFollowBottom.value = true
     requestScrollToBottom({ force: true })
   } catch (error) {
+    draft.value = content
     const reason = error instanceof Error ? error.message : String(error)
     message.error(reason)
   }
