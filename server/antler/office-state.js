@@ -96,8 +96,9 @@ function agentPatchFromDef(d) {
 /** CEO uses a fixed office station; other hires get user:{id} NPCs. */
 function attachHiredAgent(def) {
   if (!def?.id) return null;
-  if (def.role === 'ceo') {
-    const station = state.agents.find((a) => a.role === 'ceo' && !a.external);
+  const orgRoles = require('./org-roles');
+  if (orgRoles.isCooRole(def.role)) {
+    const station = state.agents.find((a) => orgRoles.isCooRole(a.role) && !a.external);
     if (station) {
       setAgent(station.id, agentPatchFromDef(def));
       removeAgent(`user:${def.id}`);
@@ -153,7 +154,7 @@ function pickSprite() {
 
 function getAgent(idOrRole) {
   const key = String(idOrRole || '');
-  const roleAlias = key === 'coo' ? 'ceo' : key;
+  const roleAlias = key === 'ceo' ? 'coo' : key;
   return (
     state.agents.find((a) => a.id === key) ||
     state.agents.find((a) => a.role === key) ||

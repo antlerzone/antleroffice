@@ -79,8 +79,22 @@ export const useEcsSessionStore = defineStore('ecsSession', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessToken }),
     })
-    const data = await res.json()
-    if (!res.ok || !data.ok) throw new Error(data.error || 'Sign-in failed')
+    const raw = await res.text()
+    let data: Record<string, unknown> = {}
+    if (raw.trim()) {
+      try {
+        data = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        throw new Error('Sign-in failed — server returned an invalid response. Try signing in again.')
+      }
+    } else if (!res.ok) {
+      throw new Error(
+        res.status === 502 || res.status === 503
+          ? 'Sign-in failed — app server is restarting. Wait a few seconds and try again.'
+          : 'Sign-in failed — empty server response. Try signing in again.',
+      )
+    }
+    if (!res.ok || !data.ok) throw new Error(String(data.error || 'Sign-in failed'))
     return applySession({
       accessToken: data.accessToken,
       bossToken: data.bossToken,

@@ -17,7 +17,15 @@ export function getApiAuthHeaders(options: { contentType?: string | false } = {}
   return headers
 }
 
+/** Boss session + admin gateway auth (Live Chat /api/rpc requires both when AUTH_* is set). */
 export async function ensureApiSession(): Promise<void> {
+  const authStore = useAuthStore()
   const bossStore = useBossStore()
   await bossStore.ensureSession().catch(() => {})
+  await authStore.checkAuthConfig()
+  if (!authStore.authEnabled) return
+  const valid = await authStore.checkAuth().catch(() => false)
+  if (!valid) {
+    await authStore.login('admin', 'admin').catch(() => {})
+  }
 }

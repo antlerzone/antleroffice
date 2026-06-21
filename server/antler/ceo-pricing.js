@@ -28,7 +28,7 @@ function countHiredDepartmentRoles() {
   const roles = new Set();
   for (const a of registry.listAgents()) {
     if (!registry.isOnTeamAgent(a)) continue;
-    if (a.role === 'ceo' || a.role === 'secretary') continue;
+    if (a.role === 'ceo' || a.role === 'coo' || a.role === 'secretary') continue;
     if (isVipWorkerAgent(a)) continue;
     if (ROUTABLE_ROLES.has(a.role)) roles.add(a.role);
   }
@@ -89,9 +89,10 @@ function applyCeoCatalogPricing(template = {}) {
 
 function findHiredCeoAgent() {
   const registry = require('./registry-store');
+  const orgRoles = require('./org-roles');
   return (
     registry.listAgents().find(
-      (a) => a.role === 'ceo' && a.templateId && registry.isOnTeamAgent(a),
+      (a) => orgRoles.isCooRole(a.role) && a.templateId && registry.isOnTeamAgent(a),
     ) || null
   );
 }

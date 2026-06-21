@@ -58,7 +58,7 @@ const ROLE_SLUGS = {
   secretary: ['antleroffice-tools'],
   ceo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   coo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
-  admin: ['perplexity', 'firecrawl'],
+  admin: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   it: ['playwright'],
 };
 
@@ -114,10 +114,10 @@ function getBuiltinRoleBindings(role) {
 }
 
 function resolveBuiltinMcpRuntimeSpec(role) {
-  const key = role === 'ceo' ? 'ceo' : role;
+  const key = role === 'ceo' ? 'coo' : role;
   const bindings = getBuiltinRoleBindings(key);
   if (bindings?.length) return resolveMcpRuntimeFromBindings(bindings);
-  if (role === 'ceo') return resolveMcpRuntimeFromBindings(getBuiltinRoleBindings('coo'));
+  if (role === 'ceo' || role === 'coo') return resolveMcpRuntimeFromBindings(getBuiltinRoleBindings('coo'));
   return resolveMcpRuntimeFromBindings(bindings);
 }
 

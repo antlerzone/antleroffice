@@ -124,7 +124,7 @@ function hiredAgents(office) {
 }
 
 function findHiredByRole(office, role, roster, findHiredAgentFor) {
-  if (!role || role === 'boss' || role === 'ceo' || role === 'secretary') return null;
+  if (!role || role === 'boss' || role === 'ceo' || role === 'coo' || role === 'secretary') return null;
   const dept = roster.byRole(role);
   if (!dept) return hiredAgents(office).find((a) => a.role === role) || null;
   return findHiredAgentFor(dept);
@@ -168,7 +168,7 @@ function resolveStepAgent(step, { office, roster, findHiredAgentFor }) {
       message: `BOSS step — please complete: ${step.instruction}`,
     };
   }
-  if (role === 'ceo' || role === 'secretary') {
+  if (role === 'ceo' || role === 'coo' || role === 'secretary') {
     return { agent: null, reason: 'forbidden', message: `Step cannot target ${role}.` };
   }
 

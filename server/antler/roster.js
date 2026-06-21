@@ -9,8 +9,8 @@ const DEPARTMENTS = [
     routable: false,
   },
   {
-    role: 'ceo',
-    label: 'CEO',
+    role: 'coo',
+    label: 'COO',
     charSprite: 5,
     skillId: null,
     routable: false,
@@ -138,7 +138,7 @@ const DEPARTMENTS = [
 ];
 
 function byRole(role) {
-  const normalized = role === 'coo' ? 'ceo' : role;
+  const normalized = role === 'ceo' ? 'coo' : role;
   return DEPARTMENTS.find((d) => d.role === normalized) || null;
 }
 
@@ -146,9 +146,9 @@ function residents() {
   return DEPARTMENTS;
 }
 
-// Built-in office NPCs on boot: Secretary (free front door) + CEO station (vacant until hired).
+// Built-in office NPCs on boot: Secretary (free front door) + COO station (vacant until hired).
 function defaults() {
-  return DEPARTMENTS.filter((d) => d.role === 'secretary' || d.role === 'ceo');
+  return DEPARTMENTS.filter((d) => d.role === 'secretary' || d.role === 'coo');
 }
 
 function route(instruction) {

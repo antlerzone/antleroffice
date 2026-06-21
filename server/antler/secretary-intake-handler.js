@@ -9,6 +9,8 @@ const intake = require('./secretary-fb-intake');
 const itIntake = require('./secretary-it-intake');
 const weatherIntake = require('./secretary-weather-intake');
 const officeIntake = require('./secretary-office-intake');
+const websiteLearnIntake = require('./secretary-website-learn-intake');
+const websiteLearnEngine = require('./website-learn-engine');
 const fbEngine = require('./fb-playwright-engine');
 
 function extractOpenClawAgentId(sessionKey) {
@@ -97,30 +99,36 @@ async function handleSecretaryFbIntakeCore(text, { sessionKey = '', threadId = n
         };
       }
 
-      const ceo = orgRoles.findHiredCeo();
-      if (!ceo) {
+      const coo = orgRoles.findHiredCoo();
+      if (!coo) {
         return {
           handled: true,
           reply:
-            'IT Guys 已就绪。若要开发功能，请先在 Hire 页面聘请 **CEO**，然后告诉我需求，我会交给 CEO 安排 IT 执行。',
+            'IT Guys 已就绪。若要开发功能，请先在 Hire 页面聘请 **COO**，然后告诉我需求，我会交给 COO 安排 IT 执行。',
           needsBossInput: true,
           provider: 'antleroffice-secretary',
         };
       }
 
-      const { handleInstruction } = require('./agent-runtime');
+      const sessionSync = require('./secretary-intake-session-sync');
       setImmediate(() => {
-        handleInstruction(taskText, {
-          threadId,
-          ownerKey: ownerKey || 'local:boss',
-          mode: 'agent',
-        }).catch(() => {});
+        sessionSync
+          .runDelegatedCeoTask({
+            taskText,
+            threadId,
+            ownerKey: ownerKey || 'local:boss',
+            sessionKey,
+            label: '开发任务',
+          })
+          .catch(() => {});
       });
 
       office.rest(sec.id, '');
       return {
         handled: true,
-        reply: '好的，IT Guys 已配置完成。我交给 CEO 安排开发任务。',
+        reply:
+          '好的，IT Guys 已配置完成。我交给 COO 安排开发任务。\n\n' +
+          '**COO 正在执行** — 完成后此对话会自动更新；也可打开 **办公室 (Office)** 查看进度。',
         needsBossInput: false,
         provider: 'antleroffice-secretary',
         delegated: true,
@@ -128,11 +136,208 @@ async function handleSecretaryFbIntakeCore(text, { sessionKey = '', threadId = n
     }
   }
 
+  const websiteIntent = websiteLearnIntake.classifyWebsiteLearnMessage(taskText);
+  if (websiteIntent) {
+    const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'Secretary' };
+    const junior = orgRoles.findItJunior() || { id: 'it_junior', role: 'it_junior', label: 'IT Junior' };
+
+    if (websiteIntent === 'list_workflows') {
+      return {
+        handled: true,
+        reply: websiteLearnIntake.buildWorkflowListReply(),
+        needsBossInput: false,
+        provider: 'antleroffice-secretary',
+      };
+    }
+
+    if (websiteIntent === 'profile_choice') {
+      const pending = websiteLearnEngine.getPendingIntake();
+      if (!pending?.waitingForProfile) return { handled: false };
+      const profile_mode = websiteLearnIntake.profileModeFromChoice(taskText.trim());
+      websiteLearnEngine.clearPendingIntake();
+      office.work(junior.id, 'Learning…', { label: 'Learn', step: 'Chrome', progress: 1, total: 2 });
+      try {
+        const started = await websiteLearnEngine.start({
+          workflow_name: pending.workflow_name,
+          start_url: pending.start_url || '',
+          profile_mode,
+          profile_label: pending.workflow_name,
+        });
+        office.setAgent(junior.id, {
+          npcState: 'working',
+          bubbleText: 'Recording workflow',
+          awaitingBossInput: true,
+        });
+        return {
+          handled: true,
+          reply:
+            `已派 **IT Junior（学徒）** 开始记录 **${started.workflow_name}**。\n\n` +
+            `${started.message}\n\n` +
+            '完成后回复「**学习结束**」。可说「模拟一次」验收，或上传 CSV 批量跑。',
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+          websiteLearn: started,
+        };
+      } catch (e) {
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: `无法开始学习：${e.message}`,
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+        };
+      }
+    }
+
+    if (websiteIntent === 'learn_start') {
+      const workflow_name =
+        websiteLearnIntake.extractWorkflowName(taskText) ||
+        websiteLearnEngine.getPendingIntake()?.workflow_name ||
+        '';
+      const start_url = websiteLearnIntake.extractStartUrl(taskText);
+      if (!workflow_name) {
+        office.setAgent(sec.id, { awaitingBossInput: true });
+        return {
+          handled: true,
+          reply:
+            '请告诉我要学习的 **workflow 名称**，例如：\n\n' +
+            '「进入学习模式 workflow **invoice-download** 网站 https://example.com」',
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+        };
+      }
+      websiteLearnEngine.setPendingIntake({
+        workflow_name,
+        start_url,
+        waitingForProfile: true,
+      });
+      office.setAgent(sec.id, { awaitingBossInput: true });
+      return {
+        handled: true,
+        reply: websiteLearnIntake.buildProfilePrompt(workflow_name),
+        needsBossInput: true,
+        provider: 'antleroffice-secretary',
+      };
+    }
+
+    if (websiteIntent === 'learn_done') {
+      const active = websiteLearnEngine.activeSession();
+      if (!active) {
+        return {
+          handled: true,
+          reply: '当前没有进行中的学习 session。说「进入学习模式」开始。',
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+        };
+      }
+      office.work(junior.id, 'Exporting…', { label: 'Learn', step: 'Export', progress: 2, total: 2 });
+      try {
+        await websiteLearnEngine.poll({ session_id: active.session_id });
+        const stopped = await websiteLearnEngine.stop({ session_id: active.session_id });
+        const exported = await websiteLearnEngine.exportWorkflow({
+          workflow_name: stopped.workflow_name,
+        });
+        office.rest(junior.id, '');
+        const vars = exported.mapping?.variables || [];
+        const varLines = vars
+          .slice(0, 12)
+          .map((v) => `- **${v.name}** (${v.type})${v.batch_source ? ` · batch: ${v.batch_source}` : ''}`)
+          .join('\n');
+        return {
+          handled: true,
+          reply:
+            `**学习结束** — workflow \`${exported.workflow_name}\` 已导出。\n\n` +
+            `### Input Mapping\n${varLines || '(none)'}\n\n` +
+            `文件目录：\`${exported.workflow_path}\`\n\n` +
+            '下一步：说「**模拟一次**」验收，或「用 xxx.csv 批量跑」。',
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+          websiteLearn: exported,
+        };
+      } catch (e) {
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: `导出失败：${e.message}`,
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+        };
+      }
+    }
+
+    if (websiteIntent === 'simulate_once') {
+      const workflow_name = websiteLearnIntake.extractWorkflowName(taskText) || websiteLearnEngine.listWorkflows()[0]?.workflow_name;
+      if (!workflow_name) {
+        return {
+          handled: true,
+          reply: '请先完成一次学习，或指定 workflow 名称，例如「模拟一次 invoice-download」。',
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+        };
+      }
+      office.work(junior.id, 'Simulating…', { label: 'Simulate', step: 'Replay', progress: 1, total: 1 });
+      try {
+        const result = await websiteLearnEngine.simulateOnce({ workflow_name });
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: result.ok
+            ? `**模拟一次**完成 — \`${workflow_name}\`（${result.steps?.length || 0} 步）。请检查 Chrome 与截图目录。`
+            : `模拟失败：${result.error}`,
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+          websiteLearn: result,
+        };
+      } catch (e) {
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: `模拟失败：${e.message}`,
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+        };
+      }
+    }
+
+    if (websiteIntent === 'batch_run') {
+      const workflow_name = websiteLearnIntake.extractWorkflowName(taskText);
+      const excel_path = websiteLearnIntake.extractBatchPath(taskText);
+      if (!workflow_name || !excel_path) {
+        return {
+          handled: true,
+          reply: '请指定 workflow 和数据文件，例如：「用 customer.csv 批量跑 invoice-download」。',
+          needsBossInput: true,
+          provider: 'antleroffice-secretary',
+        };
+      }
+      office.work(junior.id, 'Batch…', { label: 'Batch', step: 'Run', progress: 1, total: 1 });
+      try {
+        const result = await websiteLearnEngine.batchRun({ workflow_name, excel_path });
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: `批量完成 **${result.count}** 行。结果：\`${result.result_csv}\``,
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+          websiteLearn: result,
+        };
+      } catch (e) {
+        office.rest(junior.id, '');
+        return {
+          handled: true,
+          reply: `批量失败：${e.message}`,
+          needsBossInput: false,
+          provider: 'antleroffice-secretary',
+        };
+      }
+    }
+  }
+
   const fbIntent = intake.classifySecretaryMessage(taskText);
   if (!fbIntent) return { handled: false };
 
   const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'Secretary' };
-  const ceo = orgRoles.findHiredCeo();
+  const coo = orgRoles.findHiredCoo();
 
   if (fbIntent === 'fb_list_accounts') {
     return {
@@ -249,29 +454,35 @@ async function handleSecretaryFbIntakeCore(text, { sessionKey = '', threadId = n
       };
     }
 
-    if (!ceo) {
+    if (!coo) {
       return {
         handled: true,
         reply:
-          'Facebook 已登录。若要发到群组，请先在 Hire 页面聘请 **CEO**，然后告诉我发帖内容，我会交给 CEO 安排 Marketing。',
+          'Facebook 已登录。若要发到群组，请先在 Hire 页面聘请 **COO**，然后告诉我发帖内容，我会交给 COO 安排 Marketing。',
         needsBossInput: true,
         provider: 'antleroffice-secretary',
       };
     }
 
-    const { handleInstruction } = require('./agent-runtime');
+    const sessionSync = require('./secretary-intake-session-sync');
     setImmediate(() => {
-      handleInstruction(taskText, {
-        threadId,
-        ownerKey: ownerKey || 'local:boss',
-        mode: 'agent',
-      }).catch(() => {});
+      sessionSync
+        .runDelegatedCeoTask({
+          taskText,
+          threadId,
+          ownerKey: ownerKey || 'local:boss',
+          sessionKey,
+          label: 'Facebook 发帖',
+        })
+        .catch(() => {});
     });
 
     office.rest(sec.id, '');
     return {
       handled: true,
-      reply: '好的，我交给 CEO 安排 Marketing 发到群组。',
+      reply:
+        '好的，我交给 COO 安排 Marketing 发到群组。\n\n' +
+        '**COO 正在执行** — 完成后此对话会自动更新；也可打开 **办公室 (Office)** 查看 COO / Marketing 状态。',
       needsBossInput: false,
       provider: 'antleroffice-secretary',
       delegated: true,

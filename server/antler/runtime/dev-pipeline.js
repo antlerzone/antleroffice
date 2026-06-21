@@ -7,6 +7,7 @@ const projectResolver = require('./dev-project-resolver');
 const devGit = require('./dev-git');
 const { getEngine } = require('./dev-engine-registry');
 const devTeamResolver = require('./dev-team-resolver');
+const itRepoQueue = require('./it-repo-queue');
 
 function devSettings() {
   return store.readSettings().dev || {};
@@ -152,6 +153,41 @@ async function runDevPipeline({
     onLog(`Using project: ${projectRoot}`);
   }
 
+  onLog(`Repo queue: acquiring lock for ${projectRoot}`);
+  return itRepoQueue.runExclusive(projectRoot, () =>
+    runDevPipelineForProject({
+      agent,
+      instruction,
+      plan,
+      brief,
+      rawTask,
+      threadId,
+      onLog,
+      projectRoot,
+      maxRounds,
+      prefix,
+      writer,
+      reviewers,
+      selfReview,
+    }),
+  );
+}
+
+async function runDevPipelineForProject({
+  agent,
+  instruction,
+  plan,
+  brief,
+  rawTask,
+  threadId,
+  onLog,
+  projectRoot,
+  maxRounds,
+  prefix,
+  writer,
+  reviewers,
+  selfReview,
+}) {
   const slug = devGit.slugifyTask(rawTask || instruction);
   const branchName = `${prefix}${slug}-${Date.now().toString(36)}`;
   const checkout = await devGit.checkoutBranch(projectRoot, branchName);
@@ -331,6 +367,7 @@ function tryResolveProjectFromBossMessage(text, threadId) {
 
 module.exports = {
   runDevPipeline,
+  runDevPipelineForProject,
   pushApprovedDev,
   tryResolveProjectFromBossMessage,
   buildDevPrompt,

@@ -43,6 +43,8 @@ export interface AgentOverview {
   additionalOpenclawSkills?: string[]
   additionalCapabilities?: AdditionalCapability[]
   openclawSkills?: string[]
+  soulPreview?: string
+  modelRef?: string
   catalog?: {
     description?: string
     tagline?: string

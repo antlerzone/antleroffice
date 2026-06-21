@@ -1640,6 +1640,102 @@ async function verifyKey() {
   return { ok: false, available: !!r.available, authError: getHealth().authError, error: r.error };
 }
 
+function resolveAgentWorkspace(agentId) {
+  const id = String(agentId || '').trim();
+  if (!id) return null;
+  try {
+    const cfg = readJsonFile(configPath());
+    const list = cfg?.agents?.list;
+    if (Array.isArray(list)) {
+      const hit = list.find((a) => a && (a.id === id || a.agentId === id));
+      const ws = hit?.workspace || hit?.workspaceDir;
+      if (ws && fs.existsSync(ws)) return ws;
+    }
+    const slug = id.replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
+    const guess = path.join(os.homedir(), '.openclaw', 'workspaces', slug);
+    if (fs.existsSync(guess)) return guess;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function readAgentWorkspaceFile(agentId, fileName) {
+  const ws = resolveAgentWorkspace(agentId);
+  if (!ws) return { ok: false, error: 'workspace not found' };
+  const p = path.join(ws, String(fileName || '').trim());
+  try {
+    if (!fs.existsSync(p)) return { ok: true, content: '', missing: true, path: p };
+    const content = fs.readFileSync(p, 'utf8');
+    return { ok: true, content, missing: false, path: p };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function soulPreviewFromContent(content, maxLen = 400) {
+  const raw = String(content || '')
+    .replace(/^#+\s+/gm, '')
+    .replace(/\r/g, '')
+    .trim();
+  if (!raw) return '';
+  const para = raw.split(/\n\n+/).find((p) => p.trim().length > 0) || raw;
+  const flat = para.replace(/\s+/g, ' ').trim();
+  if (flat.length <= maxLen) return flat;
+  return `${flat.slice(0, maxLen - 1).trim()}…`;
+}
+
+function parseAgentModelRef(agentEntry) {
+  if (!agentEntry || typeof agentEntry !== 'object') return '';
+  const model = agentEntry.model;
+  if (typeof model === 'string' && model.trim()) return model.trim();
+  if (model && typeof model === 'object') {
+    const primary = model.primary;
+    if (typeof primary === 'string' && primary.trim()) return primary.trim();
+    if (primary && typeof primary === 'object' && typeof primary.ref === 'string') {
+      return primary.ref.trim();
+    }
+  }
+  return '';
+}
+
+async function getAgentModelRef(agentId) {
+  const id = String(agentId || '').trim();
+  if (!id) return { ok: false, modelRef: '' };
+  const { available, config } = await getConfig();
+  if (!available || !config) return { ok: false, modelRef: '' };
+  const list = config?.agents?.list;
+  if (Array.isArray(list)) {
+    const hit = list.find((a) => a && (a.id === id || a.agentId === id));
+    if (hit) return { ok: true, modelRef: parseAgentModelRef(hit) };
+  }
+  try {
+    const st = await modelsStatus();
+    const fallback = st.status?.resolvedDefault || st.status?.defaultModel || '';
+    return { ok: true, modelRef: fallback };
+  } catch {
+    return { ok: true, modelRef: '' };
+  }
+}
+
+async function setAgentModelRef(agentId, modelRef) {
+  const id = String(agentId || '').trim();
+  const ref = String(modelRef || '').trim();
+  if (!id) return { ok: false, error: 'missing agentId' };
+  if (!(await isAvailable())) return { ok: false, available: false };
+  const { config } = await getConfig();
+  const list = Array.isArray(config?.agents?.list) ? [...config.agents.list] : [];
+  const idx = list.findIndex((a) => a && (a.id === id || a.agentId === id));
+  const patch = { model: ref ? { primary: ref } : null };
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], ...patch };
+  } else {
+    list.push({ id, ...patch });
+  }
+  const r = await setConfig('agents.list', list);
+  return { ok: r.ok, available: true, error: r.error };
+}
+
 module.exports = {
   configPath,
   isAvailable,
@@ -1690,6 +1786,11 @@ module.exports = {
   normalizeAccountId,
   gatewayCall,
   runAgent,
+  readAgentWorkspaceFile,
+  soulPreviewFromContent,
+  getAgentModelRef,
+  setAgentModelRef,
+  resolveAgentWorkspace,
   finalizeWhatsAppInstructionMode,
   applyWhatsAppInstructionMode: channelInstruction.applyWhatsAppInstructionMode,
 };

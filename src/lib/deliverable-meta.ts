@@ -1,4 +1,12 @@
-export type DeliverableKind = 'plan_complete' | 'daily_report' | 'alert' | 'job'
+export type DeliverableKind =
+  | 'ceo_inbox'
+  | 'coo_planning'
+  | 'ceo_decision'
+  | 'it_scan'
+  | 'plan_complete'
+  | 'daily_report'
+  | 'alert'
+  | 'job'
 
 export type DeliverableStatus = 'pending' | 'in_progress' | 'complete'
 
@@ -44,14 +52,32 @@ export interface DeliverableItem {
   createdAt: number
   forwarded?: boolean
   content?: string
+  threadId?: string | null
+  ownerKey?: string | null
+  ceoDecisionPhase?: string | null
+  ceoAcknowledged?: boolean
+  ceoNotifiedAt?: number | null
+  ceoAcknowledgedAt?: number | null
 }
 
-export const SUMMARY_KINDS: DeliverableKind[] = ['plan_complete', 'daily_report', 'alert']
+export const SUMMARY_KINDS: DeliverableKind[] = [
+  'ceo_inbox',
+  'coo_planning',
+  'ceo_decision',
+  'it_scan',
+  'plan_complete',
+  'daily_report',
+  'alert',
+]
 
 export const DELIVERABLE_KIND_META: Record<
   DeliverableKind,
   { label: string; icon: string; tone: string }
 > = {
+  ceo_inbox: { label: 'CEO Inbox', icon: '📥', tone: 'inbox' },
+  coo_planning: { label: 'COO Planning', icon: '🧭', tone: 'planning' },
+  ceo_decision: { label: 'Pending CEO Decision', icon: '👔', tone: 'ceo-decision' },
+  it_scan: { label: 'IT scan', icon: '🛡️', tone: 'scan' },
   plan_complete: { label: 'Plan ready', icon: '📋', tone: 'plan' },
   daily_report: { label: 'Daily report', icon: '📊', tone: 'report' },
   alert: { label: 'Needs attention', icon: '🔔', tone: 'alert' },
@@ -59,7 +85,16 @@ export const DELIVERABLE_KIND_META: Record<
 }
 
 export function isBossSummary(item: DeliverableItem) {
-  return SUMMARY_KINDS.includes(item.kind)
+  if (SUMMARY_KINDS.includes(item.kind)) return true
+  if (
+    item.kind === 'job' &&
+    ((item.planSteps && item.planSteps.length > 0) ||
+      item.status === 'pending' ||
+      item.status === 'in_progress')
+  ) {
+    return true
+  }
+  return false
 }
 
 export function deliverableDepartmentLabel(item: DeliverableItem): string {
@@ -70,7 +105,8 @@ export function deliverableDepartmentLabel(item: DeliverableItem): string {
 }
 
 export function deliverableProgressDisplay(item: DeliverableItem): number | null {
-  if (item.status === 'complete' || item.kind === 'plan_complete') return 100
+  if (item.status === 'complete' && item.kind !== 'plan_complete') return 100
+  if (item.kind === 'plan_complete' && item.status !== 'pending') return 100
   if (typeof item.progressPercent === 'number') return item.progressPercent
   const steps = item.planSteps || []
   if (!steps.length) return null

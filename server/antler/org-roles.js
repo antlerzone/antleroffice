@@ -1,52 +1,77 @@
-// Office hierarchy roles: Secretary (gateway main) → hired CEO → department workers.
+// Office hierarchy: Secretary (gateway main) → hired COO → department workers.
+// Human user = CEO (boss chat). Orchestrator NPC = COO (legacy role id "ceo" migrated).
 
 const office = require('./office-state');
 
 const SECRETARY_ROLE = 'secretary';
-const CEO_ROLE = 'ceo';
-const LEGACY_COO_ROLE = 'coo';
+const COO_ROLE = 'coo';
+const IT_JUNIOR_ROLE = 'it_junior';
+const LEGACY_CEO_ROLE = 'ceo';
 
 function normalizeRole(role) {
   const r = String(role || '').trim();
-  if (r === LEGACY_COO_ROLE) return CEO_ROLE;
+  if (r === LEGACY_CEO_ROLE) return COO_ROLE;
   return r;
 }
 
+function isCooRole(role) {
+  return normalizeRole(role) === COO_ROLE;
+}
+
+/** @deprecated use isCooRole */
 function isCeoRole(role) {
-  return normalizeRole(role) === CEO_ROLE;
+  return isCooRole(role);
 }
 
 function isSecretaryRole(role) {
   return String(role || '').trim() === SECRETARY_ROLE;
 }
 
+function isItJuniorRole(role) {
+  return String(role || '').trim() === IT_JUNIOR_ROLE;
+}
+
+function findItJunior() {
+  return office.getAgent(IT_JUNIOR_ROLE);
+}
+
 function findSecretary() {
   return office.getAgent(SECRETARY_ROLE);
 }
 
-/** Hired CEO only (not the free secretary). */
-function findHiredCeo() {
+/** Hired COO only (not the free secretary). */
+function findHiredCoo() {
   return (
     office.state.agents.find(
-      (a) => !a.external && isCeoRole(a.role) && a.userAgentId,
+      (a) => !a.external && isCooRole(a.role) && a.userAgentId,
     ) ||
     office.state.agents.find(
-      (a) => !a.external && isCeoRole(a.role) && a.id?.startsWith('user:'),
+      (a) => !a.external && isCooRole(a.role) && a.id?.startsWith('user:'),
     ) ||
     null
   );
 }
 
-function ceoAgentOrFallback() {
+/** @deprecated use findHiredCoo */
+function findHiredCeo() {
+  return findHiredCoo();
+}
+
+function cooAgentOrFallback() {
   return (
-    findHiredCeo() ||
-    office.getAgent(CEO_ROLE) ||
-    office.getAgent(LEGACY_COO_ROLE) || {
-      id: CEO_ROLE,
-      role: CEO_ROLE,
-      label: 'CEO',
+    findHiredCoo() ||
+    office.getAgent(COO_ROLE) ||
+    office.getAgent(LEGACY_CEO_ROLE) || {
+      id: COO_ROLE,
+      role: COO_ROLE,
+      label: 'COO',
     }
   );
+}
+
+/** @deprecated use cooAgentOrFallback */
+function ceoAgentOrFallback() {
+  return cooAgentOrFallback();
 }
 
 function migrateOfficeAgents() {
@@ -56,10 +81,10 @@ function migrateOfficeAgents() {
     label: office.getAgent(SECRETARY_ROLE)?.label || 'Secretary',
   });
 
-  const ceoStation = office.ensureRole(CEO_ROLE, 'CEO', 5);
-  if (!ceoStation.userAgentId) {
-    office.setAgent(ceoStation.id, {
-      label: 'CEO',
+  const cooStation = office.ensureRole(COO_ROLE, 'COO', 5);
+  if (!cooStation.userAgentId) {
+    office.setAgent(cooStation.id, {
+      label: 'COO',
       npcState: 'resting',
       bubbleText: '',
       openclawAgentId: null,
@@ -67,34 +92,51 @@ function migrateOfficeAgents() {
   }
 
   for (const a of [...office.state.agents]) {
-    if (a.role === LEGACY_COO_ROLE) {
+    if (a.role === LEGACY_CEO_ROLE) {
       if (a.userAgentId || String(a.id || '').startsWith('user:')) {
         office.setAgent(a.id, {
-          role: CEO_ROLE,
-          label: String(a.label || 'CEO').replace(/COO\s*·?\s*OpenClaw/i, 'CEO').trim() || 'CEO',
+          role: COO_ROLE,
+          label: String(a.label || 'COO').replace(/^CEO\b/i, 'COO').trim() || 'COO',
           openclawAgentId: a.openclawAgentId === 'main' ? null : a.openclawAgentId,
         });
+      } else if (a.id === LEGACY_CEO_ROLE || a.id === COO_ROLE) {
+        office.setAgent(a.id, { role: COO_ROLE, label: 'COO' });
       } else {
         office.removeAgent(a.id);
       }
     }
   }
 
-  const legacyCoo = office.getAgent(LEGACY_COO_ROLE);
-  if (legacyCoo && !legacyCoo.userAgentId) {
-    office.removeAgent(legacyCoo.id);
+  const legacyCeoVacant = office.getAgent(LEGACY_CEO_ROLE);
+  if (legacyCeoVacant && !legacyCeoVacant.userAgentId && legacyCeoVacant.id === LEGACY_CEO_ROLE) {
+    office.removeAgent(legacyCeoVacant.id);
   }
+
+  const itJunior = office.ensureRole(IT_JUNIOR_ROLE, 'IT Junior', 3);
+  office.setAgent(itJunior.id, {
+    label: office.getAgent(IT_JUNIOR_ROLE)?.label || 'IT Junior',
+    npcState: 'resting',
+    bubbleText: '',
+  });
 }
 
 module.exports = {
   SECRETARY_ROLE,
-  CEO_ROLE,
-  LEGACY_COO_ROLE,
+  COO_ROLE,
+  IT_JUNIOR_ROLE,
+  CEO_ROLE: LEGACY_CEO_ROLE,
+  LEGACY_CEO_ROLE,
+  LEGACY_COO_ROLE: COO_ROLE,
   normalizeRole,
+  isCooRole,
   isCeoRole,
   isSecretaryRole,
+  isItJuniorRole,
   findSecretary,
+  findItJunior,
+  findHiredCoo,
   findHiredCeo,
+  cooAgentOrFallback,
   ceoAgentOrFallback,
   migrateOfficeAgents,
 };

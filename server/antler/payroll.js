@@ -5,6 +5,13 @@ const registry = require('./registry-store');
 const office = require('./office-state');
 const billingIntervalMod = require('./billing-interval');
 const ceoPricing = require('./ceo-pricing');
+const orgRoles = require('./org-roles');
+
+function officeNpcId(agent) {
+  if (!agent?.id) return null;
+  if (orgRoles.isCooRole(agent.role)) return 'coo';
+  return `user:${agent.id}`;
+}
 function addOneMonth(fromMs) {
   const d = new Date(fromMs);
   const day = d.getDate();
@@ -24,7 +31,8 @@ function formatLeaveDate(ms) {
 
 function syncOfficePayroll(agent) {
   if (!agent?.id) return;
-  const npcId = agent.role === 'ceo' ? 'ceo' : `user:${agent.id}`;
+  const npcId = officeNpcId(agent);
+  if (!npcId) return;
   if (agent.payrollStatus === 'suspended') {
     office.setAgent(npcId, {
       npcState: 'resting',
@@ -35,7 +43,8 @@ function syncOfficePayroll(agent) {
 
 function syncOfficeLeaving(agent) {
   if (!agent?.id || !agent.fireAt) return;
-  const npcId = agent.role === 'ceo' ? 'ceo' : `user:${agent.id}`;
+  const npcId = officeNpcId(agent);
+  if (!npcId) return;
   office.setAgent(npcId, {
     bubbleText: `Leaving ${formatLeaveDate(agent.fireAt)}`,
   });
@@ -47,8 +56,8 @@ async function terminateAgent(agent, { openclaw } = {}) {
     await openclaw.agentsDelete(agent.openclawAgentId);
   }
   registry.removeAgent(agent.id);
-  if (agent.role === 'ceo') {
-    office.clearRoleStation('ceo');
+  if (orgRoles.isCooRole(agent.role)) {
+    office.clearRoleStation('coo');
   } else {
     ceoPricing.syncHiredCeoAgent();
   }
@@ -96,8 +105,8 @@ function cancelFire(agent, { billingInterval } = {}) {
   }
 
   const updated = registry.updateAgent(agent.id, patch);
-  const npcId = updated.role === 'ceo' ? 'ceo' : `user:${updated.id}`;
-  office.setAgent(npcId, { bubbleText: '' });
+  const npcId = officeNpcId(updated);
+  if (npcId) office.setAgent(npcId, { bubbleText: '' });
   return updated;
 }
 
@@ -114,7 +123,7 @@ async function processPendingFires(openclaw) {
 }
 
 function payAgentSalary(agent, { reason = 'monthly', periodAt } = {}) {
-  if (agent?.role === 'ceo') {
+  if (orgRoles.isCooRole(agent?.role)) {
     ceoPricing.syncHiredCeoAgent();
     agent = registry.getAgent(agent.id) || agent;
   }
@@ -143,7 +152,7 @@ function payAgentSalary(agent, { reason = 'monthly', periodAt } = {}) {
     throw e;
   }
 
-  const nextSalaryDueAt = agent.role === 'ceo'
+  const nextSalaryDueAt = orgRoles.isCooRole(agent.role)
     ? ceoPricing.nextLocalMidnightMs(Date.now())
     : billingIntervalMod.addBillingPeriod(
       agent.nextSalaryDueAt || agent.hiredAt || Date.now(),
@@ -198,7 +207,7 @@ function runPayrollDue() {
 
   const results = [];
   for (const agent of due) {
-    const reason = agent.role === 'ceo' ? 'daily' : 'monthly';
+    const reason = orgRoles.isCooRole(agent.role) ? 'daily' : 'monthly';
     results.push({ agentId: agent.id, ...payAgentSalary(agent, { reason, periodAt: agent.nextSalaryDueAt }) });
   }
   return { processed: results.length, results };
@@ -206,7 +215,7 @@ function runPayrollDue() {
 
 function updateContractBilling(agent, { billingInterval } = {}) {
   if (!agent?.id) throw new Error('Agent not found');
-  if (agent.role === 'ceo') {
+  if (orgRoles.isCooRole(agent.role)) {
     throw new Error('CEO salary is daily only and recalculates automatically at midnight.');
   }
   if (!billingInterval) throw new Error('billingInterval required');

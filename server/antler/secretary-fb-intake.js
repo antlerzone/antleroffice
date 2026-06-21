@@ -63,6 +63,11 @@ const POST_PATTERNS = [
   /要发/,
   /帮我发/,
   /文案/,
+  /帮.*post/i,
+  /post.*群/i,
+  /群.*post/i,
+  /在.*群(组)?(里|里面|中)?.*(发|post|试试)/i,
+  /发.*群(组)?.*试试/i,
 ];
 
 function normalize(text) {

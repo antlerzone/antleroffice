@@ -81,6 +81,7 @@ const roleFilterOptions = computed<SelectOption[]>(() => [
 
 const BOTTOM_GAP = 32
 const QUICK_REPLY_STORAGE_KEY = 'openclaw_chat_quick_replies_v1'
+const DRAFT_STORAGE_PREFIX = 'openclaw.chat.draft.'
 let pendingForceScroll = false
 let pendingScroll = false
 let destroyed = false
@@ -1430,6 +1431,28 @@ const activeSlashSuggestion = computed(() => {
 
 const eventCleanups: Array<() => void> = []
 
+function draftStorageKey(sessionKey: string): string {
+  return `${DRAFT_STORAGE_PREFIX}${normalizeOpenClawSessionKey(sessionKey || 'main')}`
+}
+
+function loadDraftForSession(sessionKey: string): string {
+  try {
+    return localStorage.getItem(draftStorageKey(sessionKey)) || ''
+  } catch {
+    return ''
+  }
+}
+
+function saveDraftForSession(sessionKey: string, text: string) {
+  try {
+    const key = draftStorageKey(sessionKey)
+    if (text.trim()) localStorage.setItem(key, text)
+    else localStorage.removeItem(key)
+  } catch {
+    /* ignore */
+  }
+}
+
 function ensureSessionKey(): string {
   const normalized = normalizeOpenClawSessionKey(sessionKeyInput.value.trim() || 'main')
   sessionKeyInput.value = normalized
@@ -1482,8 +1505,11 @@ function normalizeSessionSelectValue(value: string | number | null | undefined):
 }
 
 function handleSessionKeyChange(value: string | number | null) {
+  const prevKey = normalizeOpenClawSessionKey(sessionKeyInput.value.trim() || 'main')
+  saveDraftForSession(prevKey, draft.value)
   const key = normalizeOpenClawSessionKey(normalizeSessionSelectValue(value) || 'main')
   sessionKeyInput.value = key
+  draft.value = loadDraftForSession(key)
   void loadHistoryForKey(key, { force: true })
 }
 
@@ -1630,7 +1656,10 @@ function roleType(role: string): 'default' | 'success' | 'info' | 'warning' {
   return 'default'
 }
 
-function roleLabel(role: string): string {
+function roleLabel(role: string, name?: string): string {
+  const displayName = String(name || '').trim()
+  if (displayName === 'Secretary' || displayName === 'Boss') return displayName
+  if (displayName && displayName !== 'gateway-injected') return displayName
   if (role === 'user') return t('pages.chat.roles.user')
   if (role === 'assistant') return t('pages.chat.roles.assistant')
   if (role === 'tool') return t('pages.chat.roles.tool')
@@ -2601,9 +2630,23 @@ onMounted(async () => {
   }
 
   await loadHistoryForKey(ensureSessionKey(), { force: true })
+  draft.value = loadDraftForSession(sessionKeyInput.value)
+})
+
+let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
+watch(draft, (text) => {
+  if (draftSaveTimer) clearTimeout(draftSaveTimer)
+  draftSaveTimer = setTimeout(() => {
+    saveDraftForSession(sessionKeyInput.value, text)
+  }, 300)
 })
 
 onUnmounted(() => {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer)
+    draftSaveTimer = null
+  }
+  saveDraftForSession(sessionKeyInput.value, draft.value)
   eventCleanups.forEach((cleanup) => cleanup())
   chatStore.clearTimers()
   cancelPendingScroll()
@@ -2660,6 +2703,7 @@ async function handleSend() {
     await chatStore.sendMessage(content)
     void fetchSessionTokenUsage(key)
     draft.value = ''
+    saveDraftForSession(key, '')
     await nextTick()
     autoFollowBottom.value = true
     requestScrollToBottom({ force: true })
@@ -2871,7 +2915,7 @@ async function handleSend() {
                         <NSpace justify="space-between" align="center" class="chat-bubble-meta" :size="8">
                           <NSpace align="center" :size="6">
                             <NTag size="small" :type="roleType(entry.item.role)" :bordered="false" round>
-                              {{ roleLabel(entry.item.role) }}
+                              {{ roleLabel(entry.item.role, entry.item.name) }}
                             </NTag>
                             <NText v-if="entry.item.name" depth="3" style="font-size: 12px;">
                               {{ entry.item.name }}
@@ -3958,12 +4002,14 @@ async function handleSend() {
 
 .chat-bubble.is-user {
   margin-left: auto;
+  margin-right: 0;
   border-color: rgba(24, 160, 88, 0.35);
   background: rgba(24, 160, 88, 0.09);
 }
 
 .chat-bubble.is-assistant {
   margin-right: auto;
+  margin-left: 0;
   border-color: rgba(24, 144, 255, 0.3);
   background: rgba(24, 144, 255, 0.08);
 }

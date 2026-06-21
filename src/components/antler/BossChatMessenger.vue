@@ -11,6 +11,7 @@ import {
   TrashOutline,
   PaperPlaneOutline,
   PeopleOutline,
+  AttachOutline,
 } from '@vicons/ionicons5'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useBossStore } from '@/stores/boss'
@@ -32,6 +33,11 @@ import { useTTSSettings } from '@/composables/useTTSSettings'
 import { useVoiceOutput } from '@/composables/useVoiceOutput'
 import { useVoiceWake } from '@/composables/useVoiceWake'
 import { useStreamingVoiceOutput } from '@/composables/useStreamingVoiceOutput'
+interface PendingAttachment {
+  path: string
+  name: string
+  sizeLabel?: string
+}
 
 interface OfficeAgent {
   id: string
@@ -52,6 +58,9 @@ interface ChatMsg {
   text: string
   ts: number
   authorName?: string | null
+  pendingAttachmentId?: string
+  attachmentFileName?: string | null
+  attachmentResolved?: boolean
 }
 
 interface ChatThread {
@@ -70,8 +79,8 @@ interface ChatThread {
 const WHO: Record<string, string> = {
   boss: 'Boss',
   secretary: 'Secretary',
-  ceo: 'CEO',
-  coo: 'CEO',
+  ceo: 'COO',
+  coo: 'COO',
   it: 'IT',
   worker: 'Worker',
   system: 'System',
@@ -132,6 +141,12 @@ const lastChatLen = ref(0)
 const queueHint = ref('')
 const openClawSessionKey = ref('')
 const openClawSessionLoading = ref(false)
+const pendingAttachments = ref<PendingAttachment[]>([])
+const pendingAttachmentChoices = computed(() =>
+  chat.value.filter((m) => m.pendingAttachmentId && !m.attachmentResolved),
+)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const uploadingAttachment = ref(false)
 
 const modeOptions = [
   { label: '⚡ Agent', value: 'agent' },
@@ -165,6 +180,9 @@ function connectEvents() {
   if (!open.value) return
   try {
     chatEvents = new EventSource(eventsUrl())
+    chatEvents.addEventListener('ceoDecision', () => {
+      void poll()
+    })
     chatEvents.addEventListener('chat', () => {
       void poll()
     })
@@ -470,12 +488,20 @@ async function poll() {
     ensureDefaultThread()
 
     let snap = base
-    if (selectedAgentId.value && !useOpenClawBossChat.value) {
+    if (selectedAgentId.value) {
       snap = await api.get<OfficeSnapshot>(`/api/office/snapshot${snapshotQuery()}`)
       if (snap.threads?.length) threads.value = snap.threads
-    }
-
-    if (!useOpenClawBossChat.value) {
+      chat.value = snap.chat || []
+      if (!useOpenClawBossChat.value) {
+        const nextChat = chat.value
+        if (nextChat.length !== lastChatLen.value) {
+          lastChatLen.value = nextChat.length
+          maybeAutoPlayBossReply(nextChat)
+          await nextTick()
+          scrollChatIfNeeded()
+        }
+      }
+    } else if (!useOpenClawBossChat.value) {
       const nextChat = snap.chat || []
       if (nextChat.length !== lastChatLen.value) {
         chat.value = nextChat
@@ -778,7 +804,8 @@ function confirmRemove(agent: OfficeAgent) {
 
 async function sendBossChat() {
   const text = chatText.value.trim()
-  if (!text || sending.value) return
+  const attachments = [...pendingAttachments.value]
+  if ((!text && !attachments.length) || sending.value) return
   if (!selectedAgentId.value) {
     message.warning('Select an agent first')
     return
@@ -795,15 +822,17 @@ async function sendBossChat() {
       queued?: boolean
       queuePosition?: number
     }>('POST', '/api/chat', {
-      text,
+      text: text || undefined,
       mode: chatMode.value,
       targetAgentId: selectedAgentId.value || undefined,
       threadId: selectedThreadId.value || undefined,
+      attachments: attachments.length ? attachments : undefined,
     })
     if (res.queued && res.queuePosition) {
       queueHint.value = `Queued (position ${res.queuePosition})`
     }
     chatText.value = ''
+    pendingAttachments.value = []
     await poll()
     await nextTick()
     scrollChatIfNeeded(true)
@@ -813,6 +842,114 @@ async function sendBossChat() {
     }
   } finally {
     sending.value = false
+  }
+}
+
+function triggerAttach() {
+  if (sending.value || uploadingAttachment.value || !selectedAgentId.value) return
+  fileInputRef.value?.click()
+}
+
+function removePendingAttachment(path: string) {
+  pendingAttachments.value = pendingAttachments.value.filter((a) => a.path !== path)
+}
+
+const resolvingAttachmentId = ref<string | null>(null)
+
+async function resolveAttachmentChoice(pendingId: string, mode: 'archive' | 'reference') {
+  if (resolvingAttachmentId.value) return
+  resolvingAttachmentId.value = pendingId
+  try {
+    const res = await api.send<{ ok: boolean; status?: string; error?: string; path?: string; chunks?: number }>(
+      'POST',
+      '/api/inbound/attachment/resolve',
+      {
+        pendingId,
+        mode,
+        threadId: selectedThreadId.value || undefined,
+        agentId: selectedAgentId.value || undefined,
+      },
+    )
+    if (!res.ok) {
+      message.error(res.error || 'Could not process attachment')
+      return
+    }
+    await poll()
+    if (res.status === 'reference') {
+      message.success(`Added as reference (${res.chunks || 0} chunks indexed)`)
+    } else if (res.status === 'ingested') {
+      message.success('Saved to Admin Vault inbox')
+    } else if (res.status === 'duplicate') {
+      message.info('Already in inbox')
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : 'Could not process attachment')
+  } finally {
+    resolvingAttachmentId.value = null
+  }
+}
+
+async function onFilesSelected(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files ? Array.from(input.files) : []
+  input.value = ''
+  if (!files.length) return
+
+  uploadingAttachment.value = true
+  const source = useOpenClawBossChat.value ? 'boss_chat_openclaw' : 'boss_chat_native'
+  try {
+    for (const file of files) {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('source', source)
+      if (selectedThreadId.value) form.append('threadId', selectedThreadId.value)
+      if (selectedAgentId.value) form.append('agentId', selectedAgentId.value)
+      const res = await api.sendForm<{
+        ok: boolean
+        status?: string
+        pendingId?: string
+        fileName?: string
+        attachment?: PendingAttachment
+        path?: string
+        error?: string
+      }>('POST', '/api/inbound/attachment', form)
+      if (res.status === 'duplicate') {
+        message.info(`Already in inbox: ${res.attachment?.name || file.name}`)
+        continue
+      }
+      if (res.status === 'pending_choice') {
+        continue
+      }
+      if (!res.ok) {
+        message.error(res.error || `Could not save ${file.name}`)
+        continue
+      }
+      if (res.attachment?.path) {
+        pendingAttachments.value = [
+          ...pendingAttachments.value,
+          {
+            path: res.attachment.path,
+            name: res.attachment.name || file.name,
+            sizeLabel: res.attachment.sizeLabel,
+          },
+        ]
+      }
+    }
+    if (files.length) {
+      await poll()
+      const staged = pendingAttachmentChoices.value.length > 0
+      message.success(
+        staged
+          ? 'File uploaded — choose Archive or Reference below'
+          : files.length === 1
+            ? 'File saved to Admin Vault inbox'
+            : `${files.length} files saved to inbox`,
+      )
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : 'Could not upload file')
+  } finally {
+    uploadingAttachment.value = false
   }
 }
 
@@ -1116,21 +1253,72 @@ onUnmounted(stopPoll)
               />
             </div>
 
+            <input
+              ref="fileInputRef"
+              type="file"
+              class="boss-chat-file-input"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.csv,.txt,.md"
+              multiple
+              @change="onFilesSelected"
+            />
+
             <div v-if="useOpenClawBossChat" class="boss-chat-openclaw">
               <p v-if="!gatewayConnected" class="boss-chat-gateway-hint">
                 OpenClaw Gateway is disconnected. Reconnect from the app header or restart
                 <code>npm run dev:all</code>.
               </p>
               <p v-else-if="openClawSessionLoading" class="boss-chat-empty">Loading OpenClaw session…</p>
-              <AgentChatPanel
-                v-else-if="openClawSessionKey"
-                :key="`${openClawSessionKey}:${chatMode}`"
-                compact
-                :plan-mode="chatMode === 'plan'"
-                :external-session-key="openClawSessionKey"
-                :external-thread-id="selectedThreadId || ''"
-                :title="activeThread?.title || composerTargetLabel"
-              />
+              <template v-else-if="openClawSessionKey">
+                <div v-if="pendingAttachmentChoices.length" class="boss-chat-attach-choices">
+                  <div
+                    v-for="m in pendingAttachmentChoices"
+                    :key="m.id"
+                    class="boss-chat-attach-choice-card"
+                  >
+                    <span class="boss-chat-attach-choice-label">
+                      {{ m.attachmentFileName || 'Attachment' }} — archive or reference?
+                    </span>
+                    <div class="boss-chat-attach-choice-actions">
+                      <button
+                        type="button"
+                        class="boss-chat-attach-choice-btn archive"
+                        :disabled="!!resolvingAttachmentId"
+                        @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')"
+                      >
+                        存档
+                      </button>
+                      <button
+                        type="button"
+                        class="boss-chat-attach-choice-btn reference"
+                        :disabled="!!resolvingAttachmentId"
+                        @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')"
+                      >
+                        参考
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="boss-chat-openclaw-attach-bar">
+                  <button
+                    class="boss-chat-attach"
+                    type="button"
+                    :disabled="uploadingAttachment || !selectedAgentId"
+                    title="Attach file — Secretary will ask archive or reference"
+                    @click="triggerAttach"
+                  >
+                    <NIcon :component="AttachOutline" :size="16" />
+                    <span>{{ uploadingAttachment ? 'Uploading…' : 'Attach file' }}</span>
+                  </button>
+                </div>
+                <AgentChatPanel
+                  :key="`${openClawSessionKey}:${chatMode}`"
+                  compact
+                  :plan-mode="chatMode === 'plan'"
+                  :external-session-key="openClawSessionKey"
+                  :external-thread-id="selectedThreadId || ''"
+                  :title="activeThread?.title || composerTargetLabel"
+                />
+              </template>
               <p v-else class="boss-chat-empty">Select or create a chat thread.</p>
             </div>
 
@@ -1145,6 +1333,27 @@ onUnmounted(stopPoll)
               >
                 <span class="who">{{ displayName(m) }}</span>
                 {{ m.text }}
+                <div
+                  v-if="m.pendingAttachmentId && !m.attachmentResolved"
+                  class="boss-chat-attach-choice-actions inline"
+                >
+                  <button
+                    type="button"
+                    class="boss-chat-attach-choice-btn archive"
+                    :disabled="!!resolvingAttachmentId"
+                    @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')"
+                  >
+                    存档
+                  </button>
+                  <button
+                    type="button"
+                    class="boss-chat-attach-choice-btn reference"
+                    :disabled="!!resolvingAttachmentId"
+                    @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')"
+                  >
+                    参考
+                  </button>
+                </div>
               </div>
               <div v-if="agentActivityLabel" class="boss-chat-typing" :class="selectedAgent?.role">
                 <span class="boss-chat-typing-label">{{ agentActivityLabel }}</span>
@@ -1155,6 +1364,16 @@ onUnmounted(stopPoll)
               <p v-if="!chat.length && !agentActivityLabel" class="boss-chat-empty">Tell your team what to do — plain language.</p>
             </div>
             <form class="boss-chat-composer" @submit.prevent="sendBossChat">
+              <div v-if="pendingAttachments.length" class="boss-chat-attachments">
+                <span
+                  v-for="a in pendingAttachments"
+                  :key="a.path"
+                  class="boss-chat-attachment-chip"
+                >
+                  {{ a.name }}
+                  <button type="button" title="Remove" @click="removePendingAttachment(a.path)">×</button>
+                </span>
+              </div>
               <textarea
                 v-model="chatText"
                 class="boss-chat-input"
@@ -1177,9 +1396,18 @@ onUnmounted(stopPoll)
                   @error="onVoiceError"
                 />
                 <button
+                  class="boss-chat-attach"
+                  type="button"
+                  :disabled="sending || uploadingAttachment || !selectedAgentId"
+                  title="Attach file — Secretary will ask archive or reference"
+                  @click="triggerAttach"
+                >
+                  <NIcon :component="AttachOutline" :size="16" />
+                </button>
+                <button
                   class="boss-chat-send"
                   type="submit"
-                  :disabled="sending || !chatText.trim() || !selectedAgentId"
+                  :disabled="sending || (!chatText.trim() && !pendingAttachments.length) || !selectedAgentId"
                   title="Send message"
                 >
                   <NIcon :component="PaperPlaneOutline" :size="16" />
@@ -1576,6 +1804,22 @@ onUnmounted(stopPoll)
   padding: 0 8px 8px;
 }
 
+.boss-chat-openclaw-attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--boss-chat-border, rgba(255, 255, 255, 0.08));
+}
+
+.boss-chat-openclaw-attach-bar .boss-chat-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .boss-chat-openclaw :deep(.chat-panel-card) {
   border: none;
   box-shadow: none;
@@ -1835,6 +2079,119 @@ onUnmounted(stopPoll)
 .boss-chat-main :deep(.boss-chat-mode-select .n-base-selection--focus) {
   border-color: var(--boss-chat-accent) !important;
   box-shadow: 0 0 0 2px rgba(70, 209, 96, 0.18) !important;
+}
+
+.boss-chat-file-input {
+  display: none;
+}
+
+.boss-chat-attach-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 4px 0;
+}
+
+.boss-chat-attach-choice-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(70, 209, 96, 0.08);
+  border: 1px solid rgba(70, 209, 96, 0.25);
+}
+
+.boss-chat-attach-choice-label {
+  flex: 1;
+  min-width: 160px;
+  font-size: 12px;
+  color: var(--boss-chat-text);
+}
+
+.boss-chat-attach-choice-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.boss-chat-attach-choice-actions.inline {
+  margin-top: 8px;
+}
+
+.boss-chat-attach-choice-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.boss-chat-attach-choice-btn.archive {
+  background: rgba(70, 209, 96, 0.2);
+  color: var(--boss-chat-accent, #46d160);
+}
+
+.boss-chat-attach-choice-btn.reference {
+  background: rgba(100, 160, 255, 0.15);
+  color: #7eb6ff;
+}
+
+.boss-chat-attach-choice-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.boss-chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px 8px;
+}
+
+.boss-chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(70, 209, 96, 0.14);
+  border: 1px solid rgba(70, 209, 96, 0.35);
+  color: var(--boss-chat-text);
+  font-size: 12px;
+}
+
+.boss-chat-attachment-chip button {
+  border: none;
+  background: transparent;
+  color: var(--boss-chat-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.boss-chat-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: var(--boss-chat-surface);
+  color: var(--boss-chat-text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.boss-chat-attach:hover:not(:disabled) {
+  border-color: var(--boss-chat-accent);
+}
+
+.boss-chat-attach:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .boss-chat-send {

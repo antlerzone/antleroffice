@@ -197,6 +197,11 @@ function addMessage(threadId, from, text, meta = {}) {
     ts: Date.now(),
     authorName: meta.authorName || null,
   };
+  if (meta.pendingAttachmentId) {
+    msg.pendingAttachmentId = meta.pendingAttachmentId;
+    msg.attachmentFileName = meta.attachmentFileName || null;
+  }
+  if (meta.attachmentResolved) msg.attachmentResolved = true;
   thread.messages.push(msg);
   if (thread.messages.length > 200) thread.messages.shift();
   thread.updatedAt = Date.now();
@@ -215,6 +220,23 @@ function addMessage(threadId, from, text, meta = {}) {
 function getMessages(threadId) {
   const thread = getThread(threadId);
   return thread ? thread.messages : [];
+}
+
+function updateMessage(threadId, messageId, patch = {}) {
+  const data = load();
+  const thread = data.threads.find((t) => t.id === threadId);
+  if (!thread) return null;
+  const msg = thread.messages.find((m) => m.id === messageId);
+  if (!msg) return null;
+  Object.assign(msg, patch);
+  thread.updatedAt = Date.now();
+  persist();
+  try {
+    require('./office-events').notifyChatUpdate({ threadId, agentId: thread.agentId });
+  } catch {
+    /* optional */
+  }
+  return msg;
 }
 
 function setPinned(threadId, ownerKey, pinned) {
@@ -352,6 +374,7 @@ module.exports = {
   createThread,
   addMessage,
   getMessages,
+  updateMessage,
   setPinned,
   setThreadSessionKey,
   setThreadTitle,

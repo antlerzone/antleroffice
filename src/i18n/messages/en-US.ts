@@ -1692,6 +1692,32 @@ export default {
       autosaveHint: 'Changes on this tab are saved automatically.',
       generalHint:
         'Your office identity and appearance. Boss login uses your ECS account — no separate username/password here.',
+      companyFramework: {
+        title: 'Company framework',
+        intro:
+          'Defines what this company builds. The CEO sets direction; COO executes only within this scope — no self-brainstorming or side apps.',
+        enabled: 'Enforce scope for COO work',
+        productName: 'Product name',
+        productNamePlaceholder: 'e.g. PropManage — Property Management SaaS',
+        productSummary: 'What we are building',
+        productSummaryPlaceholder:
+          'B2B SaaS for property managers: tenants, leases, maintenance tickets, owner reporting…',
+        inScope: 'In scope (one per line)',
+        inScopePlaceholder:
+          'Tenant portal\nLease & rent billing\nMaintenance work orders\nOwner dashboards',
+        outOfScope: 'Out of scope — never propose (one per line)',
+        outOfScopePlaceholder:
+          'Food menu apps\nUnrelated consumer apps\nCrypto / NFT projects\nNew products without CEO approval',
+        futurePlan: 'CEO Future Plan (approved direction — one per line)',
+        futurePlanPlaceholder:
+          'Ship MVP tenant onboarding\nIntegrate Stripe billing\nFix critical IT scan findings',
+        primaryRepo: 'Primary codebase path (optional)',
+        primaryRepoPlaceholder: 'C:\\Projects\\propmanage or ~/code/propmanage',
+        configuredHint:
+          'Framework active — add Future Plan items above; COO will execute them in order when the queue is clear.',
+        missingHint:
+          'Add product name or summary and Save — COO autonomous work needs scope before running Future Plan items.',
+      },
       about: 'About',
       aboutLine1: 'OpenClaw Gateway admin console',
       aboutLine2: 'Built with Vue 3 + Naive UI',
@@ -1719,6 +1745,31 @@ export default {
           voice: 'Voice',
           persona: 'Persona',
           standup: 'Standup',
+          cooHeartbeat: 'COO heartbeat',
+        },
+        cooHeartbeat: {
+          title: 'COO heartbeat & loop',
+          hint:
+            'COO runs continuously while AntlerOffice is open: resume stalled jobs and execute CEO Future Plan items. Direction comes from Settings — COO does not invent new initiatives.',
+          enabled: 'Enable COO loop (recommended)',
+          schedule: 'Daily backup scan time (local)',
+          scheduleHint: 'Extra discovery run at this time in addition to the continuous loop.',
+          schedulerNote: 'Git push, publish, and delete still require CEO APPROVED.',
+          autonomousLoop: 'Autonomous loop (execute approved work)',
+          autonomousHint:
+            'COO picks up stalled jobs and CEO Future Plan items every few minutes. Chat instructions still require plan approval unless marked autonomous.',
+          futurePlanNote:
+            'Add approved initiatives under Settings → General → Company framework → CEO Future Plan. COO will not self-brainstorm when the queue is empty.',
+          parallelDecisionsNote:
+            'When COO needs your decision (plan, IT scan, push), you get a Boss Chat message and optional Telegram ping. COO keeps working on other tasks until you reply APPROVED / REVISION: / SKIP.',
+          loopIntervalMinutes: 'Loop poll interval (minutes)',
+          staleJobHours: 'Stale job threshold (hours)',
+          runNow: 'Run heartbeat now',
+          refreshDiscovery: 'Refresh discovery',
+          discoveryTitle: 'Current triage',
+          discoveryEmpty: 'No auto work — add CEO Future Plan items or chat a direct instruction.',
+          runSuccess: 'Heartbeat complete.',
+          runFailed: 'Heartbeat failed.',
         },
         standup: {
           title: 'Department standup',
@@ -3734,6 +3785,11 @@ export default {
     legendPlan: 'Plan ready',
     legendReport: 'Daily report',
     legendAlert: 'Needs attention',
+    ceoDecisionNeedsAck: 'Needs acknowledge',
+    ceoDecisionAcknowledged: 'Acknowledged',
+    acknowledgeCeoDecision: 'Acknowledge',
+    acknowledgeSuccess: 'Marked as acknowledged.',
+    acknowledgeFailed: 'Could not acknowledge.',
     loadFailed: 'Could not load summaries',
     openFailed: 'Could not open summary',
     forwardFailed: 'Forward failed',

@@ -252,6 +252,146 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'admin_list_inbox',
+    description:
+      'List CEO-uploaded files waiting in Materials Admin Vault/_inbox/. Admin classifies and archives each file.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'admin_list_vault_index',
+    description: 'Read Admin Vault index (filed documents by company and category).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'admin_archive_document',
+    description:
+      'Move a file from Admin Vault/_inbox/ (or another Materials path) into Admin Vault/{Company}/{Category}/ and update index.md.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_path: {
+          type: 'string',
+          description: 'Materials-relative path, e.g. Admin Vault/_inbox/2026-06-20-ssm.pdf',
+        },
+        company: {
+          type: 'string',
+          description: 'Coliving | CleanLemons | AntlerHub | Shared',
+        },
+        category: {
+          type: 'string',
+          description: 'Corporate | Licenses | Contracts | Invoices | Other',
+        },
+        notes: { type: 'string', description: 'Optional filing note for COO lookup' },
+      },
+      required: ['source_path', 'company', 'category'],
+    },
+  },
+  {
+    name: 'coliving_add_expense',
+    description:
+      'Record operational expense in Coliving portal (room utilities, maintenance, etc.). Requires Coliving OAuth.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        room_id: { type: 'string' },
+        amount: { type: 'number' },
+        currency: { type: 'string', description: 'Default MYR' },
+        category: { type: 'string', description: 'utilities | maintenance | cleaning | other' },
+        description: { type: 'string' },
+        date: { type: 'string', description: 'ISO date' },
+      },
+      required: ['amount', 'description'],
+    },
+  },
+  {
+    name: 'website_learn_start',
+    description:
+      'Start Website Learning Mode (observe only). Boss operates Chrome; IT Junior records actions. profile_mode: ephemeral | persistent | workflow.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow_name: { type: 'string' },
+        start_url: { type: 'string' },
+        profile_mode: { type: 'string', enum: ['ephemeral', 'persistent', 'workflow'] },
+        profile_label: { type: 'string' },
+      },
+      required: ['workflow_name', 'profile_mode'],
+    },
+  },
+  {
+    name: 'website_learn_poll',
+    description: 'Poll incremental learning events (mouse, navigate, input) for an active session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string' },
+        since_seq: { type: 'number' },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'website_learn_screenshot',
+    description: 'Manual screenshot + visible form fields during learning.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string' },
+        label: { type: 'string' },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'website_learn_stop',
+    description: 'Stop observe recording for a learning session.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: { type: 'string' } },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'website_learn_export',
+    description: 'Export workflow artifacts (playwright.ts, input_mapping.json, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string' },
+        workflow_name: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'website_learn_simulate_once',
+    description: 'Replay learned workflow once for Boss approval (IT Junior drives Chrome).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow_name: { type: 'string' },
+        slow_mo_ms: { type: 'number' },
+      },
+      required: ['workflow_name'],
+    },
+  },
+  {
+    name: 'website_learn_batch_run',
+    description: 'Batch run workflow from CSV/JSON file. Writes result.csv and result.json.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow_name: { type: 'string' },
+        excel_path: { type: 'string', description: 'Path to .csv or .json batch file' },
+      },
+      required: ['workflow_name', 'excel_path'],
+    },
+  },
+  {
+    name: 'website_learn_list_workflows',
+    description: 'List saved website learning workflows.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 function ecsBaseUrl() {
@@ -264,6 +404,10 @@ function ecsBaseUrl() {
 
 function fbEngine() {
   return require('./fb-playwright-engine');
+}
+
+function websiteLearnEngine() {
+  return require('./website-learn-engine');
 }
 
 function colivingBaseUrl() {
@@ -556,6 +700,110 @@ async function callTool(name, args = {}) {
       const result = await orchestrator.runVacantRoomPipeline({ room });
       return toolText({ ok: true, result });
     }
+    case 'admin_list_inbox': {
+      const adminVault = require('./admin-vault');
+      return toolText(adminVault.listInbox());
+    }
+    case 'admin_list_vault_index': {
+      const adminVault = require('./admin-vault');
+      return toolText(adminVault.listVaultIndex());
+    }
+    case 'admin_archive_document': {
+      const adminVault = require('./admin-vault');
+      const sourcePath = String(args.source_path || args.sourcePath || '').trim();
+      if (!sourcePath) throw new Error('source_path is required');
+      const result = adminVault.archiveDocument(sourcePath, args.company, args.category, {
+        notes: args.notes,
+      });
+      return toolText(result);
+    }
+    case 'coliving_add_expense': {
+      const portal = require('./portal-partner-oauth');
+      if (!portal.isConnected('coliving')) {
+        return toolText({
+          stub: true,
+          ok: false,
+          message: 'Coliving portal OAuth not connected — hire Coliving Admin VIP and sign in first.',
+        });
+      }
+      return toolText({
+        stub: true,
+        ok: false,
+        message:
+          'Coliving expense API is not wired in AntlerOffice MCP yet. Record in Coliving portal; Accounting verifies via Bukku reconcile only.',
+        payload: {
+          room_id: args.room_id || null,
+          amount: args.amount,
+          currency: args.currency || 'MYR',
+          category: args.category || 'other',
+          description: args.description,
+          date: args.date || new Date().toISOString().slice(0, 10),
+        },
+      });
+    }
+    case 'website_learn_start': {
+      return toolText(
+        await websiteLearnEngine().start({
+          workflow_name: args.workflow_name,
+          start_url: args.start_url || '',
+          profile_mode: args.profile_mode || 'ephemeral',
+          profile_label: args.profile_label || args.workflow_name || '',
+        }),
+      );
+    }
+    case 'website_learn_poll': {
+      const session_id = String(args.session_id || '').trim();
+      if (!session_id) throw new Error('session_id is required');
+      return toolText(
+        await websiteLearnEngine().poll({
+          session_id,
+          since_seq: Number(args.since_seq) || 0,
+        }),
+      );
+    }
+    case 'website_learn_screenshot': {
+      const session_id = String(args.session_id || '').trim();
+      if (!session_id) throw new Error('session_id is required');
+      return toolText(
+        await websiteLearnEngine().screenshot({
+          session_id,
+          label: args.label || 'manual',
+        }),
+      );
+    }
+    case 'website_learn_stop': {
+      const session_id = String(args.session_id || '').trim();
+      if (!session_id) throw new Error('session_id is required');
+      return toolText(await websiteLearnEngine().stop({ session_id }));
+    }
+    case 'website_learn_export': {
+      return toolText(
+        await websiteLearnEngine().exportWorkflow({
+          session_id: args.session_id || '',
+          workflow_name: args.workflow_name || '',
+        }),
+      );
+    }
+    case 'website_learn_simulate_once': {
+      const workflow_name = String(args.workflow_name || '').trim();
+      if (!workflow_name) throw new Error('workflow_name is required');
+      return toolText(
+        await websiteLearnEngine().simulateOnce({
+          workflow_name,
+          slow_mo_ms: Number(args.slow_mo_ms) || 300,
+        }),
+      );
+    }
+    case 'website_learn_batch_run': {
+      const workflow_name = String(args.workflow_name || '').trim();
+      const excel_path = String(args.excel_path || '').trim();
+      if (!workflow_name) throw new Error('workflow_name is required');
+      if (!excel_path) throw new Error('excel_path is required');
+      return toolText(await websiteLearnEngine().batchRun({ workflow_name, excel_path }));
+    }
+    case 'website_learn_list_workflows': {
+      return toolText({ workflows: websiteLearnEngine().listWorkflows() });
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -701,6 +949,7 @@ function startStandaloneServer(port = 8931) {
 
 module.exports = {
   TOOLS,
+  callTool,
   handleRpc,
   handleMcpRequest,
   attachMcpRoutes,

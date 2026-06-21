@@ -10,6 +10,8 @@ import SummonSettingsTab from '@/components/settings/SummonSettingsTab.vue'
 import VoiceSettingsTab from '@/components/settings/VoiceSettingsTab.vue'
 import PersonaSettingsTab from '@/components/settings/PersonaSettingsTab.vue'
 import DailyStandupSettingsTab from '@/components/settings/DailyStandupSettingsTab.vue'
+import CooHeartbeatSettingsTab from '@/components/settings/CooHeartbeatSettingsTab.vue'
+import CompanyFrameworkSettingsCard from '@/components/settings/CompanyFrameworkSettingsCard.vue'
 import DevToolsSettingsTab from '@/components/settings/DevToolsSettingsTab.vue'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
 import { buildDesktopUnbindSignInUrl } from '@/lib/office-web'
@@ -21,7 +23,7 @@ const { t } = useI18n()
 const message = useMessage()
 const themeStore = useThemeStore()
 const boss = useBossStore()
-const { bossDisplayName, desktopDisplayName, hostname, load, save } = useOfficeProfile()
+const { bossDisplayName, desktopDisplayName, cooModel, workerModel, hostname, load, save } = useOfficeProfile()
 const localGateway = useLocalGateway()
 const { ensureLoaded } = useVoiceAssistantSettings()
 const settingsTab = ref('general')
@@ -41,7 +43,7 @@ const themeOptions = computed(() => [
   { label: t('pages.settings.themeDark'), value: 'dark' },
 ])
 
-const autosaveTabs = new Set(['summon', 'voice', 'persona', 'standup'])
+const autosaveTabs = new Set(['summon', 'voice', 'persona', 'standup', 'cooHeartbeat'])
 const showAutosaveBadge = computed(() => autosaveTabs.has(settingsTab.value))
 
 onMounted(async () => {
@@ -105,6 +107,8 @@ async function onSave() {
     await save({
       bossDisplayName: bossDisplayName.value,
       desktopDisplayName: desktopDisplayName.value,
+      cooModel: cooModel.value,
+      workerModel: workerModel.value,
     })
     message.success('Settings saved')
   } catch (e) {
@@ -154,11 +158,11 @@ async function onSave() {
 
       <NCard title="Office profile" class="office-settings-card">
         <NForm label-placement="top" style="max-width: 480px">
-          <NFormItem label="Boss name" :show-feedback="false">
+          <NFormItem label="CEO name (you)" :show-feedback="false">
             <NInput
               v-model:value="bossDisplayName"
               maxlength="80"
-              placeholder="e.g. Alex · shown on org chart as Boss"
+              placeholder="e.g. Alex · shown on org chart as CEO"
             />
           </NFormItem>
           <NFormItem label="Desktop name" :show-feedback="false">
@@ -168,14 +172,28 @@ async function onSave() {
               :placeholder="hostname ? `Default: ${hostname}` : 'e.g. HQ MacBook · this computer'"
             />
           </NFormItem>
+          <NFormItem label="Default COO model" :show-feedback="false">
+            <NInput
+              v-model:value="cooModel"
+              placeholder="e.g. openai/gpt-4o (plan / brainstorm)"
+            />
+          </NFormItem>
+          <NFormItem label="Default worker model" :show-feedback="false">
+            <NInput
+              v-model:value="workerModel"
+              placeholder="e.g. openai/gpt-4o-mini (department NPCs on hire)"
+            />
+          </NFormItem>
           <NFormItem :show-label="false" class="office-settings-actions">
             <NButton type="primary" :loading="saving" @click="onSave">Save</NButton>
           </NFormItem>
         </NForm>
         <p class="hint sm">
-          Boss name appears on Hierarchy and in chat. Desktop name is shown on the portal and synced to ECS when logged in.
+          CEO name appears on Hierarchy and in chat. Default models apply when hiring COO vs department workers (override per agent in Agents → Set model).
         </p>
       </NCard>
+
+      <CompanyFrameworkSettingsCard card-class="office-settings-card" />
 
       <NCard :title="t('pages.settings.appearanceSettings')" class="office-settings-card">
         <NForm label-placement="top" style="max-width: 480px">
@@ -204,6 +222,10 @@ async function onSave() {
 
         <NTabPane name="standup" :tab="t('pages.settings.voiceAssistant.tabs.standup')">
           <DailyStandupSettingsTab card-class="office-settings-card" />
+        </NTabPane>
+
+        <NTabPane name="cooHeartbeat" :tab="t('pages.settings.voiceAssistant.tabs.cooHeartbeat')">
+          <CooHeartbeatSettingsTab card-class="office-settings-card" />
         </NTabPane>
 
         <NTabPane name="devtools" tab="Dev tools">

@@ -254,7 +254,7 @@ function chargeLocalFirstPeriod({ template, templateId, displayName, charge, bil
   return billing.getBalance();
 }
 
-async function hireFromTemplate({ templateId, name, bossToken, hirePassword, billingInterval, autoRenew, devScope } = {}) {
+async function hireFromTemplate({ templateId, name, bossToken, hirePassword, billingInterval, autoRenew, devScope, model } = {}) {
   const template = await resolveTemplate(templateId);
   if (!template) {
     const err = new Error('Unknown NPC template.');
@@ -335,7 +335,15 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
   let runtime = template.runtime || 'openclaw';
   let workspace = null;
   const displayName = String(name || template.name).trim() || template.name;
-  const oc = await openclaw.agentsAdd({ name: displayName });
+  const workerPermissions = require('./worker-permissions');
+  const hireModel = workerPermissions.resolveHireModel({
+    role: template.role === 'ceo' ? 'coo' : template.role,
+    modelOverride: model,
+  });
+  const oc = await openclaw.agentsAdd({
+    name: displayName,
+    model: hireModel || undefined,
+  });
   if (oc.ok) {
     openclawAgentId = oc.agentId;
     workspace = oc.workspace;
@@ -379,7 +387,7 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
 
   const agent = registry.addAgent({
     name: displayName,
-    role: template.role,
+    role: template.role === 'ceo' ? 'coo' : template.role,
     runtime,
     sprite,
     hueShift,
@@ -477,6 +485,9 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
   const saved = registry.getAgent(agent.id);
   const withMcp = defaultMcpPack.applyRoleDefaultsToAgent(saved) || saved;
   office.attachHiredAgent(withMcp);
+  if (openclawAgentId) {
+    await workerPermissions.applyWorkerPermissions(openclawAgentId).catch(() => {});
+  }
   ceoPricing.syncHiredCeoAgent();
 
   let codexInstall = null;

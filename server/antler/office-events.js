@@ -59,9 +59,16 @@ function notifyOfficeUpdate(payload = {}) {
   emit('office', { ...payload, at: Date.now() });
 }
 
+function notifyCeoDecision(payload = {}) {
+  emit('ceoDecision', { ...payload, at: Date.now() });
+  notifyChatUpdate({ threadId: payload.threadId || null });
+  notifyOfficeUpdate({ kind: 'ceoDecision', threadId: payload.threadId || null });
+}
+
 module.exports = {
   subscribe,
   emit,
   notifyChatUpdate,
   notifyOfficeUpdate,
+  notifyCeoDecision,
 };

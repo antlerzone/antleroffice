@@ -6,7 +6,7 @@ import OfficeOrgChart from '@/components/antler/OfficeOrgChart.vue'
 import AgentResumeModal from '@/components/antler/AgentResumeModal.vue'
 import AgentUsageBars from '@/components/antler/AgentUsageBars.vue'
 import AgentHireCompareCard from '@/components/antler/AgentHireCompareCard.vue'
-import { NDropdown, NModal, NButton, NInput, NCheckbox, NSpace, useMessage, useDialog, type DropdownOption } from 'naive-ui'
+import { NDropdown, NModal, NButton, NInput, NCheckbox, NSpace, NSelect, useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { formatTokenCount, useAntlerAgentTokens } from '@/composables/useAntlerAgentTokens'
 import {
@@ -160,6 +160,12 @@ const scopeCanWrite = ref(true)
 const scopeCanReview = ref(true)
 const scopeBusy = ref(false)
 const scopeError = ref('')
+const modelModalOpen = ref(false)
+const modelModalAgent = ref<UserAgent | null>(null)
+const modelRefInput = ref('')
+const modelBusy = ref(false)
+const modelError = ref('')
+const modelOptions = ref<{ label: string; value: string }[]>([])
 const resumeOpen = ref(false)
 const resumeAgent = ref<UserAgent | null>(null)
 const resumeBuiltinRole = ref<string | null>(null)
@@ -600,9 +606,14 @@ function isDevAgent(agent: UserAgent) {
   return !!agent.devEngine || (agent.templateId ? devTemplates.has(agent.templateId) : false) || agent.role === 'it'
 }
 
+function isCooAgent(agent: UserAgent) {
+  return agent.role === 'coo' || agent.role === 'ceo'
+}
+
 function userMenuOptions(agent: UserAgent): DropdownOption[] {
   const opts: DropdownOption[] = [
     { label: 'View overview', key: 'view' },
+    { label: 'Set model', key: 'model', disabled: !agent.openclawAgentId },
     { label: 'Rename', key: 'rename' },
     { label: 'Change skin', key: 'skin' },
     { label: 'Review', key: 'review' },
@@ -611,7 +622,7 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
   if (isDevAgent(agent)) {
     opts.splice(2, 0, { label: 'Job scope', key: 'scope' })
   }
-  if (agent.salaryCreditsPerMonth && agent.salaryCreditsPerMonth > 0 && agent.role !== 'ceo') {
+  if (agent.salaryCreditsPerMonth && agent.salaryCreditsPerMonth > 0 && !isCooAgent(agent)) {
     opts.push({ label: 'Change contract', key: 'change-contract' })
   }
   if (agent.payrollStatus === 'pending_termination') {
@@ -620,6 +631,58 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
     opts.push({ label: 'Resign', key: 'fire' })
   }
   return opts
+}
+
+async function loadModelOptions() {
+  try {
+    const r = await api.get<{ models?: { id?: string; ref?: string; model?: string; provider?: string }[] }>(
+      '/api/openclaw/models?all=1',
+    )
+    const opts: { label: string; value: string }[] = []
+    for (const m of r.models || []) {
+      const ref = m.ref || m.id || (m.provider && m.model ? `${m.provider}/${m.model}` : m.model)
+      if (!ref) continue
+      opts.push({ label: ref, value: ref })
+    }
+    modelOptions.value = opts
+  } catch {
+    modelOptions.value = []
+  }
+}
+
+async function openModel(agent: UserAgent) {
+  if (!agent.openclawAgentId) {
+    message.warning('This agent has no OpenClaw id (demo runtime).')
+    return
+  }
+  modelModalAgent.value = agent
+  modelRefInput.value = ''
+  modelError.value = ''
+  modelModalOpen.value = true
+  if (!modelOptions.value.length) await loadModelOptions()
+  try {
+    const overview = await api.get<{ modelRef?: string }>(`/api/config/agents/${agent.id}/overview`)
+    modelRefInput.value = overview.modelRef || ''
+  } catch {
+    /* optional */
+  }
+}
+
+async function saveModel() {
+  if (!modelModalAgent.value) return
+  modelBusy.value = true
+  modelError.value = ''
+  try {
+    await api.send('PUT', `/api/config/agents/${modelModalAgent.value.id}/model`, {
+      modelRef: modelRefInput.value.trim(),
+    })
+    message.success('Model updated')
+    modelModalOpen.value = false
+  } catch (e) {
+    modelError.value = e instanceof Error ? e.message : 'Could not set model'
+  } finally {
+    modelBusy.value = false
+  }
 }
 
 async function openReview(agent: UserAgent) {
@@ -761,6 +824,7 @@ function onUserMenu(key: string, agent: UserAgent) {
   else if (key === 'hire-back') openHireBack(agent)
   else if (key === 'change-contract') openChangeContract(agent)
   else if (key === 'view') openOverview(agent)
+  else if (key === 'model') void openModel(agent)
   else if (key === 'rename') openRename(agent)
   else if (key === 'scope') openScope(agent)
   else if (key === 'skin') void router.push({ name: 'AntlerSkins', query: { agent: agent.id } })
@@ -1179,6 +1243,28 @@ onUnmounted(() => stopSkinPreviews())
         >
           Save
         </NButton>
+      </template>
+    </NModal>
+
+    <NModal
+      v-model:show="modelModalOpen"
+      preset="card"
+      :title="modelModalAgent ? `Set model — ${modelModalAgent.name}` : 'Set model'"
+      style="max-width: 480px"
+    >
+      <p class="hint">OpenClaw model ref for this worker (e.g. openai/gpt-4o-mini).</p>
+      <NSelect
+        v-model:value="modelRefInput"
+        filterable
+        tag
+        :options="modelOptions"
+        placeholder="provider/model"
+        style="width: 100%; margin-top: 8px"
+      />
+      <p v-if="modelError" class="modal-error">{{ modelError }}</p>
+      <template #footer>
+        <NButton @click="modelModalOpen = false">Cancel</NButton>
+        <NButton type="primary" :loading="modelBusy" @click="saveModel">Save</NButton>
       </template>
     </NModal>
 

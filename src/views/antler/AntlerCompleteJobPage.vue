@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   NButton,
   NDataTable,
@@ -15,6 +15,7 @@ import { useI18n } from 'vue-i18n'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useCompleteJobFilters } from '@/composables/useCompleteJobFilters'
 import CompleteJobToolbar from '@/components/complete-job/CompleteJobToolbar.vue'
+import CompleteJobKanban from '@/components/complete-job/CompleteJobKanban.vue'
 import { useStandupPlayback } from '@/composables/useStandupPlayback'
 import { showItemInFolder } from '@/lib/desktop-shell'
 import {
@@ -89,6 +90,43 @@ async function forward(id: string, ev?: Event) {
     message.error(e instanceof Error ? e.message : t('completeJob.forwardFailed'))
   }
 }
+
+async function acknowledgeCeoDecision(row: DeliverableItem) {
+  try {
+    await api.send('POST', `/api/deliverables/${row.id}/acknowledge-ceo-decision`, {})
+    await refresh()
+    message.success(t('completeJob.acknowledgeSuccess'))
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : t('completeJob.acknowledgeFailed'))
+  }
+}
+
+let deliverablesEvents: EventSource | null = null
+
+function connectDeliverablesEvents() {
+  deliverablesEvents?.close()
+  try {
+    deliverablesEvents = new EventSource('/api/office/events')
+    deliverablesEvents.addEventListener('deliverables', () => {
+      void refresh()
+    })
+    deliverablesEvents.addEventListener('ceoDecision', () => {
+      void refresh()
+    })
+  } catch {
+    /* SSE optional */
+  }
+}
+
+onMounted(() => {
+  void refresh()
+  connectDeliverablesEvents()
+})
+
+onUnmounted(() => {
+  deliverablesEvents?.close()
+  deliverablesEvents = null
+})
 
 async function playStandup() {
   if (!detail.value?.standupSections?.length) return
@@ -220,8 +258,6 @@ const detailSections = computed(() => {
   ]
 })
 
-onMounted(() => refresh())
-
 watch(detailOpen, (open) => {
   if (!open) void stopPlayback()
 })
@@ -260,18 +296,12 @@ watch(detailOpen, (open) => {
       @go-today="goToday()"
     />
 
-    <NDataTable
-      :columns="columns"
-      :data="filteredRows"
+    <CompleteJobKanban
+      :rows="filteredRows"
       :loading="loading"
-      :bordered="false"
-      :row-key="(row: DeliverableItem) => row.id"
-      :row-props="(row: DeliverableItem) => ({
-        style: 'cursor: pointer',
-        onClick: () => openDetail(row),
-      })"
-      size="small"
-      class="complete-job-table"
+      @open="openDetail"
+      @forward="(row) => forward(row.id)"
+      @acknowledge="(row) => acknowledgeCeoDecision(row)"
     />
 
     <p v-if="!loading && !filteredRows.length" class="hint empty-hint">

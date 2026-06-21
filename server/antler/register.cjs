@@ -37,6 +37,7 @@ const bossChat = require('./boss-chat-store');
 const antlerofficeMcp = require('./antleroffice-mcp');
 const webAccounts = require('./web-accounts-store');
 const materials = require('./materials.cjs');
+const adminVault = require('./admin-vault');
 const { attachPaBridge, getOfficePresence } = require('./pa-bridge');
 const gatewayOfficeAdapter = require('./gateway-office-adapter');
 const ecsPortalAuth = require('./ecs-portal-auth');
@@ -44,6 +45,10 @@ const voiceService = require('./voice-service');
 const standupConfig = require('./daily-standup-config-store');
 const departmentStandup = require('./department-standup-service');
 const dailyStandupScheduler = require('./daily-standup-scheduler');
+const cooHeartbeatConfig = require('./coo-heartbeat-config-store');
+const cooHeartbeat = require('./coo-heartbeat-service');
+const cooHeartbeatScheduler = require('./coo-heartbeat-scheduler');
+const cooAutonomousLoop = require('./coo-autonomous-loop');
 const ceoDailyPayrollScheduler = require('./ceo-daily-payroll-scheduler');
 const standupPdf = require('./standup-pdf-export');
 const orgRoles = require('./org-roles');
@@ -156,6 +161,7 @@ function resolveEcsBillingContext(req) {
 function registerAntlerRoutes(app, hooks = {}) {
   store.setDataDir();
   materials.ensureDefaultMaterialsRoot();
+  adminVault.ensureVaultStructure();
   antlerofficeMcp.attachMcpRoutes(app);
   defaultMcpPack.ensureAntlerofficeToolsBinding().catch((e) => {
     console.warn('[AntlerOffice] antleroffice-tools MCP bind:', e.message);
@@ -358,6 +364,8 @@ function registerAntlerRoutes(app, hooks = {}) {
   ecssync.refresh();
 
   dailyStandupScheduler.start();
+  cooHeartbeatScheduler.start();
+  cooAutonomousLoop.start();
   ceoDailyPayrollScheduler.start();
 
   hooks.runBossHeartbeat = (token) => runBossHeartbeat(token);
@@ -890,7 +898,7 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
   app.post('/api/config/agents/hire', async (req, res) => {
     try {
-      const { templateId, name, hirePassword, billingInterval, autoRenew, devScope } = req.body || {};
+      const { templateId, name, hirePassword, billingInterval, autoRenew, devScope, model } = req.body || {};
       const bossToken = req.headers['x-boss-token'] || req.body?.token;
       const result = await agentCatalog.hireFromTemplate({
         templateId,
@@ -900,6 +908,7 @@ function registerAntlerRoutes(app, hooks = {}) {
         billingInterval,
         autoRenew,
         devScope,
+        model,
       });
       auth.refreshAllSessionCredits();
       res.json({
@@ -1020,9 +1029,9 @@ function registerAntlerRoutes(app, hooks = {}) {
       res.status(400).json({ ok: false, error: e.message });
     }
   });
-  app.get('/api/config/builtin-agents/:role/overview', (req, res) => {
+  app.get('/api/config/builtin-agents/:role/overview', async (req, res) => {
     const { buildBuiltinOverview } = require('./builtin-overview');
-    const out = buildBuiltinOverview(req.params.role, { office, registry });
+    const out = await buildBuiltinOverview(req.params.role, { office, registry });
     if (!out) return res.status(404).json({ ok: false, error: 'Builtin agent not found' });
     res.json(out);
   });
@@ -1064,9 +1073,11 @@ function registerAntlerRoutes(app, hooks = {}) {
     if (!existing) return res.status(404).json({ ok: false });
     const patch = mergeAgentIncoming(existing, req.body || {});
     const a = registry.updateAgent(req.params.id, patch);
-    const ceoStation = a.role === 'ceo' ? office.getAgent('ceo') : null;
+    const cooStation = orgRoles.isCooRole(a.role) ? office.getAgent('coo') || office.getAgent('ceo') : null;
     const officeTarget =
-      a.role === 'ceo' && ceoStation?.userAgentId === a.id ? 'ceo' : `user:${a.id}`;
+      orgRoles.isCooRole(a.role) && cooStation?.userAgentId === a.id
+        ? cooStation.id
+        : `user:${a.id}`;
     office.setAgent(officeTarget, {
       label: a.name,
       role: a.role,
@@ -1141,6 +1152,17 @@ function registerAntlerRoutes(app, hooks = {}) {
       liveNpc,
     });
 
+    let soulPreview = '';
+    let modelRef = '';
+    if (a.openclawAgentId) {
+      const soulFile = openclaw.readAgentWorkspaceFile(a.openclawAgentId, 'SOUL.md');
+      if (soulFile.ok) {
+        soulPreview = openclaw.soulPreviewFromContent(soulFile.content);
+      }
+      const modelInfo = await openclaw.getAgentModelRef(a.openclawAgentId);
+      modelRef = modelInfo.modelRef || '';
+    }
+
     res.json({
       ok: true,
       agent: redactAgent(a),
@@ -1161,7 +1183,25 @@ function registerAntlerRoutes(app, hooks = {}) {
       recentDeliverables,
       openclawAvailable: !!oc.available,
       catalog: built.catalog,
+      soulPreview,
+      modelRef,
     });
+  });
+  app.put('/api/config/agents/:id/model', async (req, res) => {
+    const a = registry.getAgent(req.params.id);
+    if (!a) return res.status(404).json({ ok: false, error: 'Agent not found' });
+    if (!a.openclawAgentId) {
+      return res.status(400).json({ ok: false, error: 'Agent has no OpenClaw id (demo runtime)' });
+    }
+    const modelRef = String(req.body?.modelRef ?? req.body?.model ?? '').trim();
+    const r = await openclaw.setAgentModelRef(a.openclawAgentId, modelRef);
+    if (!r.ok) return res.status(400).json({ ok: false, error: r.error || 'Could not set model' });
+    res.json({ ok: true, modelRef, openclawAgentId: a.openclawAgentId });
+  });
+  app.post('/api/config/agents/apply-worker-permissions', async (_req, res) => {
+    const workerPermissions = require('./worker-permissions');
+    const out = await workerPermissions.applyAllHiredWorkerPermissions();
+    res.json(out);
   });
   app.delete('/api/config/agents/:id', async (req, res) => {
     res.status(410).json({ ok: false, error: 'Use POST /api/config/agents/:id/fire instead. Firing is scheduled for the next salary date with no refund.' });
@@ -1197,10 +1237,10 @@ function registerAntlerRoutes(app, hooks = {}) {
   app.post('/api/config/agents/:id/contract', async (req, res) => {
     const existing = registry.getAgent(req.params.id);
     if (!existing) return res.status(404).json({ ok: false, error: 'Agent not found' });
-    if (existing.role === 'ceo') {
+    if (orgRoles.isCooRole(existing.role)) {
       return res.status(400).json({
         ok: false,
-        error: 'CEO salary is daily only and recalculates automatically at midnight.',
+        error: 'COO salary is daily only and recalculates automatically at midnight.',
       });
     }
     const { billingInterval } = req.body || {};
@@ -1711,7 +1751,14 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
 
   // ── Deliverables inbox ("agent complete job") ─────────────────────────────
-  app.get('/api/deliverables', (_req, res) => res.json({ deliverables: registry.listDeliverables() }));
+  app.get('/api/deliverables', (_req, res) => {
+    try {
+      require('./work-board').syncPipelineGatesToBoard();
+    } catch {
+      /* best-effort */
+    }
+    res.json({ deliverables: registry.listDeliverables() });
+  });
   app.post('/api/deliverables/notify', (req, res) => {
     const { kind, summary, task, agentLabel, content } = req.body || {};
     const normalizedKind = kind === 'daily_report' || kind === 'plan_complete' || kind === 'alert' ? kind : 'alert';
@@ -1750,6 +1797,13 @@ function registerAntlerRoutes(app, hooks = {}) {
       summary,
       standupSections,
     });
+    if (!d) return res.status(404).json({ ok: false, error: 'not found' });
+    res.json({ ok: true, deliverable: d });
+  });
+  app.post('/api/deliverables/:id/acknowledge-ceo-decision', (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const workBoard = require('./work-board');
+    const d = workBoard.markCeoDecisionAcknowledged({ deliverableId: id });
     if (!d) return res.status(404).json({ ok: false, error: 'not found' });
     res.json({ ok: true, deliverable: d });
   });
@@ -1834,6 +1888,50 @@ function registerAntlerRoutes(app, hooks = {}) {
     } catch (e) {
       const code = e.code === 'NOT_FOUND' || e.code === 'NO_CONTENT' ? 404 : 500;
       res.status(code).json({ ok: false, error: e.message, code: e.code });
+    }
+  });
+
+  // ── COO heartbeat (discovery + optional autonomous loop) ─────────────────
+  app.get('/api/coo-heartbeat/config', (_req, res) => {
+    res.json({ ok: true, config: cooHeartbeatConfig.getConfig() });
+  });
+  app.patch('/api/coo-heartbeat/config', (req, res) => {
+    try {
+      const config = cooHeartbeatConfig.patchConfig(req.body || {});
+      const schedule = cooHeartbeatScheduler.reschedule();
+      const loop = cooAutonomousLoop.reschedule();
+      res.json({ ok: true, config, schedule, loop });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+  app.get('/api/coo-heartbeat/status', (_req, res) => {
+    const itRepoQueue = require('./runtime/it-repo-queue');
+    res.json({
+      ok: true,
+      ...cooHeartbeat.getStatus(),
+      loop: cooAutonomousLoop.getStatus(),
+      repoQueues: itRepoQueue.getQueueStatus(),
+    });
+  });
+  app.get('/api/coo-heartbeat/discovery', (_req, res) => {
+    const items = cooHeartbeat.discoverWork();
+    res.json({
+      ok: true,
+      items,
+      triageText: cooHeartbeat.buildTriageReport(items),
+    });
+  });
+  app.post('/api/coo-heartbeat/run', async (req, res) => {
+    try {
+      const result = await cooHeartbeat.runHeartbeat({
+        trigger: 'manual',
+        wait: req.body?.wait !== false,
+      });
+      res.json(result);
+    } catch (e) {
+      const code = e.code === 'busy' ? 409 : 500;
+      res.status(code).json({ ok: false, error: e.message, code: e.code || 'HEARTBEAT_ERROR' });
     }
   });
 
@@ -2063,14 +2161,98 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
 
   // ── Boss instruction (optional targetAgentId for directed chat) ───────────
+  app.post('/api/chat/attachment', upload.single('file'), async (req, res) => {
+    const owner = resolveBossOwner(req);
+    const file = req.file;
+    if (!file) return res.status(400).json({ ok: false, error: 'No file uploaded' });
+    const hook = require('./inbound-attachment-hook');
+    const source = req.body?.source === 'boss_chat_openclaw' ? 'boss_chat_openclaw' : 'boss_chat_native';
+    const result = await hook.receiveBuffer(file.buffer, file.originalname, {
+      source,
+      threadId: String(req.body?.threadId || '').trim() || null,
+      ownerKey: owner.ownerKey,
+      uploadedBy: 'ceo',
+      agentId: String(req.body?.agentId || '').trim() || null,
+      mode: String(req.body?.mode || '').trim() || undefined,
+    });
+    if (!result.ok && result.status === 'rejected') {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  });
+
+  app.post('/api/inbound/attachment', upload.single('file'), async (req, res) => {
+    const owner = resolveBossOwner(req);
+    const hook = require('./inbound-attachment-hook');
+    const threadId = String(req.body?.threadId || '').trim() || null;
+    const source = String(req.body?.source || 'boss_chat').trim() || 'boss_chat';
+
+    if (req.file) {
+      const result = await hook.receiveBuffer(req.file.buffer, req.file.originalname, {
+        source,
+        threadId,
+        ownerKey: owner.ownerKey,
+        uploadedBy: 'ceo',
+        agentId: String(req.body?.agentId || '').trim() || null,
+        mode: String(req.body?.mode || '').trim() || undefined,
+      });
+      if (!result.ok && result.status === 'rejected') {
+        return res.status(400).json(result);
+      }
+      return res.json(result);
+    }
+
+    const openclawMediaPath = String(req.body?.openclawMediaPath || req.body?.mediaPath || '').trim();
+    if (openclawMediaPath) {
+      const result = await hook.ingestOpenClawMedia(openclawMediaPath, {
+        source,
+        threadId,
+        ownerKey: owner.ownerKey,
+        uploadedBy: 'ceo',
+      });
+      if (!result.ok && result.status === 'rejected') {
+        return res.status(400).json(result);
+      }
+      return res.json(result);
+    }
+
+    return res.status(400).json({ ok: false, error: 'file or openclawMediaPath required' });
+  });
+
+  app.post('/api/inbound/attachment/resolve', async (req, res) => {
+    const owner = resolveBossOwner(req);
+    const hook = require('./inbound-attachment-hook');
+    const pendingId = String(req.body?.pendingId || '').trim();
+    const mode = String(req.body?.mode || '').trim();
+    const threadId = String(req.body?.threadId || '').trim() || null;
+    const agentId = String(req.body?.agentId || '').trim() || null;
+    if (!pendingId || !mode) {
+      return res.status(400).json({ ok: false, error: 'pendingId and mode required' });
+    }
+    if (mode !== 'archive' && mode !== 'reference') {
+      return res.status(400).json({ ok: false, error: 'mode must be archive or reference' });
+    }
+    const result = await hook.resolvePending(pendingId, mode, {
+      threadId,
+      agentId,
+      ownerKey: owner.ownerKey,
+    });
+    if (!result.ok && result.status === 'rejected') {
+      return res.status(400).json(result);
+    }
+    return res.json(result);
+  });
+
   app.post('/api/chat', async (req, res) => {
     const owner = resolveBossOwner(req);
+    const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
     const result = await handleInstruction(req.body?.text, {
       targetAgentId: req.body?.targetAgentId,
       mode: req.body?.mode,
       threadId: req.body?.threadId,
       authorName: owner.ownerName,
       ownerKey: owner.ownerKey,
+      attachments,
     });
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
@@ -2129,6 +2311,31 @@ function registerAntlerRoutes(app, hooks = {}) {
       dev.codexAuthReady = false;
     }
     res.json({ ok: true, dev });
+  });
+  app.post('/api/dev/security-scan', async (req, res) => {
+    try {
+      const itScanGate = require('./it-scan-gate');
+      const projectRoot = String(req.body?.projectRoot || '').trim() || null;
+      const gate = await itScanGate.runItScanGate({
+        projectRoot,
+        threadId: `manual-scan:${Date.now()}`,
+        instruction: req.body?.instruction || '',
+        rawTask: req.body?.task || 'Manual security scan',
+        shortTask: 'Manual scan',
+      });
+      if (gate.needsProjectPath) {
+        return res.status(400).json({ ok: false, error: gate.resolver?.message || 'project path required' });
+      }
+      res.json({
+        ok: true,
+        report: gate.report,
+        decision: gate.decision,
+        markdown: gate.markdown,
+        deliverableId: gate.deliverableId,
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   });
   app.put('/api/dev/settings', async (req, res) => {
     try {
@@ -2602,6 +2809,16 @@ function mergeIncoming(current, incoming) {
     }
     if (typeof incoming.office.desktopDisplayName === 'string') {
       next.office.desktopDisplayName = incoming.office.desktopDisplayName.trim().slice(0, 80);
+    }
+    if (incoming.office.models && typeof incoming.office.models === 'object') {
+      next.office.models = { ...(next.office.models || {}), ...incoming.office.models };
+    }
+    if (incoming.office.companyFramework && typeof incoming.office.companyFramework === 'object') {
+      const companyFramework = require('./company-framework');
+      next.office.companyFramework = companyFramework.normalizeFramework({
+        ...(next.office.companyFramework || {}),
+        ...incoming.office.companyFramework,
+      });
     }
   }
   return next;

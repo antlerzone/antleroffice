@@ -88,6 +88,20 @@ const DEFAULT_SETTINGS = {
   office: {
     bossDisplayName: '',
     desktopDisplayName: '',
+    models: {
+      cooModel: '',
+      workerModel: '',
+    },
+    companyFramework: {
+      enabled: true,
+      productName: '',
+      productSummary: '',
+      inScope: [],
+      outOfScope: [],
+      futurePlan: [],
+      futurePlanCompleted: [],
+      primaryRepo: '',
+    },
   },
   // Local dev pipeline (Cursor CLI + Codex CLI) — Plan A: AntlerOffice spawn, not OpenClaw MCP.
   dev: {
@@ -103,6 +117,7 @@ const DEFAULT_SETTINGS = {
     cursorModel: 'composer-2.5',
     claudeModel: '',
     branchPrefix: 'antleroffice/task-',
+    scanBeforeItFix: true,
     cursorTimeoutMs: 600000,
     codexTimeoutMs: 300000,
     claudeTimeoutMs: 600000,
@@ -152,7 +167,16 @@ function mergeDefaults(s) {
   if (s.materials) out.materials = { ...out.materials, ...s.materials };
   if (s.defaultMcpPack) out.defaultMcpPack = { ...out.defaultMcpPack, ...s.defaultMcpPack };
   if (s.onboarding) out.onboarding = { ...out.onboarding, ...s.onboarding };
-  if (s.office) out.office = { ...out.office, ...s.office };
+  if (s.office) {
+    out.office = { ...out.office, ...s.office };
+    if (s.office.models) out.office.models = { ...out.office.models, ...(s.office.models || {}) };
+    if (s.office.companyFramework && typeof s.office.companyFramework === 'object') {
+      out.office.companyFramework = {
+        ...out.office.companyFramework,
+        ...s.office.companyFramework,
+      };
+    }
+  }
   if (s.dev) out.dev = { ...out.dev, ...s.dev };
   if (typeof s.selectedOfficeId === 'string' || s.selectedOfficeId === null) {
     out.selectedOfficeId = s.selectedOfficeId;

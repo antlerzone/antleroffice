@@ -4,7 +4,8 @@ import { useWebSocketStore } from './websocket'
 import type { ChatMessage } from '@/api/types'
 import { ConnectionState } from '@/api/types'
 import { byLocale, getActiveLocale } from '@/i18n/text'
-import { getApiAuthHeaders } from '@/lib/api-auth'
+import { getApiAuthHeaders, ensureApiSession } from '@/lib/api-auth'
+import { expandGatewayInjectedMessages } from '@/utils/expand-gateway-injected-messages'
 
 type AgentPhase =
   | 'idle'
@@ -397,7 +398,9 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const normalizedKey = key.trim()
       sessionKey.value = normalizedKey
-      messages.value = await wsStore.rpc.listChatHistory(normalizedKey)
+      messages.value = expandGatewayInjectedMessages(
+        await wsStore.rpc.listChatHistory(normalizedKey),
+      )
       lastSyncedAt.value = Date.now()
       reconcileAgentStatusAfterHistory(normalizedKey)
     } catch (error) {
@@ -414,7 +417,36 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  let delegatedPollTimer: ReturnType<typeof setInterval> | null = null
+
+  function stopDelegatedPoll() {
+    if (delegatedPollTimer) {
+      clearInterval(delegatedPollTimer)
+      delegatedPollTimer = null
+    }
+  }
+
+  function startDelegatedPoll(agentId: string) {
+    stopDelegatedPoll()
+    setAgentStatusPhase(agentId, 'waiting', {
+      runId: null,
+      detail: byLocale('CEO 执行中…', 'CEO working…', getActiveLocale()),
+    })
+    let ticks = 0
+    delegatedPollTimer = setInterval(() => {
+      ticks += 1
+      const key = sessionKey.value.trim()
+      if (!key || ticks > 45) {
+        stopDelegatedPoll()
+        setAgentStatusPhase(agentId, 'done', { runId: null, detail: null })
+        return
+      }
+      void fetchHistory(key, { silent: true, clearError: false })
+    }, 4000)
+  }
+
   function clearTimers() {
+    stopDelegatedPoll()
     if (refreshTimer) {
       clearTimeout(refreshTimer)
       refreshTimer = null
@@ -1000,6 +1032,7 @@ export const useChatStore = defineStore('chat', () => {
       id: idempotencyKey,
       role: 'user',
       content: text,
+      name: 'Boss',
       timestamp: new Date().toISOString(),
     }
     messages.value = [...messages.value, localMessage]
@@ -1007,6 +1040,7 @@ export const useChatStore = defineStore('chat', () => {
     sending.value = true
     lastError.value = null
     try {
+      await ensureApiSession()
       if (wsStore.state !== ConnectionState.CONNECTED) {
         await wsStore.connect()
       }
@@ -1045,7 +1079,7 @@ export const useChatStore = defineStore('chat', () => {
             }),
           })
           const intakeRaw = await intakeRes.text()
-          let intakeData: { ok?: boolean; handled?: boolean; reply?: string } = {}
+          let intakeData: { ok?: boolean; handled?: boolean; reply?: string; delegated?: boolean } = {}
           if (intakeRaw.trim()) {
             try {
               intakeData = JSON.parse(intakeRaw) as typeof intakeData
@@ -1061,10 +1095,14 @@ export const useChatStore = defineStore('chat', () => {
                 id: assistantId,
                 role: 'assistant',
                 content: intakeData.reply,
+                name: 'Secretary',
                 timestamp: new Date().toISOString(),
               },
             ]
             setAgentStatusPhase(agentId, 'done', { runId: null, detail: null })
+            if (intakeData.delegated) {
+              startDelegatedPoll(agentId)
+            }
             return
           }
         } catch {

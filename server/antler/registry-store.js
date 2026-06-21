@@ -628,8 +628,10 @@ function enrichAgent(raw) {
     : Array.isArray(raw.mcpIds)
       ? raw.mcpIds.filter(Boolean)
       : [];
+  const role = raw.role === 'ceo' ? 'coo' : raw.role;
   return {
     ...raw,
+    role,
     runtime: normalizeRuntime(raw.runtime),
     mcpIds,
     mcpBindings,
@@ -809,7 +811,7 @@ function deliverablesIndexPath() {
   return path.join('deliverables', 'index.json');
 }
 
-const DELIVERABLE_KINDS = new Set(['plan_complete', 'daily_report', 'alert', 'job']);
+const DELIVERABLE_KINDS = new Set(['ceo_inbox', 'coo_planning', 'ceo_decision', 'it_scan', 'plan_complete', 'daily_report', 'alert', 'job']);
 
 function stripPlanInstruction(task) {
   return String(task || '')
@@ -821,6 +823,14 @@ function defaultDeliverableSummary(kind, agentLabel, task) {
   const short = stripPlanInstruction(task);
   const clip = short.length > 100 ? `${short.slice(0, 97)}…` : short;
   switch (kind) {
+    case 'ceo_inbox':
+      return clip ? `CEO instruction: ${clip}` : 'New CEO instruction.';
+    case 'coo_planning':
+      return clip ? `COO planning: ${clip}` : 'COO is planning.';
+    case 'ceo_decision':
+      return clip ? `CEO decision: ${clip}` : 'Awaiting CEO decision.';
+    case 'it_scan':
+      return clip ? `IT scan: ${clip}` : 'IT security scan report.';
     case 'plan_complete':
       return clip ? `Plan ready: ${clip}` : 'Your plan is ready to review.';
     case 'daily_report':
@@ -923,6 +933,12 @@ function addDeliverable({
   planSteps,
   standupSections,
   reportPeriod,
+  threadId,
+  ownerKey,
+  ceoDecisionPhase,
+  ceoAcknowledged,
+  ceoNotifiedAt,
+  ceoAcknowledgedAt,
 } = {}) {
   const normalizedKind = DELIVERABLE_KINDS.has(kind) ? kind : 'job';
   const cleanTask = stripPlanInstruction(task);
@@ -935,7 +951,17 @@ function addDeliverable({
     agentLabel: agentLabel || 'Agent',
     department: department || null,
     departmentLabel: departmentLabel || null,
-    status: status || (normalizedKind === 'plan_complete' ? 'complete' : normalizedSteps.length ? 'in_progress' : 'complete'),
+    status:
+      status ||
+      (normalizedKind === 'ceo_inbox'
+        ? 'pending'
+        : normalizedKind === 'ceo_decision'
+          ? 'pending'
+          : normalizedKind === 'plan_complete'
+          ? 'complete'
+          : normalizedSteps.length
+            ? 'in_progress'
+            : 'complete'),
     progressPercent: computeProgressPercent(normalizedSteps, progressPercent),
     planSteps: normalizedSteps,
     standupSections: normalizedSections,
@@ -946,6 +972,12 @@ function addDeliverable({
     createdAt: Date.now(),
     forwarded: false,
     read: false,
+    threadId: threadId || null,
+    ownerKey: ownerKey || null,
+    ceoDecisionPhase: ceoDecisionPhase || null,
+    ceoAcknowledged: !!ceoAcknowledged,
+    ceoNotifiedAt: ceoNotifiedAt || (normalizedKind === 'ceo_decision' ? Date.now() : null),
+    ceoAcknowledgedAt: ceoAcknowledgedAt || null,
   };
   const list = readJson(deliverablesIndexPath(), []);
   list.unshift(item);
@@ -969,6 +1001,8 @@ function addBossSummary({
   planSteps,
   standupSections,
   reportPeriod,
+  threadId,
+  ownerKey,
 } = {}) {
   const normalizedKind = DELIVERABLE_KINDS.has(kind) ? kind : 'alert';
   let savedFile = file || null;
@@ -997,6 +1031,8 @@ function addBossSummary({
     planSteps,
     standupSections,
     reportPeriod,
+    threadId,
+    ownerKey,
   });
 }
 
@@ -1036,6 +1072,13 @@ function updateDeliverableProgress(id, patch = {}) {
   if (patch.status !== undefined) d.status = patch.status;
   if (patch.kind !== undefined && DELIVERABLE_KINDS.has(patch.kind)) d.kind = patch.kind;
   if (patch.summary !== undefined) d.summary = patch.summary;
+  if (patch.departmentLabel !== undefined) d.departmentLabel = patch.departmentLabel;
+  if (patch.agentLabel !== undefined) d.agentLabel = patch.agentLabel;
+  if (patch.threadId !== undefined) d.threadId = patch.threadId;
+  if (patch.ceoDecisionPhase !== undefined) d.ceoDecisionPhase = patch.ceoDecisionPhase;
+  if (patch.ceoAcknowledged !== undefined) d.ceoAcknowledged = !!patch.ceoAcknowledged;
+  if (patch.ceoNotifiedAt !== undefined) d.ceoNotifiedAt = patch.ceoNotifiedAt;
+  if (patch.ceoAcknowledgedAt !== undefined) d.ceoAcknowledgedAt = patch.ceoAcknowledgedAt;
   if (patch.standupSections !== undefined) d.standupSections = normalizeStandupSections(patch.standupSections);
   if (d.status === 'complete' || d.progressPercent === 100) {
     d.progressPercent = d.progressPercent ?? 100;

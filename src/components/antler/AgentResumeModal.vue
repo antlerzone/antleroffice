@@ -279,6 +279,20 @@ onUnmounted(() => {
                         <p class="npc-hire-scope-text">{{ overview.description }}</p>
                       </section>
 
+                      <section v-if="overview.modelRef" class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">Model</h4>
+                        <p class="npc-hire-scope-text"><code>{{ overview.modelRef }}</code></p>
+                      </section>
+
+                      <section v-if="overview.soulPreview" class="npc-hire-section">
+                        <h4 class="npc-hire-section-title">Personality (SOUL)</h4>
+                        <p class="npc-hire-scope-text">{{ overview.soulPreview }}</p>
+                        <p class="hint sm">
+                          Edit full SOUL in
+                          <router-link :to="{ name: 'Memory' }">Memory → SOUL</router-link>.
+                        </p>
+                      </section>
+
                       <section v-if="overview.examples?.length" class="npc-hire-section">
                         <h4 class="npc-hire-section-title">Examples</h4>
                         <ul class="npc-hire-checklist">

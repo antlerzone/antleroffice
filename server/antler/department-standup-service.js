@@ -69,7 +69,7 @@ function buildStandupMarkdown({ reportPeriod, sections, cooSummary }) {
   for (const s of sections) {
     lines.push(`## ${s.label}`, '', s.text, '');
   }
-  lines.push('## CEO summary', '', cooSummary);
+  lines.push('## COO summary', '', cooSummary);
   return lines.join('\n');
 }
 
@@ -162,21 +162,21 @@ async function runStandup({
         activeRun.completedDepartments += 1;
       }
 
-      activeRun.currentDepartment = 'CEO summary';
+      activeRun.currentDepartment = 'COO summary';
       const deptBlock = sections
         .map((s) => `### ${s.label}\n${s.text}`)
         .join('\n\n');
-      const ceoInstruction =
-        standupConfig.applyTemplate(config.prompts.ceoSummary, templateVars) +
+      const cooInstruction =
+        standupConfig.applyTemplate(config.prompts.cooSummary || config.prompts.ceoSummary, templateVars) +
         `\n\n---\n\nDepartment reports:\n\n${deptBlock}`;
 
-      const { text: ceoSummary } = await runStandupCeoSummary({
-        instruction: ceoInstruction,
+      const { text: cooSummaryText } = await runStandupCeoSummary({
+        instruction: cooInstruction,
         ownerKey,
         threadId,
       });
 
-      const ceo = orgRoles.ceoAgentOrFallback();
+      const coo = orgRoles.cooAgentOrFallback();
       const sec = orgRoles.findSecretary();
       const hostIntro =
         `Good morning. This is ${sec?.label || 'your Secretary'}. ` +
@@ -185,7 +185,7 @@ async function runStandup({
       const markdown = buildStandupMarkdown({
         reportPeriod,
         sections,
-        cooSummary: String(ceoSummary || '').trim() || '(No summary generated)',
+        cooSummary: String(cooSummaryText || '').trim() || '(No summary generated)',
       });
 
       const standupSections = [
@@ -198,10 +198,10 @@ async function runStandup({
         },
         ...sections,
         {
-          agentId: ceo?.id || 'ceo',
-          role: 'ceo',
-          label: ceo?.label || 'CEO',
-          text: String(ceoSummary || '').trim() || '(No summary generated)',
+          agentId: coo?.id || 'coo',
+          role: 'coo',
+          label: coo?.label || 'COO',
+          text: String(cooSummaryText || '').trim() || '(No summary generated)',
           voice: config.ceoVoice || null,
         },
       ];
@@ -211,8 +211,8 @@ async function runStandup({
         kind,
         summary: `${reportPeriod.label} standup — ${sections.length} departments`,
         task: `Department standup (${reportPeriod.label})`,
-        agentId: ceo?.id || null,
-        agentLabel: ceo?.label || 'CEO',
+        agentId: coo?.id || null,
+        agentLabel: coo?.label || 'COO',
         department: 'multi',
         departmentLabel: 'Multi-department',
         content: markdown,

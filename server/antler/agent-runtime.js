@@ -4,6 +4,7 @@ const office = require('./office-state');
 const store = require('./store');
 const skills = require('./skills');
 const roster = require('./roster');
+const taskRouter = require('./task-router');
 const registry = require('./registry-store');
 const runtime = require('./runtime');
 const mcpTasklist = require('./mcp-tasklist');
@@ -22,6 +23,18 @@ const secretaryItIntake = require('./secretary-it-intake');
 const ceoPipelinePending = require('./ceo-pipeline-pending');
 const devPipeline = require('./runtime/dev-pipeline');
 const workflowContext = require('./workflow-context');
+const workBoard = require('./work-board');
+const itScanGate = require('./it-scan-gate');
+const cooRunTracker = require('./coo-run-tracker');
+const ceoDecisionNotify = require('./ceo-decision-notify');
+
+function scheduleCooAutonomousContinue(_waitingOnBoss = false) {
+  try {
+    require('./coo-autonomous-loop').scheduleAfterCooWork();
+  } catch {
+    /* optional at boot */
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -72,9 +85,40 @@ function chat(from, text, threadId, meta) {
 }
 
 // boss -> Secretary (OpenClaw main). Secretary forwards to hired CEO, who routes to department workers.
-async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId, authorName, ownerKey } = {}) {
-  const raw = String(text || '').trim();
-  if (!raw) return { ok: false, error: 'empty instruction' };
+async function handleInstruction(
+  text,
+  {
+    targetAgentId,
+    mode = 'agent',
+    threadId,
+    authorName,
+    ownerKey,
+    attachments,
+    awaitCompletion = false,
+  } = {},
+) {
+  const attachmentList = Array.isArray(attachments)
+    ? attachments
+        .map((a) => ({
+          path: String(a?.path || a || '').trim(),
+          name: String(a?.name || '').trim(),
+        }))
+        .filter((a) => a.path)
+    : [];
+
+  let raw = String(text || '').trim();
+  if (!raw && !attachmentList.length) return { ok: false, error: 'empty instruction' };
+
+  if (attachmentList.length) {
+    const hook = require('./inbound-attachment-hook');
+    const block = hook.formatAttachmentNotice(
+      attachmentList.map((a) => {
+        const label = a.name && a.name !== path.basename(a.path) ? `${a.name} → ${a.path}` : a.path;
+        return label;
+      }),
+    );
+    raw = raw ? `${raw}\n\n${block}` : block;
+  }
 
   const planning = mode === 'plan';
   const instruction = planning
@@ -106,6 +150,25 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
   chat('boss', planning ? `📋 [Plan] ${raw}` : raw, activeThreadId, authorMeta);
   const shortTask = raw.length > 40 ? `${raw.slice(0, 40)}…` : raw;
 
+  try {
+    workBoard.markCeoDecisionAcknowledged({ threadId: activeThreadId });
+  } catch {
+    /* optional */
+  }
+
+  if (!planning) {
+    const resumedEarly = await tryResumeCeoPipeline({
+      raw,
+      threadId: activeThreadId,
+      ownerKey: userKey,
+      shortTask,
+      planning,
+    });
+    if (resumedEarly?.handled) {
+      return { ok: true, routedTo: 'ceo-pipeline-resume', threadId: activeThreadId };
+    }
+  }
+
   const before = queueStats(queueKey);
   const queued = before.busy || before.waiting > 0;
   if (queued) {
@@ -117,11 +180,11 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
     );
   }
 
-  runQueued(queueKey, async () => {
+  const queuePromise = runQueued(queueKey, async () => {
     const secretary = orgRoles.findSecretary();
     const secretaryId = secretary?.id || orgRoles.SECRETARY_ROLE;
 
-    if (targetAgentId && orgRoles.isCeoRole(office.getAgent(targetAgentId)?.role)) {
+    if (targetAgentId && orgRoles.isCooRole(office.getAgent(targetAgentId)?.role)) {
       const agent = office.getAgent(targetAgentId);
       if (!agent) throw new Error('Agent not found');
       const resumed = await tryResumeCeoPipeline({
@@ -132,7 +195,13 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
         planning,
       });
       if (!resumed?.handled) {
-        await runAsCeo({
+        workBoard.createCeoInboxCard({
+          task: raw,
+          threadId: activeThreadId,
+          shortTask,
+          ownerKey: userKey,
+        });
+        await runAsCoo({
           instruction,
           shortTask,
           planning,
@@ -157,7 +226,7 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
       return { routedTo: 'secretary', agentId: secretaryId };
     }
 
-    const dept = roster.route(instruction);
+    const dept = taskRouter.route(instruction);
     await choreograph({
       instruction,
       dept,
@@ -167,20 +236,38 @@ async function handleInstruction(text, { targetAgentId, mode = 'agent', threadId
       threadId: activeThreadId,
     });
     return { routedTo: dept.role };
-  }).catch((err) => {
-    chat('system', `Error: ${err.message}`, activeThreadId, { authorName: 'Office' });
-    if (targetAgentId) office.rest(targetAgentId, '');
-    else office.rest(orgRoles.SECRETARY_ROLE, '');
   });
 
-  return {
+  if (!awaitCompletion) {
+    queuePromise.catch((err) => {
+      chat('system', `Error: ${err.message}`, activeThreadId, { authorName: 'Office' });
+      if (targetAgentId) office.rest(targetAgentId, '');
+      else office.rest(orgRoles.SECRETARY_ROLE, '');
+    });
+  }
+
+  const base = {
     ok: true,
-    routedTo: targetAgentId ? office.getAgent(targetAgentId)?.role : roster.route(instruction).role,
+    routedTo: targetAgentId ? office.getAgent(targetAgentId)?.role : taskRouter.route(instruction).role,
     agentId: targetAgentId || undefined,
     threadId: activeThreadId,
     queued,
     queuePosition: queued ? before.waiting + (before.busy ? 1 : 0) : 0,
   };
+
+  if (awaitCompletion) {
+    try {
+      const result = await queuePromise;
+      return { ...base, completed: true, result };
+    } catch (err) {
+      chat('system', `Error: ${err.message}`, activeThreadId, { authorName: 'Office' });
+      if (targetAgentId) office.rest(targetAgentId, '');
+      else office.rest(orgRoles.SECRETARY_ROLE, '');
+      throw err;
+    }
+  }
+
+  return base;
 }
 
 // Find a client-hired agent that fits the routed department: first by matching
@@ -397,6 +484,21 @@ function finalizeAgentTurn({
 
   if (waiting) {
     chat('system', bossInputAskMessage({ agentLabel: label, provider }), threadId);
+    if (orgRoles.isCooRole(agent.role)) {
+      const pending = threadId ? ceoPipelinePending.get(threadId) : null;
+      if (pending?.phase) {
+        ceoDecisionNotify.releaseCooForParallelWork();
+        return;
+      }
+      ceoDecisionNotify.notifyCeoDecisionRequired({
+        threadId,
+        phase: 'needs_input',
+        shortTask: agent.currentJob?.label || label,
+        rawTask: String(text || '').slice(0, 200),
+        chatPreview: String(text || '').slice(0, 400),
+      });
+      return;
+    }
     office.setAgent(agent.id, {
       npcState: 'working',
       bubbleText: 'Waiting for your key…',
@@ -425,17 +527,17 @@ function recordDeliverable(agent, task, file, { kind = 'plan_complete' } = {}) {
 }
 
 async function choreograph({ instruction, dept, shortTask, planning = false, rawTask = '', threadId = null }) {
-  const ceo = orgRoles.ceoAgentOrFallback();
+  const ceo = orgRoles.cooAgentOrFallback();
   const hired = findHiredAgentFor(dept);
   if (hired) {
     office.work(ceo.id, `Processing: ${shortTask}`, { label: shortTask, step: 'Processing', progress: 1, total: 2 });
-    chat('ceo', `Assigning this to ${hired.label}.`, threadId);
+    chat('coo', `Assigning this to ${hired.label}.`, threadId);
     office.rest(ceo.id, '');
     await directToAgent({ instruction, agent: hired, shortTask, planning, rawTask, threadId });
     return;
   }
 
-  await runAsCeo({ instruction, shortTask, planning, rawTask, threadId });
+  await runAsCoo({ instruction, shortTask, planning, rawTask, threadId });
 }
 
 function skillFor(dept) {
@@ -557,7 +659,7 @@ async function runAsSecretary({
   ownerKey = null,
 }) {
   const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'Secretary' };
-  const ceo = orgRoles.findHiredCeo();
+  const ceo = orgRoles.findHiredCoo();
   const secName = sec.label || 'Secretary';
   const taskText = rawTask || instruction;
 
@@ -591,8 +693,9 @@ async function runAsSecretary({
           return;
         }
         if (ceo) {
-          chat('secretary', '好的，IT Guys 已配置完成。我交给 CEO 安排开发任务。', threadId);
+          chat('secretary', '好的，IT Guys 已配置完成。我交给 COO 安排开发任务。', threadId);
           office.rest(sec.id, '');
+          workBoard.createCeoInboxCard({ task: rawTask || instruction, threadId, shortTask, ownerKey });
           const resumed = await tryResumeCeoPipeline({
             raw: rawTask || instruction,
             threadId,
@@ -601,7 +704,7 @@ async function runAsSecretary({
             planning,
           });
           if (!resumed?.handled) {
-            await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+            await runAsCoo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
           }
           return;
         }
@@ -682,8 +785,9 @@ async function runAsSecretary({
     }
 
     if (ceo) {
-      chat('secretary', '好的，我交给 CEO 安排 Marketing 发到群组。', threadId);
+      chat('secretary', '好的，我交给 COO 安排 Marketing 发到群组。', threadId);
       office.rest(sec.id, '');
+      workBoard.createCeoInboxCard({ task: rawTask || instruction, threadId, shortTask, ownerKey });
       const resumed = await tryResumeCeoPipeline({
         raw: rawTask || instruction,
         threadId,
@@ -692,7 +796,7 @@ async function runAsSecretary({
         planning,
       });
       if (!resumed?.handled) {
-        await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+        await runAsCoo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
       }
       return;
     }
@@ -704,8 +808,8 @@ async function runAsSecretary({
     const system =
       `You are ${secName}, the executive secretary and the boss's only front-door contact in AntlerOffice. ` +
       `Be warm, concise, and professional. Record what the boss asks for. ` +
-      `There is no CEO hired yet — you cannot dispatch group posting to departments. ` +
-      `For posting tasks (after FB login), explain they should hire a CEO from the Hire page first. ` +
+      `There is no COO hired yet — you cannot dispatch group posting to departments. ` +
+      `For posting tasks (after FB login), explain they should hire a COO from the Hire page first. ` +
       `Small talk and clarifying questions are fine.\n\n${fbHint}`;
     const { mcpServers, unconfiguredMcpBlock } = secretaryMcpRuntime();
     const { text, provider, needsBossInput: waitingOnBoss } = await runtime.runTask({
@@ -727,8 +831,10 @@ async function runAsSecretary({
     return;
   }
 
-  chat('secretary', "I'll pass this to the CEO.", threadId);
+  chat('secretary', "I'll pass this to the COO.", threadId);
   office.rest(sec.id, '');
+
+  workBoard.createCeoInboxCard({ task: rawTask || instruction, threadId, shortTask, ownerKey });
 
   const resumed = await tryResumeCeoPipeline({
     raw: rawTask || instruction,
@@ -739,41 +845,59 @@ async function runAsSecretary({
   });
   if (resumed?.handled) return;
 
-  await runAsCeo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
+  await runAsCoo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
 }
 
 async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planning }) {
   if (planning) return null;
-  const pending = ceoPipelinePending.get(threadId);
-  if (!pending?.phase) return null;
+
+  let resolvedThreadId = threadId;
+  let pending = ceoPipelinePending.get(threadId);
+  if (!pending?.phase) {
+    const match = ceoDecisionNotify.matchPendingForReply(raw, threadId);
+    if (!match) return null;
+    if (match.promptMultiple) {
+      chat('coo', match.promptMultiple, threadId);
+      return { handled: true };
+    }
+    pending = match.pending;
+    resolvedThreadId = match.threadId;
+  }
 
   const outcome = workflowContext.parseReviewOutcome(raw);
-  const ceo = orgRoles.ceoAgentOrFallback();
+  const ceo = orgRoles.cooAgentOrFallback();
 
   if (pending.phase === 'plan_approval') {
     if (!outcome.approved && !outcome.needsRevision) {
-      chat('ceo', 'Reply **APPROVED** to execute the plan, or **REVISION:** with your changes.', threadId);
-      office.rest(ceo.id, 'Awaiting plan approval…');
+      chat('coo', 'Reply **APPROVED** to execute the plan, or **REVISION:** with your changes.', resolvedThreadId);
+      ceoDecisionNotify.releaseCooForParallelWork('Awaiting plan approval…');
       return { handled: true };
     }
-    ceoPipelinePending.clear(threadId);
+    ceoPipelinePending.clear(resolvedThreadId);
+    workBoard.completeCeoDecisionCard(resolvedThreadId);
+    try {
+      const bossChat = require('./boss-chat-store');
+      if (ownerKey) bossChat.setPinned(resolvedThreadId, ownerKey, false);
+    } catch {
+      /* optional */
+    }
     if (outcome.needsRevision) {
-      await runAsCeo({
+      await runAsCoo({
         instruction: `${pending.instruction || raw}\n\nBoss revision:\n${raw}`,
         shortTask: pending.shortTask || shortTask,
         planning: false,
         rawTask: `${pending.rawTask || raw}\n\nRevision: ${raw}`,
-        threadId,
+        threadId: resolvedThreadId,
         ownerKey,
       });
       return { handled: true };
     }
-    await runAsCeo({
+    await runAsCoo({
       instruction: pending.instruction || raw,
       shortTask: pending.shortTask || shortTask,
       planning: false,
       rawTask: pending.rawTask || raw,
-      threadId,
+      threadId: resolvedThreadId,
       ownerKey,
       resumeFrom: 'execute',
       brief: pending.brief || '',
@@ -785,24 +909,26 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
   if (pending.phase === 'push_approval') {
     if (!outcome.approved && !outcome.needsRevision) {
       chat(
-        'ceo',
+        'coo',
         'Codex approved the code. Reply **APPROVED** to push to GitHub, or **REVISION:** with changes for IT.',
-        threadId,
+        resolvedThreadId,
       );
-      office.rest(ceo.id, 'Awaiting push approval…');
+      ceoDecisionNotify.releaseCooForParallelWork('Awaiting push approval…');
       return { handled: true };
     }
     if (outcome.approved) {
-      const push = await devPipeline.pushApprovedDev(threadId);
-      chat('system', push.ok ? `✓ ${push.text}` : `Push failed: ${push.error}`, threadId, {
+      const push = await devPipeline.pushApprovedDev(resolvedThreadId);
+      chat('system', push.ok ? `✓ ${push.text}` : `Push failed: ${push.error}`, resolvedThreadId, {
         authorName: 'Office',
       });
-      ceoPipelinePending.clear(threadId);
-      office.rest(ceo.id, push.ok ? 'Pushed ✓' : 'Push failed');
+      ceoPipelinePending.clear(resolvedThreadId);
+      workBoard.completeCeoDecisionCard(resolvedThreadId);
+      ceoDecisionNotify.refreshCooOfficeState(push.ok ? 'Pushed ✓' : 'Push failed');
+      scheduleCooAutonomousContinue(false);
       return { handled: true };
     }
-    ceoPipelinePending.patch(threadId, { phase: 'it_revision', revisionNote: raw });
-    chat('ceo', 'Understood — IT will revise based on your feedback.', threadId);
+    ceoPipelinePending.patch(resolvedThreadId, { phase: 'it_revision', revisionNote: raw });
+    chat('coo', 'Understood — IT will revise based on your feedback.', resolvedThreadId);
     const agent = office.getAgent(pending.agentId) || office.state.agents.find((a) => a.role === 'it');
     if (agent) {
       await runItDevPipelineStep({
@@ -812,27 +938,86 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
         brief: pending.brief || '',
         rawTask: pending.rawTask || raw,
         shortTask: pending.shortTask || shortTask,
-        threadId,
+        threadId: resolvedThreadId,
         ownerKey,
       });
     }
     return { handled: true };
   }
 
+  if (pending.phase === 'it_scan_ceo_gate') {
+    const skip = /\bSKIP\b/i.test(raw);
+    if (!skip && !outcome.approved && !outcome.needsRevision) {
+      chat(
+        'coo',
+        'IT scan report is ready. **CEO:** Reply **APPROVED** to authorize IT fix, or **SKIP** to ignore findings.',
+        resolvedThreadId,
+      );
+      ceoDecisionNotify.releaseCooForParallelWork('Awaiting CEO (scan gate)…');
+      return { handled: true };
+    }
+    if (skip) {
+      ceoPipelinePending.clear(resolvedThreadId);
+      workBoard.completeCeoDecisionCard(resolvedThreadId);
+      chat('coo', 'CEO skipped IT fix after security scan.', resolvedThreadId);
+      ceoDecisionNotify.refreshCooOfficeState('');
+      scheduleCooAutonomousContinue(false);
+      return { handled: true };
+    }
+    if (outcome.approved) {
+      const agent = office.getAgent(pending.agentId) || office.state.agents.find((a) => a.role === 'it');
+      if (!agent) {
+        chat('system', 'IT worker not found — hire IT Guys and try again.', resolvedThreadId, {
+          authorName: 'Office',
+        });
+        ceoPipelinePending.clear(resolvedThreadId);
+        workBoard.completeCeoDecisionCard(resolvedThreadId);
+        return { handled: true };
+      }
+      ceoPipelinePending.patch(resolvedThreadId, {
+        phase: 'it_scan_approved',
+        scanCompletedAt: Date.now(),
+        scanProjectRoot: pending.projectRoot,
+        projectRoot: pending.projectRoot,
+        scanDeliverableId: pending.scanDeliverableId,
+      });
+      chat('coo', 'CEO approved IT fix after scan — starting dev pipeline.', resolvedThreadId);
+      await runItDevPipelineStep({
+        hired: agent,
+        instruction: pending.instruction || raw,
+        plan: pending.plan || '',
+        brief: pending.brief || '',
+        rawTask: pending.rawTask || raw,
+        shortTask: pending.shortTask || shortTask,
+        threadId: resolvedThreadId,
+        ownerKey,
+        projectRoot: pending.projectRoot,
+        skipScan: true,
+      });
+      return { handled: true };
+    }
+  }
+
   if (pending.phase === 'project_path') {
-    const root = devPipeline.tryResolveProjectFromBossMessage(raw, threadId);
+    const root = devPipeline.tryResolveProjectFromBossMessage(raw, resolvedThreadId);
     if (!root) {
-      chat('system', 'Could not resolve that path. Reply with a full path or list number.', threadId, {
+      chat('system', 'Could not resolve that path. Reply with a full path or list number.', resolvedThreadId, {
         authorName: 'Office',
       });
+      ceoDecisionNotify.releaseCooForParallelWork('Need project path');
       return { handled: true };
     }
     const agent = office.getAgent(pending.agentId) || office.state.agents.find((a) => a.role === 'it');
     if (!agent) {
-      chat('system', 'IT worker not found — hire IT Guys and try again.', threadId, { authorName: 'Office' });
-      ceoPipelinePending.clear(threadId);
+      chat('system', 'IT worker not found — hire IT Guys and try again.', resolvedThreadId, {
+        authorName: 'Office',
+      });
+      ceoPipelinePending.clear(resolvedThreadId);
+      workBoard.completeCeoDecisionCard(resolvedThreadId);
       return { handled: true };
     }
+    ceoPipelinePending.clear(resolvedThreadId);
+    workBoard.completeCeoDecisionCard(resolvedThreadId);
     await runItDevPipelineStep({
       hired: agent,
       instruction: pending.instruction || raw,
@@ -840,7 +1025,7 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
       brief: pending.brief || '',
       rawTask: pending.rawTask || raw,
       shortTask: pending.shortTask || shortTask,
-      threadId,
+      threadId: resolvedThreadId,
       ownerKey,
       projectRoot: root,
     });
@@ -848,6 +1033,102 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
   }
 
   return null;
+}
+
+async function runItScanOnlyStep({
+  hired,
+  instruction,
+  plan,
+  brief,
+  rawTask,
+  shortTask,
+  threadId,
+  ownerKey,
+  projectRoot,
+  autonomous = false,
+}) {
+  office.work(hired.id, 'Security scan…', {
+    label: shortTask,
+    step: 'Scan',
+    progress: 1,
+    total: 2,
+  });
+  chat('coo', `Execute · IT security scan → ${hired.label}`, threadId);
+
+  const gate = await itScanGate.runItScanGate({
+    projectRoot,
+    threadId,
+    instruction,
+    rawTask,
+    shortTask,
+    autonomous,
+    agentLabel: hired.label,
+  });
+
+  if (gate.needsProjectPath) {
+    ceoPipelinePending.patch(threadId, {
+      phase: 'project_path',
+      candidates: gate.resolver?.candidates || [],
+      instruction,
+      plan,
+      brief,
+      rawTask,
+      agentId: hired.id,
+      ownerKey,
+    });
+    chat('coo', gate.resolver?.message || 'Project path required for scan.', threadId);
+    ceoDecisionNotify.notifyCeoDecisionRequired({
+      threadId,
+      phase: 'project_path',
+      shortTask,
+      rawTask,
+      ownerKey,
+      chatPreview: gate.resolver?.message,
+    });
+    office.rest(hired.id, 'Need project path');
+    return {
+      ok: false,
+      needsBossInput: true,
+      text: gate.resolver?.message || 'Project path required for scan.',
+      provider: 'it-scan-gate',
+    };
+  }
+
+  chat('coo', gate.markdown?.slice(0, 4000) || 'Scan complete.', threadId);
+
+  if (gate.needsCeoGate) {
+    ceoPipelinePending.patch(threadId, {
+      phase: 'it_scan_ceo_gate',
+      scanReport: gate.report,
+      scanDeliverableId: gate.deliverableId,
+      instruction,
+      plan,
+      brief,
+      rawTask,
+      shortTask,
+      agentId: hired.id,
+      ownerKey,
+      projectRoot: gate.projectRoot,
+    });
+    chat(
+      'coo',
+      `**COO:** ${gate.decision.reason}\n\n**CEO:** Reply **APPROVED** to authorize IT fix, or **SKIP** to ignore.`,
+      threadId,
+    );
+    ceoDecisionNotify.notifyCeoDecisionRequired({
+      threadId,
+      phase: 'it_scan_ceo_gate',
+      shortTask,
+      rawTask,
+      ownerKey,
+      chatPreview: gate.decision.reason,
+    });
+    return { ok: true, text: gate.markdown, needsBossInput: true, provider: 'it-scan' };
+  }
+
+  office.rest(hired.id, 'Scan complete ✓');
+  chat('coo', `**COO decision:** ${gate.decision.reason}`, threadId);
+  return { ok: true, text: gate.markdown, provider: 'it-scan', needsBossInput: false };
 }
 
 async function runItDevPipelineStep({
@@ -859,15 +1140,126 @@ async function runItDevPipelineStep({
   shortTask,
   threadId,
   ownerKey,
-  projectRoot,
+  projectRoot: projectRootIn,
+  skipScan = false,
+  autonomous = false,
 }) {
+  let projectRoot = projectRootIn;
+  const pending = ceoPipelinePending.get(threadId);
+  if (!projectRoot && pending?.scanProjectRoot) projectRoot = pending.scanProjectRoot;
+  if (!projectRoot && pending?.projectRoot) projectRoot = pending.projectRoot;
+
+  const scanEnabled = store.readSettings().dev?.scanBeforeItFix !== false;
+  if (scanEnabled && !skipScan) {
+    const alreadyScanned =
+      pending?.scanCompletedAt && pending?.scanProjectRoot && pending.phase !== 'it_scan_ceo_gate';
+    if (!alreadyScanned) {
+      office.work(hired.id, 'Security scan…', {
+        label: shortTask,
+        step: 'Scan gate',
+        progress: 1,
+        total: 4,
+      });
+      chat('coo', `Execute · IT scan gate → ${hired.label}`, threadId);
+
+      const gate = await itScanGate.runItScanGate({
+        projectRoot,
+        threadId,
+        instruction,
+        rawTask,
+        shortTask,
+        autonomous,
+        agentLabel: hired.label,
+      });
+
+      if (gate.skipped && gate.proceed) {
+        /* scan disabled — continue */
+      } else if (gate.needsProjectPath) {
+        ceoPipelinePending.patch(threadId, {
+          phase: 'project_path',
+          candidates: gate.resolver?.candidates || [],
+          instruction,
+          plan,
+          brief,
+          rawTask,
+          agentId: hired.id,
+          ownerKey,
+        });
+        chat('coo', gate.resolver?.message || 'Project path required for IT work.', threadId);
+        ceoDecisionNotify.notifyCeoDecisionRequired({
+          threadId,
+          phase: 'project_path',
+          shortTask,
+          rawTask,
+          ownerKey,
+          chatPreview: gate.resolver?.message,
+        });
+        office.rest(hired.id, 'Need project path');
+        return {
+          ok: false,
+          needsBossInput: true,
+          text: gate.resolver?.message || 'Project path required.',
+          provider: 'it-scan-gate',
+        };
+      } else {
+        chat('coo', gate.markdown?.slice(0, 4000) || 'Scan complete.', threadId);
+
+        if (gate.needsCeoGate) {
+          ceoPipelinePending.patch(threadId, {
+            phase: 'it_scan_ceo_gate',
+            scanReport: gate.report,
+            scanDeliverableId: gate.deliverableId,
+            instruction,
+            plan,
+            brief,
+            rawTask,
+            shortTask,
+            agentId: hired.id,
+            ownerKey,
+            projectRoot: gate.projectRoot,
+          });
+          chat(
+            'coo',
+            `**COO:** ${gate.decision.reason}\n\n**CEO:** Reply **APPROVED** to authorize IT fix, or **SKIP** to ignore.`,
+            threadId,
+          );
+          ceoDecisionNotify.notifyCeoDecisionRequired({
+            threadId,
+            phase: 'it_scan_ceo_gate',
+            shortTask,
+            rawTask,
+            ownerKey,
+            chatPreview: gate.decision.reason,
+          });
+          return { ok: true, text: gate.markdown, needsBossInput: true, provider: 'it-scan-gate' };
+        }
+
+        if (!gate.proceed) {
+          office.rest(hired.id, 'Scan complete');
+          return { ok: true, text: gate.markdown, provider: 'it-scan' };
+        }
+
+        ceoPipelinePending.patch(threadId, {
+          scanCompletedAt: Date.now(),
+          scanProjectRoot: gate.projectRoot,
+          scanDeliverableId: gate.deliverableId,
+          projectRoot: gate.projectRoot,
+        });
+        projectRoot = gate.projectRoot;
+        chat('coo', `**COO decision:** Proceed with IT fix — ${gate.decision.reason}`, threadId);
+      }
+    } else {
+      projectRoot = pending.scanProjectRoot || projectRoot;
+    }
+  }
+
   office.work(hired.id, 'Dev pipeline…', {
     label: shortTask,
     step: 'Writer + reviewers',
-    progress: 1,
-    total: 3,
+    progress: 2,
+    total: 4,
   });
-  chat('ceo', `Execute · dev pipeline → ${hired.label}`, threadId);
+  chat('coo', `Execute · dev pipeline → ${hired.label}`, threadId);
 
   const result = await devPipeline.runDevPipeline({
     agent: hired,
@@ -895,11 +1287,18 @@ async function runItDevPipelineStep({
       branchName: result.branchName,
     });
     chat(
-      'ceo',
+      'coo',
       `Dev finished on branch \`${result.branchName}\`. Review **APPROVED**.\n\nReply **APPROVED** to push to GitHub, or **REVISION:** for more changes.`,
       threadId,
     );
-    office.rest(orgRoles.ceoAgentOrFallback().id, 'Awaiting push approval…');
+    ceoDecisionNotify.notifyCeoDecisionRequired({
+      threadId,
+      phase: 'push_approval',
+      shortTask,
+      rawTask,
+      ownerKey,
+      chatPreview: `Push branch ${result.branchName}`,
+    });
   }
 
   return result;
@@ -917,11 +1316,13 @@ function ensureCeoPhaseSkill(skillId) {
   return agentCatalog.ensureBundledSkill(skillId, 'ceo');
 }
 
-function ceoPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlock }) {
+function cooPhaseSystem(skillId, coo, { notes, accountsBlock, unconfiguredMcpBlock }) {
   const sk =
     ensureCeoPhaseSkill(skillId) || registry.listSkills().find((s) => s.id === skillId);
-  const name = ceo.label || 'CEO';
-  let system = `You are ${name}, CEO of AntlerOffice.\n\n${sk?.system || ''}`;
+  const name = coo.label || 'COO';
+  let system = `You are ${name}, COO (Chief Operating Officer) of AntlerOffice.\n\n${sk?.system || ''}`;
+  const frameworkBlock = require('./company-framework').formatPromptBlock();
+  if (frameworkBlock) system += `\n\n${frameworkBlock}`;
   system += `\n\nShared office knowledge:\n${notes || '(none yet)'}`;
   if (accountsBlock) system += `\n\n${accountsBlock}`;
   if (unconfiguredMcpBlock) system += `\n\n${unconfiguredMcpBlock}`;
@@ -929,7 +1330,7 @@ function ceoPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlo
 }
 
 function ceoMcpRuntime() {
-  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('ceo');
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
   const { mcpHasCredentials } = require('./mcp-runtime-helper');
   const mcpServers = (allMcp || []).filter(mcpHasCredentials);
   const unconfiguredMcpBlock = formatUnconfiguredMcpAskBlock(allMcp);
@@ -949,7 +1350,7 @@ async function runCeoPhaseTurn({
   const webAccounts = require('./web-accounts-store');
   const accountsBlock = webAccounts.formatAgentBlock();
   const { mcpServers, unconfiguredMcpBlock } = ceoMcpRuntime();
-  const system = `${ceoPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlock })}${
+  const system = `${cooPhaseSystem(skillId, ceo, { notes, accountsBlock, unconfiguredMcpBlock })}${
     systemExtras ? `\n\n${systemExtras}` : ''
   }`;
 
@@ -978,17 +1379,56 @@ async function runCeoExecutePhase({
   rawTask,
   threadId,
   ownerKey,
+  autonomous = false,
 }) {
   const planParser = require('./ceo-plan-parser');
   const steps = planParser.parsePlanSteps(plan);
 
+  let deliverableId = ceoPipelinePending.get(threadId)?.deliverableId || null;
+
+  function ensureExecutionDeliverable() {
+    if (deliverableId) return deliverableId;
+    const planSteps = steps.map((s, i) => ({
+      id: `step-${i + 1}`,
+      label: String(s.roleLabel || s.role || s.instruction || s.raw || `Step ${i + 1}`).slice(0, 120),
+      done: false,
+    }));
+    const item = registry.addDeliverable({
+      agentId: ceo.id,
+      agentLabel: ceo.label || 'COO',
+      task: rawTask || instruction,
+      kind: 'job',
+      status: 'in_progress',
+      planSteps,
+      summary: shortTask || String(rawTask || instruction).slice(0, 100) || 'COO execution',
+      departmentLabel: 'Operations',
+    });
+    deliverableId = item.id;
+    ceoPipelinePending.patch(threadId, { deliverableId });
+    workBoard.linkExecutionJob(threadId, deliverableId);
+    return deliverableId;
+  }
+
+  function syncStepProgress(stepIndex) {
+    if (stepIndex < 0) return;
+    const id = ensureExecutionDeliverable();
+    const current = registry.getDeliverable(id);
+    if (!current?.planSteps?.length) return;
+    const planSteps = current.planSteps.map((ps, i) => (i <= stepIndex ? { ...ps, done: true } : ps));
+    const allDone = planSteps.every((s) => s.done);
+    registry.updateDeliverableProgress(id, {
+      planSteps,
+      status: allDone ? 'complete' : 'in_progress',
+    });
+  }
+
   if (!steps.length) {
     const routeText = `${instruction}\n\n${plan}`;
-    const dept = roster.route(routeText);
+    const dept = taskRouter.route(routeText);
     const hired = findHiredAgentFor(dept);
 
     if (hired) {
-      chat('ceo', `Execute · delegating to ${hired.label}.`, threadId);
+      chat('coo', `Execute · delegating to ${hired.label}.`, threadId);
       const workerInstruction =
         `## CEO brief\n${brief}\n\n## Plan\n${plan}\n\n## Your assignment\n` +
         `Execute the parts of this plan that match your role (${hired.label}).\n\n` +
@@ -1004,6 +1444,7 @@ async function runCeoExecutePhase({
           shortTask,
           threadId,
           ownerKey,
+          autonomous,
         });
         return {
           text: result.text || '',
@@ -1054,22 +1495,35 @@ async function runCeoExecutePhase({
 
   async function delegateStep(step, hired, extra = '') {
     const downgradeNote = extra || '';
-    chat('ceo', `Execute · step → ${hired.label}${downgradeNote}`, threadId);
+    chat('coo', `Execute · step → ${hired.label}${downgradeNote}`, threadId);
 
     if (hired.role === 'it' && !planning) {
       const workerInstruction =
         `## CEO brief\n${brief}\n\n## Plan\n${plan}\n\n## This step\n${step.instruction}\n\n` +
         `Original ask: ${rawTask || instruction}`;
-      const result = await runItDevPipelineStep({
-        hired,
-        instruction: workerInstruction,
-        plan,
-        brief,
-        rawTask,
-        shortTask,
-        threadId,
-        ownerKey,
-      });
+      const result = itScanGate.isItScanStep(step)
+        ? await runItScanOnlyStep({
+            hired,
+            instruction: workerInstruction,
+            plan,
+            brief,
+            rawTask,
+            shortTask,
+            threadId,
+            ownerKey,
+            autonomous,
+          })
+        : await runItDevPipelineStep({
+            hired,
+            instruction: workerInstruction,
+            plan,
+            brief,
+            rawTask,
+            shortTask,
+            threadId,
+            ownerKey,
+            autonomous,
+          });
       const text = result.text || '';
       delegated.push({ step, agent: hired.label, text });
       priorOutputs += `\n### ${step.roleLabel || hired.label}\n${text}\n`;
@@ -1124,12 +1578,13 @@ async function runCeoExecutePhase({
     return text;
   }
 
-  for (const step of steps) {
+  for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+    const step = steps[stepIndex];
     const resolved = planParser.resolveStepAgent(step, { office, roster, findHiredAgentFor });
 
     if (!resolved.agent) {
       blocked.push({ step, reason: resolved.reason, hireTemplate: resolved.hireTemplate });
-      chat('ceo', resolved.message || `Blocked: ${step.raw}`, threadId);
+      chat('coo', resolved.message || `Blocked: ${step.raw}`, threadId);
       if (resolved.reason === 'boss') needsBossInput = true;
       continue;
     }
@@ -1139,6 +1594,7 @@ async function runCeoExecutePhase({
       ? ` (Manager not hired — downgraded to ${hired.label})`
       : '';
     const text = await delegateStep(step, hired, downgradeNote);
+    syncStepProgress(stepIndex);
 
     if (step.kind === 'review') {
       const outcome = workflow.parseReviewOutcome(text);
@@ -1153,7 +1609,7 @@ async function runCeoExecutePhase({
         const revResolved = planParser.resolveStepAgent(revStep, { office, roster, findHiredAgentFor });
         if (revResolved.agent) {
           workflow.bumpRevisionCount(threadId, revRole);
-          chat('ceo', `REVISION loop → ${revResolved.agent.label}`, threadId);
+          chat('coo', `REVISION loop → ${revResolved.agent.label}`, threadId);
           await delegateStep(revStep, revResolved.agent, ' (revision)');
         } else {
           blocked.push({
@@ -1161,7 +1617,7 @@ async function runCeoExecutePhase({
             reason: 'hire',
             hireTemplate: planParser.HIRE_TEMPLATE_BY_ROLE[revRole] || revRole,
           });
-          chat('ceo', `REVISION blocked — hire ${revRole} for revision loop.`, threadId);
+          chat('coo', `REVISION blocked — hire ${revRole} for revision loop.`, threadId);
         }
       }
     }
@@ -1193,8 +1649,8 @@ async function runCeoExecutePhase({
   return { text: lines.join('\n'), provider: lastProvider, needsBossInput };
 }
 
-// Hired CEO runs the company pipeline (brainstorm → plan → execute → review) and delegates to workers.
-async function runAsCeo({
+// Hired COO runs the company pipeline (brainstorm → plan → execute → review) and delegates to workers.
+async function runAsCoo({
   instruction,
   shortTask,
   planning = false,
@@ -1204,14 +1660,21 @@ async function runAsCeo({
   resumeFrom = null,
   brief: briefIn = '',
   plan: planIn = '',
+  autonomous = false,
+  trigger = null,
 } = {}) {
-  const ceo = orgRoles.ceoAgentOrFallback();
-  const ceoName = ceo.label || 'CEO';
+  const runThreadId = String(threadId || `coo-${Date.now()}`);
+  threadId = runThreadId;
+  cooRunTracker.start(runThreadId, { shortTask });
+  try {
+  const coo = orgRoles.cooAgentOrFallback();
+  const cooName = coo.label || 'COO';
+  workBoard.markCooPlanning(threadId);
   let phaseList = planning ? CEO_PHASES.slice(0, 2) : CEO_PHASES;
   if (resumeFrom === 'execute') {
     phaseList = CEO_PHASES.filter((p) => p.skillId === 'ceo_executing_plans' || p.skillId === 'ceo_review');
   }
-  office.work(ceo.id, 'Brainstorm…', { label: shortTask, step: 'Brainstorm', progress: 1, total: phaseList.length });
+  office.work(coo.id, 'Brainstorm…', { label: shortTask, step: 'Brainstorm', progress: 1, total: phaseList.length });
 
   let brief = briefIn || '';
   let plan = planIn || '';
@@ -1221,17 +1684,17 @@ async function runAsCeo({
 
   for (let i = 0; i < phaseList.length; i++) {
     const { skillId, label } = phaseList[i];
-    office.work(ceo.id, `${label}…`, {
+    office.work(coo.id, `${label}…`, {
       label: shortTask,
       step: label,
       progress: i + 1,
       total: phaseList.length,
     });
-    chat('system', `${ceoName} · ${label}`, threadId, { authorName: 'Office' });
+    chat('system', `${cooName} · ${label}`, threadId, { authorName: 'Office' });
 
     if (skillId === 'ceo_executing_plans') {
       const result = await runCeoExecutePhase({
-        ceo,
+        ceo: coo,
         instruction,
         brief,
         plan,
@@ -1239,6 +1702,7 @@ async function runAsCeo({
         rawTask,
         threadId,
         ownerKey,
+        autonomous,
       });
       execution = result.text;
       lastProvider = result.provider || lastProvider;
@@ -1258,14 +1722,14 @@ async function runAsCeo({
         `## Brainstorm\n${brief}\n\n## Plan\n${plan}\n\n## Execution\n${execution}` +
         (pushPending?.phase === 'push_approval'
           ? `\n\n## Dev push gate\nCodex approved IT changes on branch \`${pushPending.branchName}\`. ` +
-            `Ask the boss to reply APPROVED to push to GitHub, or REVISION for more IT work. Do NOT re-review code quality.`
+            `Ask the CEO to reply APPROVED to push to GitHub, or REVISION for more IT work. Do NOT re-review code quality.`
           : '');
       phaseInstruction =
-        `Summarize outcomes for the boss. If IT dev completed with Codex approval, ask boss APPROVED to push GitHub.\n\nOriginal request:\n${rawTask || instruction}`;
+        `Summarize outcomes for the CEO. If IT dev completed with Codex approval, ask CEO APPROVED to push GitHub.\n\nOriginal request:\n${rawTask || instruction}`;
     }
 
     const { text, provider, needsBossInput } = await runCeoPhaseTurn({
-      ceo,
+      ceo: coo,
       skillId,
       phaseLabel: label,
       instruction: phaseInstruction,
@@ -1279,7 +1743,8 @@ async function runAsCeo({
     if (skillId === 'ceo_brainstorm') brief = text;
     if (skillId === 'ceo_writing_plans') {
       plan = text;
-      if (!planning) {
+      if (!planning && !autonomous) {
+        workBoard.markPlanAwaitingApproval(threadId);
         ceoPipelinePending.set(threadId, {
           phase: 'plan_approval',
           brief,
@@ -1291,23 +1756,31 @@ async function runAsCeo({
           ownerKey,
         });
         chat(
-          'ceo',
-          `## Plan\n\n${plan}\n\n---\n**Boss:** Reply **APPROVED** to delegate to department workers, or **REVISION:** with changes.`,
+          'coo',
+          `## Plan\n\n${plan}\n\n---\n**CEO:** Reply **APPROVED** to delegate to department workers, or **REVISION:** with changes.`,
           threadId,
         );
-        office.rest(ceo.id, 'Awaiting plan approval…');
+        ceoDecisionNotify.notifyCeoDecisionRequired({
+          threadId,
+          phase: 'plan_approval',
+          shortTask,
+          rawTask,
+          ownerKey,
+          chatPreview: plan.slice(0, 400),
+        });
         return;
       }
     }
     if (skillId === 'ceo_review') {
       finalizeAgentTurn({
-        agent: ceo,
+        agent: coo,
         text,
         provider: lastProvider,
         threadId,
         planning: false,
         needsBossInput: waitingOnBoss,
       });
+      scheduleCooAutonomousContinue(waitingOnBoss);
       return;
     }
 
@@ -1316,23 +1789,28 @@ async function runAsCeo({
 
   const finalText = planning ? plan : execution || plan || brief;
   if (planning && plan) {
-    const file = saveDeliverable('ceo', rawTask || instruction, plan);
-    recordDeliverable(ceo, rawTask || instruction, file, { kind: 'plan_complete' });
+    const file = saveDeliverable('coo', rawTask || instruction, plan);
+    recordDeliverable(coo, rawTask || instruction, file, { kind: 'plan_complete' });
   }
 
   finalizeAgentTurn({
-    agent: ceo,
+    agent: coo,
     text: finalText,
     provider: lastProvider,
     threadId,
     planning,
     needsBossInput: waitingOnBoss,
   });
+  scheduleCooAutonomousContinue(waitingOnBoss);
+  } finally {
+    cooRunTracker.end(runThreadId);
+    ceoDecisionNotify.refreshCooOfficeState();
+  }
 }
 
-/** @deprecated use runAsCeo */
-async function runAsCoo(opts) {
-  return runAsCeo(opts);
+/** @deprecated use runAsCoo */
+async function runAsCeo(opts) {
+  return runAsCoo(opts);
 }
 
 function saveDeliverable(skillId, instruction, text) {
@@ -1348,9 +1826,9 @@ function saveDeliverable(skillId, instruction, text) {
   return file;
 }
 
-function savePlanDeliverable({ agentIdOrRole = 'ceo', task, result }) {
-  const agent = office.getAgent(agentIdOrRole) || office.getAgent('ceo');
-  const skillId = agent?.role || 'ceo';
+function savePlanDeliverable({ agentIdOrRole = 'coo', task, result }) {
+  const agent = office.getAgent(agentIdOrRole) || office.getAgent('coo') || office.getAgent('ceo');
+  const skillId = agent?.role || 'coo';
   const file = saveDeliverable(skillId, task, result);
   if (agent) recordDeliverable(agent, task, file, { kind: 'plan_complete' });
   return file;
@@ -1424,7 +1902,7 @@ async function runStandupAgentTurn({ agent, instruction, ownerKey, threadId }) {
 }
 
 async function runStandupCeoSummary({ instruction, ownerKey, threadId }) {
-  const ceo = orgRoles.ceoAgentOrFallback();
+  const ceo = orgRoles.cooAgentOrFallback();
   const ceoName = ceo.label || 'CEO';
   office.work(ceo.id, 'Summarizing standup…', {
     label: 'CEO summary',
@@ -1438,7 +1916,7 @@ async function runStandupCeoSummary({ instruction, ownerKey, threadId }) {
     `You are ${ceoName}, the CEO inside AntlerOffice. Summarize department standup reports clearly for the boss. ` +
     `Focus on decisions needed, risks, and priorities.\n\nShared office knowledge:\n${notes || '(none yet)'}`;
 
-  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('ceo');
+  const { mcpServers: allMcp } = defaultMcpPack.resolveBuiltinMcpRuntimeSpec('coo');
   const { mcpHasCredentials } = require('./mcp-runtime-helper');
   const mcpServers = (allMcp || []).filter(mcpHasCredentials);
 
@@ -1472,4 +1950,5 @@ module.exports = {
   runStandupAgentTurn,
   runStandupCeoSummary,
   runStandupCooSummary,
+  runAsCoo,
 };

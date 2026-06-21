@@ -430,6 +430,10 @@ async function completeLoginFlow(username = '') {
       ? `\n\n您现在共绑定 **${all.length}** 个 Facebook 账号。说「我绑定了几个 facebook」可查看列表。`
       : '';
 
+  const scrapeNote = scrape.scrape?.source
+    ? `（${scrape.scrape.source} 页面，已自动滚动加载）`
+    : '';
+
   return {
     ok: true,
     onHome: true,
@@ -438,7 +442,7 @@ async function completeLoginFlow(username = '') {
     boundCount: all.length,
     message:
       `**Facebook 登录成功！**\n\n` +
-      `账号 **${label}** 已进入首页并抓取到 **${count}** 个群组，Chrome 已关闭。${bindNote}\n\n` +
+      `账号 **${label}** 已进入首页并抓取到 **${count}** 个群组${scrapeNote}，Chrome 已关闭。${bindNote}\n\n` +
       `**要不要现在发到 Facebook 群组？** 若要发帖，请告诉我要发的内容、群名筛选和发布时间。`,
   };
 }
@@ -496,13 +500,22 @@ async function openAccount(username = '') {
   };
 }
 
-async function scrapeGroups(username) {
-  registerAccount(username);
-  const { page } = await getSession(username);
-  await page.goto('https://www.facebook.com/groups/feed/', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(4000);
+const FB_GROUP_SKIP_IDS = new Set([
+  'feed',
+  'discover',
+  'joins',
+  'create',
+  'search',
+  'categories',
+  'pending',
+  'requests',
+  'notifications',
+]);
 
-  const groups = await page.evaluate(() => {
+/** DOM snapshot — only links currently rendered (no pagination by itself). */
+async function collectGroupsFromDom(page) {
+  return page.evaluate((skipIds) => {
+    const skip = new Set(skipIds);
     const out = [];
     const seen = new Set();
     for (const a of document.querySelectorAll('a[href*="/groups/"]')) {
@@ -510,15 +523,96 @@ async function scrapeGroups(username) {
       const parts = href.split('/groups/');
       if (parts.length < 2) continue;
       const id = parts[1].split('/')[0].split('?')[0];
-      if (!id || ['feed', 'discover', 'joins', 'create'].includes(id) || seen.has(id)) continue;
-      const name = (a.textContent || '').trim();
+      if (!id || skip.has(id) || seen.has(id)) continue;
+      const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
       if (!name || name.length < 2) continue;
+      if (/^(see all|查看全部|所有群组|groups?)$/i.test(name)) continue;
       seen.add(id);
       out.push({ id, name, url: `https://www.facebook.com/groups/${id}/` });
     }
     return out;
-  });
+  }, [...FB_GROUP_SKIP_IDS]);
+}
 
+/**
+ * Scroll the groups list so Facebook lazy-loads more rows, then merge unique groups.
+ */
+async function scrollAndCollectGroups(page, { maxRounds = 80, pauseMs = 1400, stagnantLimit = 8 } = {}) {
+  const merged = new Map();
+  const absorb = (batch) => {
+    for (const g of batch || []) merged.set(g.id, g);
+  };
+
+  absorb(await collectGroupsFromDom(page));
+
+  let stagnant = 0;
+  for (let round = 0; round < maxRounds && stagnant < stagnantLimit; round += 1) {
+    const before = merged.size;
+    await page.evaluate(() => {
+      const main = document.querySelector('[role="main"]');
+      if (main && main.scrollHeight > main.clientHeight + 40) {
+        main.scrollTop = main.scrollHeight;
+      }
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await page.waitForTimeout(pauseMs);
+    absorb(await collectGroupsFromDom(page));
+    stagnant = merged.size === before ? stagnant + 1 : 0;
+  }
+
+  return {
+    groups: [...merged.values()],
+    scrollRounds: maxRounds - stagnant,
+    stagnantRounds: stagnant,
+  };
+}
+
+async function scrapeGroupsFromUrl(page, url) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(3500);
+
+  try {
+    const seeAll = page
+      .locator('a[href*="/groups/joins"], a[href*="/groups/"]')
+      .filter({ hasText: /see all|查看全部|所有群组|your groups|你加入的群组/i })
+      .first();
+    if (await seeAll.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await seeAll.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+    }
+  } catch {
+    /* optional navigation */
+  }
+
+  return scrollAndCollectGroups(page);
+}
+
+async function scrapeGroups(username) {
+  registerAccount(username);
+  const { page } = await getSession(username);
+
+  const sources = [
+    { url: 'https://www.facebook.com/groups/joins/', label: 'joins' },
+    { url: 'https://www.facebook.com/groups/feed/', label: 'feed' },
+  ];
+
+  let best = { groups: [], source: 'feed', scrollRounds: 0, stagnantRounds: 0 };
+
+  for (const src of sources) {
+    let result;
+    try {
+      result = await scrapeGroupsFromUrl(page, src.url);
+    } catch (e) {
+      console.warn(`[fb-engine] scrape ${src.label} failed:`, e.message);
+      continue;
+    }
+    if (result.groups.length > best.groups.length) {
+      best = { ...result, source: src.label };
+    }
+    if (result.groups.length >= 30 && result.stagnantRounds >= 8) break;
+  }
+
+  const groups = best.groups;
   writeJson(groupsFile(username), groups);
 
   const accounts = listAccounts();
@@ -526,10 +620,20 @@ async function scrapeGroups(username) {
   if (hit) {
     hit.club_count = groups.length;
     hit.groupsUpdatedAt = new Date().toISOString();
+    hit.groupsScrapeSource = best.source;
     writeJson(accFile(), accounts);
   }
 
-  return { status: 'ok', count: groups.length, data: groups };
+  return {
+    status: 'ok',
+    count: groups.length,
+    data: groups,
+    scrape: {
+      source: best.source,
+      scrollRounds: best.scrollRounds,
+      note: 'Scrolled list until no new groups loaded (lazy-load pagination).',
+    },
+  };
 }
 
 function listGroups(username) {

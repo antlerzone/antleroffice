@@ -12,8 +12,8 @@ const DEFAULT_PROMPTS = {
     'Cover: completed work, work in progress, blockers, and decisions needed. Use bullet points. ' +
     'Do not greet the boss — this will be read aloud in a meeting.',
   cooSummary:
-    'You are the CEO. Below are standup reports from each department for {{periodLabel}}. ' +
-    'Write an executive summary: key wins, risks, blockers needing boss decision, and recommended priorities. Keep it concise.',
+    'You are the COO. Below are standup reports from each department for {{periodLabel}}. ' +
+    'Write an executive summary for the CEO: key wins, risks, blockers needing boss decision, and recommended priorities. Keep it concise.',
   ceoSummary:
     'You are the CEO. Below are standup reports from each department for {{periodLabel}}. ' +
     'Write an executive summary: key wins, risks, blockers needing boss decision, and recommended priorities. Keep it concise.',

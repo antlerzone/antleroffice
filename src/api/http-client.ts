@@ -230,7 +230,9 @@ export class ApiClient {
     })
 
     if (response.status === 401) {
-      throw new Error('Unauthorized')
+      throw new Error(
+        'Unauthorized — 请刷新页面或重新登录（Live Chat 需要 admin 网关认证，Boss Chat 请用办公室对话）。'
+      )
     }
 
     const result: RPCResponse<T> = await response.json()

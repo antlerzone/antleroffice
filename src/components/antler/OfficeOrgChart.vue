@@ -185,7 +185,7 @@ function resolveNode(dept: RosterDept): OrgNode {
       }
     }
 
-    if (dept.role === 'ceo' && !isHired) {
+    if (dept.role === 'coo' && !isHired) {
       return {
         role: dept.role,
         deptLabel: dept.label,
@@ -233,7 +233,7 @@ function resolveNode(dept: RosterDept): OrgNode {
 
 const bossNode = computed<OrgNode>(() => ({
   role: 'boss',
-  deptLabel: 'Boss',
+  deptLabel: 'CEO',
   occupantName: resolvedBossName.value,
   npcState: 'idle',
   charSprite: 0,
@@ -245,8 +245,8 @@ const secretaryNode = computed(() => {
   const dept = roster.value.find((d) => d.role === 'secretary')
   return dept ? resolveNode(dept) : null
 })
-const ceoNode = computed(() => {
-  const dept = roster.value.find((d) => d.role === 'ceo')
+const cooNode = computed(() => {
+  const dept = roster.value.find((d) => d.role === 'coo')
   return dept ? resolveNode(dept) : null
 })
 const departmentGroups = computed(() =>
@@ -389,7 +389,7 @@ defineExpose({ refresh })
     <template v-else>
       <div class="tab-toolbar org-toolbar">
         <p class="hint">
-          <strong>{{ resolvedDesktopName }}</strong> · Boss → Secretary → CEO → departments.
+          <strong>{{ resolvedDesktopName }}</strong> · CEO → Secretary → COO → departments.
           {{ filledDeptCount }} of {{ departmentGroups.length }} departments ·
           {{ hiredEmployeeCount }} employees hired.
         </p>
@@ -455,30 +455,30 @@ defineExpose({ refresh })
           <!-- CEO (below Secretary) -->
           <div class="org-level org-level-leader">
             <article
-              v-if="ceoNode"
+              v-if="cooNode"
               class="org-node org-node-ceo"
-              :class="ceoNode.kind === 'vacant' ? 'org-node-inactive' : 'org-node-active'"
+              :class="cooNode.kind === 'vacant' ? 'org-node-inactive' : 'org-node-active'"
             >
               <div class="org-node-avatar">
                 <canvas
                   :width="AGENT_SKIN_CANVAS"
                   :height="AGENT_SKIN_CANVAS"
-                  :data-palette="ceoNode.charSprite"
-                  :data-hue="ceoNode.hueShift"
-                  :aria-label="ceoNode.occupantName || ceoNode.deptLabel"
+                  :data-palette="cooNode.charSprite"
+                  :data-hue="cooNode.hueShift"
+                  :aria-label="cooNode.occupantName || cooNode.deptLabel"
                 />
               </div>
               <div class="org-node-body">
-                <span class="org-node-dept">{{ ceoNode.deptLabel }}</span>
-                <strong class="org-node-name">{{ ceoNode.occupantName || 'Vacant' }}</strong>
-                <span v-if="ceoNode.kind === 'vacant'" class="tag">Hire from Browse</span>
+                <span class="org-node-dept">{{ cooNode.deptLabel }}</span>
+                <strong class="org-node-name">{{ cooNode.occupantName || 'Vacant' }}</strong>
+                <span v-if="cooNode.kind === 'vacant'" class="tag">Hire from Browse</span>
                 <span v-else class="tag">Hired</span>
                 <span
-                  v-if="ceoNode.kind !== 'vacant'"
+                  v-if="cooNode.kind !== 'vacant'"
                   class="pill"
-                  :class="{ ok: ceoNode.npcState === 'working' }"
+                  :class="{ ok: cooNode.npcState === 'working' }"
                 >
-                  {{ ceoNode.npcState === 'working' ? 'Working' : 'Idle' }}
+                  {{ cooNode.npcState === 'working' ? 'Working' : 'Idle' }}
                 </span>
               </div>
             </article>

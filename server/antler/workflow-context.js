@@ -1,6 +1,11 @@
-// Per-thread marketing workflow artifacts (CEO execute phase).
+// Per-thread marketing workflow artifacts (COO execute phase). Persisted to disk.
+
+const fs = require('node:fs');
+const path = require('node:path');
+const store = require('./store');
 
 const contexts = new Map();
+let saveTimer = null;
 
 const ARTIFACT_KEYS = {
   product_research: 'research',
@@ -20,16 +25,60 @@ const DEFAULT_ARTIFACTS = () => ({
   publishPack: '',
 });
 
+function storePath() {
+  return path.join(store.getDataDir(), 'workflow-context.json');
+}
+
+function loadFromDisk() {
+  try {
+    const raw = fs.readFileSync(storePath(), 'utf8');
+    const data = JSON.parse(raw);
+    if (data && typeof data === 'object') {
+      contexts.clear();
+      for (const [k, v] of Object.entries(data)) {
+        if (v && typeof v === 'object') {
+          contexts.set(k, {
+            artifacts: { ...DEFAULT_ARTIFACTS(), ...(v.artifacts || {}) },
+            revisionCounts: { ...(v.revisionCounts || {}) },
+          });
+        }
+      }
+    }
+  } catch {
+    /* fresh */
+  }
+}
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      const obj = Object.fromEntries(contexts.entries());
+      fs.mkdirSync(path.dirname(storePath()), { recursive: true });
+      fs.writeFileSync(storePath(), JSON.stringify(obj, null, 2), 'utf8');
+    } catch {
+      /* best-effort */
+    }
+  }, 200);
+}
+
+loadFromDisk();
+
 function getWorkflowContext(threadId) {
   const key = String(threadId || 'default');
   if (!contexts.has(key)) {
     contexts.set(key, { artifacts: DEFAULT_ARTIFACTS(), revisionCounts: {} });
+    scheduleSave();
   }
   return contexts.get(key);
 }
 
 function clearWorkflowContext(threadId) {
-  if (threadId) contexts.delete(String(threadId));
+  if (threadId) {
+    contexts.delete(String(threadId));
+    scheduleSave();
+  }
 }
 
 function revisionKey(threadId, role) {
@@ -44,6 +93,7 @@ function getRevisionCount(threadId, role) {
 function bumpRevisionCount(threadId, role) {
   const ctx = getWorkflowContext(threadId);
   ctx.revisionCounts[role] = (ctx.revisionCounts[role] || 0) + 1;
+  scheduleSave();
   return ctx.revisionCounts[role];
 }
 
@@ -51,6 +101,7 @@ function storeArtifact(threadId, role, text) {
   const ctx = getWorkflowContext(threadId);
   const key = ARTIFACT_KEYS[role];
   if (key && text) ctx.artifacts[key] = text;
+  scheduleSave();
   return ctx.artifacts;
 }
 
@@ -106,4 +157,5 @@ module.exports = {
   getRevisionCount,
   bumpRevisionCount,
   ARTIFACT_KEYS,
+  loadFromDisk,
 };

@@ -146,7 +146,8 @@ function officeAgentFromRegistry(agentId) {
   const office = require('../office-state');
   const reg = registry.getAgent(agentId);
   if (!reg) return null;
-  const officeId = reg.role === 'ceo' ? null : `user:${reg.id}`;
+  const orgRoles = require('../org-roles');
+  const officeId = orgRoles.isCooRole(reg.role) ? null : `user:${reg.id}`;
   if (officeId) {
     const oa = office.getAgent(officeId);
     if (oa) {
