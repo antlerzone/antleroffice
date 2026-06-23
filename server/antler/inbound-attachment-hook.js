@@ -306,8 +306,8 @@ function stageBuffer(buffer, fileName, meta = {}) {
   if (threadId) {
     const prompt = `收到文件 **${safeName}**。${CHOICE_PROMPT}`;
     choiceMsg = notifyBossThread(threadId, prompt, {
-      from: 'secretary',
-      authorName: 'Secretary',
+      from: 'coo',
+      authorName: 'COO',
       pendingAttachmentId: pendingId,
       attachmentFileName: safeName,
     });
@@ -338,7 +338,7 @@ async function ingestReference(buffer, fileName, meta = {}) {
 
   const { source, safeName, size, hash } = validated;
   const threadId = meta.threadId || null;
-  const agentId = meta.agentId || meta.ragAgentId || 'secretary';
+  const agentId = meta.agentId || meta.ragAgentId || 'coo';
   const ragSource = `reference:${safeName}:${hash.slice(0, 12)}`;
 
   const text = await extractText(safeName, buffer);
@@ -375,7 +375,7 @@ async function ingestReference(buffer, fileName, meta = {}) {
   notifyBossThread(
     threadId,
     `Reference indexed (${indexed.added} chunk${indexed.added === 1 ? '' : 's'}) from **${safeName}** — not stored in Admin Vault.`,
-    { authorName: 'Secretary', from: 'system' },
+    { authorName: 'COO', from: 'system' },
   );
 
   return {
@@ -479,7 +479,7 @@ async function resolvePending(pendingId, mode, meta = {}) {
 
   const { meta: pending, buffer } = hit;
   const threadId = meta.threadId || pending.threadId;
-  const agentId = meta.agentId || pending.agentId || 'secretary';
+  const agentId = meta.agentId || pending.agentId || 'coo';
   const resolvedMode = mode === 'reference' ? 'reference' : 'archive';
 
   let result;

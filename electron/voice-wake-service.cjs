@@ -44,8 +44,9 @@ function createVoiceWakeService({ ipcMain, getMainWindow, getTray, onStateChange
         {
           label: 'Wake / Go Active',
           click: async () => {
+            console.log('[summon] tray wake / go active');
             voiceWakeState = { ...voiceWakeState, mode: 'active' };
-            await postJson('/api/voice/listener/wake', {});
+            await postJson('/api/voice/listener/wake', { source: 'tray' });
             await syncListenerMode('active');
             broadcastState();
           },
@@ -96,8 +97,9 @@ function createVoiceWakeService({ ipcMain, getMainWindow, getTray, onStateChange
   });
 
   ipcMain.handle('voiceWake:wake', async () => {
+    console.log('[summon] ipc voiceWake:wake');
     voiceWakeState = { ...voiceWakeState, mode: 'active' };
-    await postJson('/api/voice/listener/wake', {});
+    await postJson('/api/voice/listener/wake', { source: 'ipc' });
     await syncListenerMode('active');
     broadcastState();
     return { ok: true };

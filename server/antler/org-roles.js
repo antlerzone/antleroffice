@@ -1,9 +1,9 @@
-// Office hierarchy: Secretary (gateway main) → hired COO → department workers.
-// Human user = CEO (boss chat). Orchestrator NPC = COO (legacy role id "ceo" migrated).
+// Office hierarchy: COO (gateway main, OpenClaw) → department workers.
+// Human user = CEO/Boss. Orchestrator = COO (OpenClaw autonomous agent).
 
 const office = require('./office-state');
 
-const SECRETARY_ROLE = 'secretary';
+const SECRETARY_ROLE = 'coo'; // legacy alias — Secretary removed, COO is front door
 const COO_ROLE = 'coo';
 const IT_JUNIOR_ROLE = 'it_junior';
 const LEGACY_CEO_ROLE = 'ceo';
@@ -35,11 +35,12 @@ function findItJunior() {
   return office.getAgent(IT_JUNIOR_ROLE);
 }
 
+/** @deprecated Secretary removed — returns COO agent as front door */
 function findSecretary() {
-  return office.getAgent(SECRETARY_ROLE);
+  return office.getAgent(COO_ROLE);
 }
 
-/** Hired COO only (not the free secretary). */
+/** Hired COO only. */
 function findHiredCoo() {
   return (
     office.state.agents.find(
@@ -75,11 +76,11 @@ function ceoAgentOrFallback() {
 }
 
 function migrateOfficeAgents() {
-  const secretary = office.ensureRole(SECRETARY_ROLE, 'Secretary', 0);
-  office.setAgent(secretary.id, {
-    openclawAgentId: 'main',
-    label: office.getAgent(SECRETARY_ROLE)?.label || 'Secretary',
-  });
+  // Remove any legacy secretary agent from state
+  const legacySec = office.getAgent('secretary');
+  if (legacySec && legacySec.id === 'secretary') {
+    office.removeAgent('secretary');
+  }
 
   const cooStation = office.ensureRole(COO_ROLE, 'COO', 5);
   if (!cooStation.userAgentId) {
@@ -87,7 +88,7 @@ function migrateOfficeAgents() {
       label: 'COO',
       npcState: 'resting',
       bubbleText: '',
-      openclawAgentId: null,
+      openclawAgentId: cooStation.openclawAgentId || 'main',
     });
   }
 

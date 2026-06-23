@@ -42,7 +42,7 @@ function toSecretaryBubble(msg: ChatMessage, content: string, suffix: string): C
     id: `${msg.id || 'inj'}-${suffix}`,
     role: 'assistant',
     content,
-    name: 'Secretary',
+    name: 'COO',
     rawContent: undefined,
   }
 }

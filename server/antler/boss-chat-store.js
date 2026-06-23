@@ -14,8 +14,8 @@ function filePath() {
 function migrateLegacyAgentIds(data) {
   let changed = false;
   for (const t of data.threads) {
-    if (t.agentId === 'coo') {
-      t.agentId = 'secretary';
+    if (t.agentId === 'secretary') {
+      t.agentId = 'coo';
       changed = true;
     }
   }
@@ -302,7 +302,7 @@ function migrateFromLegacy(legacyMessages = []) {
   if (data.migrated || !legacyMessages.length) return null;
   const thread = {
     id: uid('thread'),
-    agentId: 'secretary',
+    agentId: 'coo',
     ownerKey: 'legacy:office',
     ownerName: null,
     title: titleFromText(legacyMessages[0]?.text) || 'Previous chats',

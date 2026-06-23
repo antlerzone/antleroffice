@@ -9,6 +9,7 @@ import BossChatMessenger from '@/components/antler/BossChatMessenger.vue'
 import MemberModeBanner from '@/components/antler/MemberModeBanner.vue'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useBossStore } from '@/stores/boss'
+import { useEcsSessionStore } from '@/stores/ecsSession'
 import { useAiSetupStore } from '@/stores/aiSetup'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useLocalGateway } from '@/composables/useLocalGateway'
@@ -29,9 +30,13 @@ const showAiSetupModal = computed(() => showOnboarding.value || aiSetup.showModa
 
 async function refreshSetupState(force = false) {
   try {
-    const st = await api.get<{ needsAiSetup?: boolean; showSetupWizard?: boolean }>('/api/onboard/state')
+    const st = await api.get<{
+      needsAiSetup?: boolean
+      needsCompanySetup?: boolean
+      showSetupWizard?: boolean
+    }>('/api/onboard/state')
     if (force || route.query.setup === '1') {
-      showOnboarding.value = !!st.needsAiSetup
+      showOnboarding.value = !!st.needsCompanySetup || !!st.needsAiSetup
     } else if (st.showSetupWizard) {
       showOnboarding.value = true
     }
@@ -41,6 +46,11 @@ async function refreshSetupState(force = false) {
 }
 
 onMounted(async () => {
+  const ecsSession = useEcsSessionStore()
+  ecsSession.restoreFromStorage()
+  if (ecsSession.session?.accessToken) {
+    await ecsSession.refreshSession().catch(() => false)
+  }
   const ok = await bossStore.ensureSession().catch(() => false)
   if (!ok && bossStore.ecsEnabled) {
     void router.replace({ name: 'BossLogin', query: { redirect: route.fullPath } })

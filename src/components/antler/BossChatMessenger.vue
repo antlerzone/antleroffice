@@ -14,6 +14,8 @@ import {
   AttachOutline,
 } from '@vicons/ionicons5'
 import { useAntlerApi } from '@/composables/useAntlerApi'
+import { useTheme } from '@/composables/useTheme'
+import { useOfficeProfile } from '@/composables/useOfficeProfile'
 import { useBossStore } from '@/stores/boss'
 import { useAiSetupStore } from '@/stores/aiSetup'
 import { useOfficeShareStore } from '@/stores/officeShare'
@@ -77,8 +79,8 @@ interface ChatThread {
 }
 
 const WHO: Record<string, string> = {
-  boss: 'Boss',
-  secretary: 'Secretary',
+  boss: 'You',
+  secretary: 'COO',
   ceo: 'COO',
   coo: 'COO',
   it: 'IT',
@@ -105,6 +107,8 @@ interface OfficeSnapshot {
 }
 
 const api = useAntlerApi()
+const { isDark } = useTheme()
+const officeProfile = useOfficeProfile()
 const boss = useBossStore()
 const aiSetup = useAiSetupStore()
 const officeShare = useOfficeShareStore()
@@ -278,7 +282,7 @@ function savePinned() {
 }
 
 const listAgents = computed(() => {
-  const list = agents.value.filter((a) => !a.external && a.role === 'secretary')
+  const list = agents.value.filter((a) => !a.external && (a.role === 'coo' || a.role === 'secretary'))
   const pinSet = new Set(pinnedIds.value)
   return [...list].sort((a, b) => {
     const ap = pinSet.has(a.id) ? 0 : 1
@@ -294,7 +298,7 @@ const selectedAgent = computed(
 
 const composerTargetLabel = computed(() => {
   const a = selectedAgent.value
-  if (!a) return 'Secretary'
+  if (!a) return 'COO'
   return a.label
 })
 
@@ -307,7 +311,7 @@ const agentIsWorking = computed(() => selectedAgent.value?.npcState === 'working
 function openClawAgentIdFor(agent: OfficeAgent | null | undefined): string | null {
   if (!agent || agent.external) return null
   if (agent.openclawAgentId) return agent.openclawAgentId
-  if (agent.role === 'secretary') return 'main'
+  if (agent.role === 'coo' || agent.role === 'secretary') return 'main'
   return null
 }
 
@@ -317,7 +321,7 @@ const useOpenClawBossChat = computed(() => {
   const id = selectedOpenClawAgentId.value
   if (!id) return false
   if (chatMode.value === 'agent') return true
-  if (chatMode.value === 'plan' && selectedAgent.value?.role === 'secretary') return true
+  if (chatMode.value === 'plan' && selectedAgent.value?.role === 'coo') return true
   return false
 })
 
@@ -390,8 +394,8 @@ function threadMatchesAgent(thread: ChatThread, agentId: string): boolean {
 
 function ensureDefaultAgent() {
   if (selectedAgentId.value && listAgents.value.some((a) => a.id === selectedAgentId.value)) return
-  const secretary = listAgents.value.find((a) => a.role === 'secretary')
-  selectedAgentId.value = secretary?.id || listAgents.value[0]?.id || ''
+  const coo = listAgents.value.find((a) => a.role === 'coo' || a.role === 'secretary')
+  selectedAgentId.value = coo?.id || listAgents.value[0]?.id || ''
 }
 
 function ensureDefaultThread() {
@@ -1081,234 +1085,192 @@ onMounted(() => {
   scopeKey.value = boss.chatOwnerKey
   reloadScopePrefs()
   void officeShare.refresh()
+  void officeProfile.load()
   startPoll()
 })
 onUnmounted(stopPoll)
 </script>
 
 <template>
-  <div class="boss-chat-messenger">
+  <div class="bcm">
+    <!-- FAB -->
     <button
       v-show="!open"
       type="button"
-      class="boss-chat-fab"
+      class="bcm-fab"
       aria-label="Open Boss Chat"
       @click="toggleOpen"
     >
-      <NIcon :component="ChatbubblesOutline" :size="26" />
+      <NIcon :component="ChatbubblesOutline" :size="22" />
     </button>
 
-    <Transition name="boss-chat-panel">
-      <div v-if="open" class="boss-chat-panel" role="dialog" aria-label="Boss Chat">
-        <header class="boss-chat-panel-head">
-          <div>
-            <strong>Boss Chat</strong>
-            <span v-if="scopeName" class="boss-chat-user-tag">{{ scopeName }}</span>
-            <span class="boss-chat-conn" :class="{ ok: connected }">
-              {{ connected ? 'Connected' : 'Offline' }}
-            </span>
+    <Transition name="bcm-slide">
+      <div v-if="open" class="bcm-panel" :class="{ 'bcm-panel--light': !isDark }" role="dialog" aria-label="Boss Chat">
+
+        <!-- ── Header ── -->
+        <header class="bcm-header">
+          <div class="bcm-header-left">
+            <span class="bcm-header-title">Boss Chat</span>
+            <span v-if="scopeName" class="bcm-header-scope">{{ scopeName }}</span>
+            <span class="bcm-status-dot" :class="{ live: connected }" />
           </div>
-          <div class="boss-chat-head-actions">
-            <button type="button" class="boss-chat-icon-btn" title="Minimize" @click="open = false">
-              <NIcon :component="RemoveOutline" />
-            </button>
-            <button type="button" class="boss-chat-icon-btn" title="Close" @click="open = false">
-              <NIcon :component="CloseOutline" />
-            </button>
-          </div>
+          <button type="button" class="bcm-close-btn" title="Close" @click="open = false">
+            <NIcon :component="CloseOutline" :size="18" />
+          </button>
         </header>
 
-        <div class="boss-chat-body" :style="{ gridTemplateColumns: bodyGridColumns }">
-          <nav class="boss-chat-side-menu" aria-label="Panel toggles">
-            <button
-              type="button"
-              class="boss-chat-side-btn"
-              :class="{ active: showChatsPanel }"
-              title="Chats"
-              @click="toggleChatsPanel"
-            >
-              <NIcon :component="ChatbubblesOutline" :size="18" />
-              <span class="boss-chat-side-label">Chats</span>
-            </button>
-          </nav>
+        <!-- ── Body: sidebar + main ── -->
+        <div class="bcm-body">
 
-          <div class="boss-chat-panels" :style="{ gridTemplateColumns: panelsGridColumns }">
-          <aside v-if="showTeamPanel" class="boss-chat-agents">
-            <div class="boss-chat-agents-head">
+          <!-- Left sidebar -->
+          <aside class="bcm-sidebar">
+
+            <!-- Agents section -->
+            <div class="bcm-section-head">
               <span>Team</span>
-              <button type="button" class="boss-chat-add-btn" title="Hire agent" @click="addAgent">
-                <NIcon :component="AddOutline" />
+              <button type="button" class="bcm-add-btn" title="Add agent" @click="addAgent">
+                <NIcon :component="AddOutline" :size="14" />
               </button>
             </div>
-            <ul class="boss-chat-agent-list">
+            <ul class="bcm-agent-list">
               <li
                 v-for="a in listAgents"
                 :key="a.id"
-                class="boss-chat-agent-item"
-                :class="{ active: selectedAgentId === a.id, pinned: isPinned(a.id) }"
+                class="bcm-agent-item"
+                :class="{ active: selectedAgentId === a.id }"
               >
-                <button type="button" class="boss-chat-agent-main" @click="selectAgent(a.id)">
-                  <span class="boss-chat-agent-avatar">{{ a.label.slice(0, 1) }}</span>
-                  <span class="boss-chat-agent-meta">
-                    <span class="boss-chat-agent-name">{{ a.label }}</span>
-                    <span class="boss-chat-agent-role">
-                      {{ a.npcState === 'working' ? 'Working' : a.role.replace(/_/g, ' ') }}
-                      <span v-if="openClawAgentIdFor(a)" class="boss-chat-agent-oc"> · OpenClaw</span>
+                <button type="button" class="bcm-agent-btn" @click="selectAgent(a.id)">
+                  <span class="bcm-avatar">{{ a.label.slice(0, 1).toUpperCase() }}</span>
+                  <span class="bcm-agent-info">
+                    <span class="bcm-agent-name">{{ a.label }}</span>
+                    <span class="bcm-agent-role">
+                      {{ a.npcState === 'working' ? '⚙ working' : a.role.replace(/_/g, ' ') }}
+                      <span v-if="openClawAgentIdFor(a)" class="bcm-oc-badge">AI</span>
                     </span>
                   </span>
                 </button>
-                <div class="boss-chat-agent-actions">
+                <div class="bcm-agent-actions">
                   <button
                     type="button"
-                    class="boss-chat-icon-btn sm"
-                    :class="{ on: isPinned(a.id) }"
-                    title="Pin agent"
+                    class="bcm-icon-btn"
+                    :class="{ active: isPinned(a.id) }"
+                    title="Pin"
                     @click.stop="togglePin(a.id)"
                   >
-                    <NIcon :component="PinOutline" />
+                    <NIcon :component="PinOutline" :size="13" />
                   </button>
                   <button
                     v-if="a.userAgentId"
                     type="button"
-                    class="boss-chat-icon-btn sm danger"
+                    class="bcm-icon-btn danger"
                     title="Remove"
                     @click.stop="confirmRemove(a)"
                   >
-                    <NIcon :component="TrashOutline" />
+                    <NIcon :component="TrashOutline" :size="13" />
                   </button>
                 </div>
               </li>
             </ul>
-            <p v-if="!listAgents.length" class="boss-chat-agents-empty">No agents yet.</p>
-          </aside>
+            <p v-if="!listAgents.length" class="bcm-empty-hint">No agents yet.</p>
 
-          <aside v-if="showChatsPanel" class="boss-chat-threads">
-            <div class="boss-chat-threads-head">
-              <span>Your chats · {{ scopeName }}</span>
+            <!-- Divider -->
+            <div class="bcm-divider" />
+
+            <!-- Threads section -->
+            <div class="bcm-section-head">
+              <span>Chats</span>
               <button
                 type="button"
-                class="boss-chat-add-btn"
+                class="bcm-add-btn"
                 title="New chat"
                 :disabled="!selectedAgentId"
                 @click="newChat"
               >
-                <NIcon :component="AddOutline" />
+                <NIcon :component="AddOutline" :size="14" />
               </button>
             </div>
-            <ul class="boss-chat-thread-list">
+            <ul class="bcm-thread-list">
               <li
                 v-for="t in agentThreads"
                 :key="t.id"
-                class="boss-chat-thread-item"
-                :class="{ active: selectedThreadId === t.id, pinned: t.pinned }"
+                class="bcm-thread-item"
+                :class="{ active: selectedThreadId === t.id }"
               >
-                <button type="button" class="boss-chat-thread-main" @click="selectThread(t.id)">
-                  <span class="boss-chat-thread-title">{{ t.title }}</span>
-                  <span class="boss-chat-thread-meta">
-                    {{ threadAgentLabel(t) }} · {{ threadMetaLabel(t) }}
-                  </span>
+                <button type="button" class="bcm-thread-btn" @click="selectThread(t.id)">
+                  <span class="bcm-thread-title">{{ t.title }}</span>
+                  <span class="bcm-thread-meta">{{ threadMetaLabel(t) }}</span>
                 </button>
-                <div class="boss-chat-thread-actions">
+                <div class="bcm-thread-actions">
                   <button
                     type="button"
-                    class="boss-chat-icon-btn sm"
-                    :class="{ on: isThreadPinned(t.id) }"
-                    title="Pin chat"
+                    class="bcm-icon-btn"
+                    :class="{ active: isThreadPinned(t.id) }"
+                    title="Pin"
                     @click.stop="toggleThreadPin(t)"
                   >
-                    <NIcon :component="PinOutline" />
+                    <NIcon :component="PinOutline" :size="13" />
                   </button>
                   <button
                     type="button"
-                    class="boss-chat-icon-btn sm danger"
-                    title="Delete chat"
+                    class="bcm-icon-btn danger"
+                    title="Delete"
                     @click.stop="confirmDeleteThread(t)"
                   >
-                    <NIcon :component="TrashOutline" />
+                    <NIcon :component="TrashOutline" :size="13" />
                   </button>
                 </div>
               </li>
             </ul>
-            <p v-if="!agentThreads.length" class="boss-chat-agents-empty">
-              No chats yet. Pick an agent under Team and start one with +.
-            </p>
+            <p v-if="!agentThreads.length" class="bcm-empty-hint">No chats yet. Select an agent and press +.</p>
           </aside>
 
-          <section class="boss-chat-main">
-            <div class="boss-chat-target-bar">
-              <span v-if="activeThread">{{ activeThread.title }}</span>
-              <span v-else>
-                Chatting with <strong>{{ composerTargetLabel }}</strong>
+          <!-- Main chat area -->
+          <section class="bcm-main">
+
+            <!-- Thread / target bar -->
+            <div class="bcm-thread-bar">
+              <span class="bcm-thread-bar-title">
+                {{ activeThread?.title || composerTargetLabel }}
               </span>
-              <span v-if="selectedAgent?.role === 'secretary'" class="boss-chat-default-tag">front door</span>
-              <span v-if="useOpenClawBossChat" class="boss-chat-openclaw-tag">OpenClaw</span>
-              <span v-if="chatMode === 'plan'" class="boss-chat-plan-tag">Plan</span>
-              <NSelect
-                v-if="selectedAgent?.role === 'secretary'"
-                v-model:value="chatMode"
-                class="boss-chat-mode-select boss-chat-mode-select--bar"
-                :options="modeOptions"
-                size="small"
-                :consistent-menu-width="false"
-              />
+              <div class="bcm-thread-bar-tags">
+                <span v-if="selectedAgent?.role === 'secretary' || selectedAgent?.role === 'coo'" class="bcm-tag green">COO</span>
+                <span v-if="useOpenClawBossChat" class="bcm-tag blue">OpenClaw</span>
+                <span v-if="chatMode === 'plan'" class="bcm-tag yellow">Plan</span>
+                <NSelect
+                  v-if="selectedAgent?.role === 'secretary' || selectedAgent?.role === 'coo'"
+                  v-model:value="chatMode"
+                  class="bcm-mode-select"
+                  :options="modeOptions"
+                  size="small"
+                  :consistent-menu-width="false"
+                />
+              </div>
             </div>
 
             <input
               ref="fileInputRef"
               type="file"
-              class="boss-chat-file-input"
+              class="bcm-file-input"
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.doc,.docx,.xls,.xlsx,.csv,.txt,.md"
               multiple
               @change="onFilesSelected"
             />
 
-            <div v-if="useOpenClawBossChat" class="boss-chat-openclaw">
-              <p v-if="!gatewayConnected" class="boss-chat-gateway-hint">
-                OpenClaw Gateway is disconnected. Reconnect from the app header or restart
-                <code>npm run dev:all</code>.
+            <!-- OpenClaw mode -->
+            <div v-if="useOpenClawBossChat" class="bcm-openclaw-wrap">
+              <p v-if="!gatewayConnected" class="bcm-gateway-warn">
+                OpenClaw Gateway disconnected — reconnect from the header or restart <code>npm run dev:all</code>.
               </p>
-              <p v-else-if="openClawSessionLoading" class="boss-chat-empty">Loading OpenClaw session…</p>
+              <p v-else-if="openClawSessionLoading" class="bcm-hint-center">Loading session…</p>
               <template v-else-if="openClawSessionKey">
-                <div v-if="pendingAttachmentChoices.length" class="boss-chat-attach-choices">
-                  <div
-                    v-for="m in pendingAttachmentChoices"
-                    :key="m.id"
-                    class="boss-chat-attach-choice-card"
-                  >
-                    <span class="boss-chat-attach-choice-label">
-                      {{ m.attachmentFileName || 'Attachment' }} — archive or reference?
-                    </span>
-                    <div class="boss-chat-attach-choice-actions">
-                      <button
-                        type="button"
-                        class="boss-chat-attach-choice-btn archive"
-                        :disabled="!!resolvingAttachmentId"
-                        @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')"
-                      >
-                        存档
-                      </button>
-                      <button
-                        type="button"
-                        class="boss-chat-attach-choice-btn reference"
-                        :disabled="!!resolvingAttachmentId"
-                        @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')"
-                      >
-                        参考
-                      </button>
+                <div v-if="pendingAttachmentChoices.length" class="bcm-attach-choices">
+                  <div v-for="m in pendingAttachmentChoices" :key="m.id" class="bcm-attach-card">
+                    <span class="bcm-attach-label">{{ m.attachmentFileName || 'Attachment' }} — archive or reference?</span>
+                    <div class="bcm-attach-btns">
+                      <button type="button" class="bcm-attach-btn archive" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')">存档</button>
+                      <button type="button" class="bcm-attach-btn reference" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')">参考</button>
                     </div>
                   </div>
-                </div>
-                <div class="boss-chat-openclaw-attach-bar">
-                  <button
-                    class="boss-chat-attach"
-                    type="button"
-                    :disabled="uploadingAttachment || !selectedAgentId"
-                    title="Attach file — Secretary will ask archive or reference"
-                    @click="triggerAttach"
-                  >
-                    <NIcon :component="AttachOutline" :size="16" />
-                    <span>{{ uploadingAttachment ? 'Uploading…' : 'Attach file' }}</span>
-                  </button>
                 </div>
                 <AgentChatPanel
                   :key="`${openClawSessionKey}:${chatMode}`"
@@ -1317,107 +1279,94 @@ onUnmounted(stopPoll)
                   :external-session-key="openClawSessionKey"
                   :external-thread-id="selectedThreadId || ''"
                   :title="activeThread?.title || composerTargetLabel"
-                />
+                  :user-display-name="officeProfile.resolvedBossName.value"
+                  :assistant-display-name="selectedAgent?.label || composerTargetLabel"
+                >
+                  <template #composer-actions>
+                    <button
+                      class="bcm-attach-trigger"
+                      type="button"
+                      :disabled="uploadingAttachment || !selectedAgentId"
+                      :title="uploadingAttachment ? 'Uploading…' : 'Attach file'"
+                      @click="triggerAttach"
+                    >
+                      <NIcon :component="AttachOutline" :size="16" />
+                    </button>
+                  </template>
+                </AgentChatPanel>
               </template>
-              <p v-else class="boss-chat-empty">Select or create a chat thread.</p>
+              <p v-else class="bcm-hint-center">Select or create a chat thread.</p>
             </div>
 
+            <!-- Legacy chat mode -->
             <template v-else>
-            <div ref="chatLogRef" class="boss-chat-log">
-              <p v-if="queueHint" class="boss-chat-queue-hint">{{ queueHint }}</p>
-              <div
-                v-for="m in chat"
-                :key="m.id"
-                class="msg"
-                :class="m.from"
-              >
-                <span class="who">{{ displayName(m) }}</span>
-                {{ m.text }}
+              <div ref="chatLogRef" class="bcm-log">
+                <p v-if="queueHint" class="bcm-queue-notice">{{ queueHint }}</p>
+                <div v-if="!chat.length && !agentActivityLabel" class="bcm-log-empty">
+                  <NIcon :component="ChatbubblesOutline" :size="32" style="opacity:0.25" />
+                  <span>Tell your team what to do.</span>
+                </div>
                 <div
-                  v-if="m.pendingAttachmentId && !m.attachmentResolved"
-                  class="boss-chat-attach-choice-actions inline"
+                  v-for="m in chat"
+                  :key="m.id"
+                  class="bcm-msg"
+                  :class="m.from"
                 >
-                  <button
-                    type="button"
-                    class="boss-chat-attach-choice-btn archive"
-                    :disabled="!!resolvingAttachmentId"
-                    @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')"
-                  >
-                    存档
-                  </button>
-                  <button
-                    type="button"
-                    class="boss-chat-attach-choice-btn reference"
-                    :disabled="!!resolvingAttachmentId"
-                    @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')"
-                  >
-                    参考
-                  </button>
+                  <span class="bcm-msg-who">{{ displayName(m) }}</span>
+                  <div class="bcm-msg-bubble">
+                    {{ m.text }}
+                    <div v-if="m.pendingAttachmentId && !m.attachmentResolved" class="bcm-attach-btns inline">
+                      <button type="button" class="bcm-attach-btn archive" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')">存档</button>
+                      <button type="button" class="bcm-attach-btn reference" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')">参考</button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="agentActivityLabel" class="bcm-typing">
+                  <span class="bcm-typing-text">{{ agentActivityLabel }}</span>
+                  <span class="bcm-dots" aria-hidden="true"><span /><span /><span /></span>
                 </div>
               </div>
-              <div v-if="agentActivityLabel" class="boss-chat-typing" :class="selectedAgent?.role">
-                <span class="boss-chat-typing-label">{{ agentActivityLabel }}</span>
-                <span class="boss-chat-typing-dots" aria-hidden="true">
-                  <span></span><span></span><span></span>
-                </span>
-              </div>
-              <p v-if="!chat.length && !agentActivityLabel" class="boss-chat-empty">Tell your team what to do — plain language.</p>
-            </div>
-            <form class="boss-chat-composer" @submit.prevent="sendBossChat">
-              <div v-if="pendingAttachments.length" class="boss-chat-attachments">
-                <span
-                  v-for="a in pendingAttachments"
-                  :key="a.path"
-                  class="boss-chat-attachment-chip"
-                >
-                  {{ a.name }}
-                  <button type="button" title="Remove" @click="removePendingAttachment(a.path)">×</button>
-                </span>
-              </div>
-              <textarea
-                v-model="chatText"
-                class="boss-chat-input"
-                rows="3"
-                placeholder="e.g. Draft a welcome email for new customers…  (Enter to send · Shift+Enter for new line)"
-                @keydown="onComposerKeydown"
-              />
-              <div class="boss-chat-composer-bar">
-                <NSelect
-                  v-model:value="chatMode"
-                  class="boss-chat-mode-select"
-                  :options="modeOptions"
-                  size="small"
-                  :consistent-menu-width="false"
-                />
-                <VoiceMicButton
-                  size="small"
-                  :disabled="sending || !selectedAgentId"
-                  @result="onVoiceInput"
-                  @error="onVoiceError"
-                />
-                <button
-                  class="boss-chat-attach"
-                  type="button"
-                  :disabled="sending || uploadingAttachment || !selectedAgentId"
-                  title="Attach file — Secretary will ask archive or reference"
-                  @click="triggerAttach"
-                >
-                  <NIcon :component="AttachOutline" :size="16" />
-                </button>
-                <button
-                  class="boss-chat-send"
-                  type="submit"
-                  :disabled="sending || (!chatText.trim() && !pendingAttachments.length) || !selectedAgentId"
-                  title="Send message"
-                >
-                  <NIcon :component="PaperPlaneOutline" :size="16" />
-                  <span>{{ sending ? 'Sending…' : 'Send' }}</span>
-                </button>
-              </div>
-            </form>
+
+              <form class="bcm-composer" @submit.prevent="sendBossChat">
+                <div v-if="pendingAttachments.length" class="bcm-chips">
+                  <span v-for="a in pendingAttachments" :key="a.path" class="bcm-chip">
+                    {{ a.name }}
+                    <button type="button" @click="removePendingAttachment(a.path)">×</button>
+                  </span>
+                </div>
+                <div class="bcm-composer-inner">
+                  <textarea
+                    v-model="chatText"
+                    class="bcm-textarea"
+                    rows="2"
+                    placeholder="Message your COO… (Enter to send, Shift+Enter for newline)"
+                    @keydown="onComposerKeydown"
+                  />
+                  <div class="bcm-composer-actions">
+                    <NSelect
+                      v-model:value="chatMode"
+                      class="bcm-mode-select"
+                      :options="modeOptions"
+                      size="small"
+                      :consistent-menu-width="false"
+                    />
+                    <VoiceMicButton size="small" :disabled="sending || !selectedAgentId" @result="onVoiceInput" @error="onVoiceError" />
+                    <button type="button" class="bcm-tool-btn" :disabled="sending || uploadingAttachment || !selectedAgentId" title="Attach file" @click="triggerAttach">
+                      <NIcon :component="AttachOutline" :size="16" />
+                    </button>
+                    <button
+                      type="submit"
+                      class="bcm-send-btn"
+                      :disabled="sending || (!chatText.trim() && !pendingAttachments.length) || !selectedAgentId"
+                    >
+                      <NIcon :component="PaperPlaneOutline" :size="15" />
+                      <span>{{ sending ? 'Sending…' : 'Send' }}</span>
+                    </button>
+                  </div>
+                </div>
+              </form>
             </template>
           </section>
-          </div>
         </div>
       </div>
     </Transition>
@@ -1425,848 +1374,832 @@ onUnmounted(stopPoll)
 </template>
 
 <style scoped>
-.boss-chat-messenger {
+/* ─── Root wrapper ─── */
+.bcm {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 1100;
 }
 
-.boss-chat-fab,
-.boss-chat-panel {
+.bcm-fab,
+.bcm-panel {
   pointer-events: auto;
 }
 
-.boss-chat-fab {
+/* ─── FAB ─── */
+.bcm-fab {
   position: fixed;
   right: 24px;
   bottom: 24px;
-  left: auto;
-  width: 56px;
-  height: 56px;
+  width: 52px;
+  height: 52px;
   border: none;
   border-radius: 50%;
-  background: linear-gradient(145deg, #0084ff, #006ee6);
+  background: #2563eb;
   color: #fff;
-  box-shadow: 0 8px 24px rgba(0, 132, 255, 0.45);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.bcm-fab:hover {
+  transform: scale(1.07);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.6);
 }
 
-.boss-chat-fab:hover {
-  transform: scale(1.05);
-  box-shadow: 0 10px 28px rgba(0, 132, 255, 0.55);
-}
+/* ─── Panel ─── */
+.bcm-panel {
+  --bg: #0f1117;
+  --bg2: #161921;
+  --surface: #1d2130;
+  --border: rgba(255,255,255,0.1);
+  --text: #e8eaf0;
+  --muted: rgba(255,255,255,0.45);
+  --accent: #3b82f6;
+  --accent-dim: rgba(59,130,246,0.15);
+  --green: #22c55e;
+  --green-dim: rgba(34,197,94,0.14);
 
-.boss-chat-panel {
-  --boss-chat-bg: #1e222d;
-  --boss-chat-bg-2: #252a36;
-  --boss-chat-surface: #11151c;
-  --boss-chat-text: #f3f6fa;
-  --boss-chat-muted: rgba(255, 255, 255, 0.62);
-  --boss-chat-line: rgba(255, 255, 255, 0.14);
-  --boss-chat-accent: #46d160;
   position: fixed;
   right: 20px;
   bottom: 20px;
-  left: auto;
-  width: min(1040px, calc(100vw - 40px));
-  height: min(calc(100vh - var(--header-height, 64px) - 40px), 820px);
+  width: min(900px, calc(100vw - 40px));
+  height: min(calc(100vh - var(--header-height, 64px) - 40px), 760px);
   max-height: calc(100vh - var(--header-height, 64px) - 40px);
   display: flex;
   flex-direction: column;
   color-scheme: dark;
-  color: var(--boss-chat-text);
-  background: var(--boss-chat-bg);
-  border: 1px solid var(--boss-chat-line);
-  border-radius: 16px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.05);
 }
 
-.boss-chat-panel-head {
+/* ─── Header ─── */
+.bcm-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--boss-chat-line);
-  background: var(--boss-chat-bg-2);
-  color: var(--boss-chat-text);
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
 }
 
-.boss-chat-panel-head strong {
-  font-size: 15px;
-}
-
-.boss-chat-user-tag {
-  margin-left: 8px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--boss-chat-muted);
-}
-
-.boss-chat-conn {
-  margin-left: 10px;
-  font-size: 11px;
-  color: var(--boss-chat-muted);
-}
-
-.boss-chat-conn.ok {
-  color: var(--boss-chat-accent);
-}
-
-.boss-chat-head-actions {
+.bcm-header-left {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
-.boss-chat-icon-btn {
-  width: 32px;
-  height: 32px;
+.bcm-header-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.bcm-header-scope {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bcm-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.2);
+  flex-shrink: 0;
+}
+.bcm-status-dot.live {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(34,197,94,0.6);
+}
+
+.bcm-close-btn {
+  width: 30px;
+  height: 30px;
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--boss-chat-text);
+  color: var(--muted);
   cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.bcm-close-btn:hover {
+  background: rgba(255,255,255,0.07);
+  color: var(--text);
 }
 
-.boss-chat-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.boss-chat-icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.boss-chat-icon-btn.sm {
-  width: 28px;
-  height: 28px;
-}
-
-.boss-chat-icon-btn.on {
-  color: var(--boss-chat-accent);
-}
-
-.boss-chat-icon-btn.danger:hover {
-  color: #ff6b6b;
-}
-
-.boss-chat-body {
+/* ─── Body grid ─── */
+.bcm-body {
   flex: 1;
   min-height: 0;
   display: grid;
-  --boss-chat-side-menu-width: 44px;
+  grid-template-columns: 220px 1fr;
 }
 
-.boss-chat-side-menu {
+/* ─── Sidebar ─── */
+.bcm-sidebar {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 6px;
-  border-right: 1px solid var(--boss-chat-line);
-  background: var(--boss-chat-bg-2);
-}
-
-.boss-chat-side-btn {
-  width: 32px;
-  min-height: 52px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--boss-chat-muted);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 6px 4px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.boss-chat-side-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--boss-chat-text);
-}
-
-.boss-chat-side-btn.active {
-  background: rgba(70, 209, 96, 0.14);
-  border-color: rgba(70, 209, 96, 0.35);
-  color: var(--boss-chat-accent);
-}
-
-.boss-chat-side-label {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  line-height: 1;
-}
-
-.boss-chat-panels {
-  display: grid;
+  border-right: 1px solid var(--border);
+  background: var(--bg2);
   min-height: 0;
-  min-width: 0;
   overflow: hidden;
 }
 
-.boss-chat-agents,
-.boss-chat-threads {
-  border-right: 1px solid var(--boss-chat-line);
-  background: var(--boss-chat-bg);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.boss-chat-agents-head,
-.boss-chat-threads-head {
+.bcm-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 10px 12px 8px;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--boss-chat-muted);
-  border-bottom: 1px solid var(--boss-chat-line);
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  flex-shrink: 0;
 }
 
-.boss-chat-add-btn {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--boss-chat-line);
-  border-radius: 8px;
+.bcm-add-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: transparent;
-  color: var(--boss-chat-text);
+  color: var(--muted);
   cursor: pointer;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-
-.boss-chat-add-btn:disabled {
-  opacity: 0.4;
+.bcm-add-btn:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.bcm-add-btn:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
-.boss-chat-agent-list,
-.boss-chat-thread-list {
+.bcm-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+/* Agent list */
+.bcm-agent-list {
   list-style: none;
   margin: 0;
-  padding: 8px;
+  padding: 0 6px 4px;
   overflow-y: auto;
-  flex: 1;
+  flex-shrink: 0;
+  max-height: 160px;
 }
 
-.boss-chat-agent-item,
-.boss-chat-thread-item {
+.bcm-agent-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  border-radius: 10px;
-  margin-bottom: 4px;
+  gap: 2px;
+  border-radius: 8px;
+  margin-bottom: 1px;
+}
+.bcm-agent-item.active {
+  background: var(--accent-dim);
+}
+.bcm-agent-item:hover:not(.active) {
+  background: rgba(255,255,255,0.04);
 }
 
-.boss-chat-agent-item.active,
-.boss-chat-thread-item.active {
-  background: rgba(70, 209, 96, 0.12);
-}
-
-.boss-chat-agent-item.pinned .boss-chat-agent-name::after,
-.boss-chat-thread-item.pinned .boss-chat-thread-title::after {
-  content: ' 📌';
-  font-size: 10px;
-}
-
-.boss-chat-agent-main,
-.boss-chat-thread-main {
+.bcm-agent-btn {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   border: none;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  padding: 8px;
-  border-radius: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
   text-align: left;
 }
 
-.boss-chat-agent-main {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.boss-chat-agent-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: linear-gradient(145deg, #3a4558, #2a3140);
-  display: inline-flex;
+.bcm-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 12px;
   font-weight: 700;
-  font-size: 13px;
+  color: #fff;
   flex-shrink: 0;
 }
 
-.boss-chat-agent-meta {
+.bcm-agent-info {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 1px;
 }
 
-.boss-chat-agent-name,
-.boss-chat-thread-title {
-  font-size: 13px;
+.bcm-agent-name {
+  font-size: 12px;
   font-weight: 600;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.boss-chat-agent-role,
-.boss-chat-thread-meta {
-  font-size: 11px;
-  color: var(--boss-chat-muted);
+.bcm-agent-role {
+  font-size: 10px;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
-.boss-chat-agent-oc {
-  color: #60a5fa;
+.bcm-oc-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(59,130,246,0.2);
+  color: #93c5fd;
+  letter-spacing: 0.03em;
 }
 
-.boss-chat-agent-actions,
-.boss-chat-thread-actions {
+.bcm-agent-actions,
+.bcm-thread-actions {
   display: flex;
   flex-direction: column;
+  gap: 1px;
   padding-right: 4px;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity 0.12s;
 }
-
-.boss-chat-agent-item:hover .boss-chat-agent-actions,
-.boss-chat-agent-item.active .boss-chat-agent-actions,
-.boss-chat-thread-item:hover .boss-chat-thread-actions,
-.boss-chat-thread-item.active .boss-chat-thread-actions {
+.bcm-agent-item:hover .bcm-agent-actions,
+.bcm-agent-item.active .bcm-agent-actions,
+.bcm-thread-item:hover .bcm-thread-actions,
+.bcm-thread-item.active .bcm-thread-actions {
   opacity: 1;
 }
 
-.boss-chat-agents-empty {
-  padding: 12px;
-  font-size: 12px;
-  color: var(--boss-chat-muted);
+.bcm-icon-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+.bcm-icon-btn:hover {
+  background: rgba(255,255,255,0.07);
+  color: var(--text);
+}
+.bcm-icon-btn.active {
+  color: var(--accent);
+}
+.bcm-icon-btn.danger:hover {
+  color: #f87171;
 }
 
-.boss-chat-main {
+/* Thread list */
+.bcm-thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.bcm-thread-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+  margin-bottom: 1px;
+}
+.bcm-thread-item.active {
+  background: var(--accent-dim);
+}
+.bcm-thread-item:hover:not(.active) {
+  background: rgba(255,255,255,0.04);
+}
+
+.bcm-thread-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 7px 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.bcm-thread-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bcm-thread-meta {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bcm-empty-hint {
+  padding: 6px 12px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* ─── Main area ─── */
+.bcm-main {
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  color: var(--boss-chat-text);
+  background: var(--bg);
 }
 
-.boss-chat-target-bar {
+.bcm-thread-bar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  justify-content: space-between;
   gap: 8px;
-  padding: 8px 14px;
-  font-size: 12px;
-  color: var(--boss-chat-muted);
-  border-bottom: 1px solid var(--boss-chat-line);
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
-.boss-chat-mode-select--bar {
-  margin-left: auto;
-  width: 108px;
+.bcm-thread-bar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.boss-chat-openclaw {
+.bcm-thread-bar-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bcm-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 99px;
+  letter-spacing: 0.02em;
+}
+.bcm-tag.green {
+  background: var(--green-dim);
+  color: var(--green);
+}
+.bcm-tag.blue {
+  background: var(--accent-dim);
+  color: #93c5fd;
+}
+.bcm-tag.yellow {
+  background: rgba(234,179,8,0.15);
+  color: #fde047;
+}
+
+.bcm-mode-select {
+  width: 110px;
+}
+
+.bcm-main :deep(.bcm-mode-select .n-base-selection) {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 99px !important;
+}
+.bcm-main :deep(.bcm-mode-select .n-base-selection-label),
+.bcm-main :deep(.bcm-mode-select .n-base-selection-input) {
+  color: var(--text) !important;
+  font-size: 12px !important;
+}
+.bcm-main :deep(.bcm-mode-select .n-base-selection:hover),
+.bcm-main :deep(.bcm-mode-select .n-base-selection--focus) {
+  border-color: var(--accent) !important;
+}
+
+.bcm-file-input { display: none; }
+
+/* OpenClaw wrap */
+.bcm-openclaw-wrap {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0 8px 8px;
 }
-
-.boss-chat-openclaw-attach-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 4px;
-  border-bottom: 1px solid var(--boss-chat-border, rgba(255, 255, 255, 0.08));
-}
-
-.boss-chat-openclaw-attach-bar .boss-chat-attach {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-}
-
-.boss-chat-openclaw :deep(.chat-panel-card) {
+.bcm-openclaw-wrap :deep(.chat-actions) { align-items: center; }
+.bcm-openclaw-wrap :deep(.chat-panel-card) {
   border: none;
   box-shadow: none;
   background: transparent;
 }
 
-.boss-chat-gateway-hint {
-  margin: 16px 12px;
+.bcm-gateway-warn {
+  margin: 14px;
   padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--boss-chat-text);
-  background: rgba(255, 180, 60, 0.12);
-  border: 1px solid rgba(255, 180, 60, 0.35);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #fde68a;
+  background: rgba(234,179,8,0.1);
+  border: 1px solid rgba(234,179,8,0.3);
   border-radius: 8px;
 }
+.bcm-gateway-warn code { font-size: 11px; }
 
-.boss-chat-gateway-hint code {
-  font-size: 12px;
+.bcm-hint-center {
+  margin: auto;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
 }
 
-.boss-chat-target-bar strong {
-  color: var(--boss-chat-text);
-}
-
-.boss-chat-default-tag {
-  margin-left: 6px;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(70, 209, 96, 0.15);
-  color: var(--boss-chat-accent);
-}
-
-.boss-chat-openclaw-tag {
-  margin-left: 6px;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(96, 165, 250, 0.15);
-  color: #60a5fa;
-}
-
-.boss-chat-plan-tag {
-  margin-left: 6px;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(250, 204, 21, 0.15);
-  color: #facc15;
-}
-
-.boss-chat-log {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
+/* Attach choices */
+.bcm-attach-choices {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-}
-
-.boss-chat-log .msg {
-  max-width: 90%;
-  padding: 8px 11px;
-  border-radius: 10px;
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--boss-chat-text);
-}
-
-.boss-chat-log .msg .who {
-  display: block;
-  font-size: 11px;
-  color: var(--boss-chat-muted);
-  margin-bottom: 3px;
-}
-
-.boss-chat-log .msg.boss {
-  align-self: flex-end;
-  background: var(--boss-chat-accent);
-  color: #102016;
-}
-
-.boss-chat-log .msg.boss .who {
-  color: #2d4a34;
-}
-
-.boss-chat-log .msg.secretary {
-  background: #243a55;
-}
-
-.boss-chat-log .msg.coo {
-  background: #1f3d2e;
-}
-
-.boss-chat-log .msg.it {
-  background: #2c2348;
-}
-
-.boss-chat-log .msg.worker {
-  background: var(--boss-chat-bg-2);
-}
-
-.boss-chat-log .msg.system {
-  align-self: center;
-  max-width: 100%;
-  background: transparent;
-  border: 1px dashed var(--boss-chat-line);
-  color: var(--boss-chat-muted);
-  font-size: 12px;
-}
-
-.boss-chat-empty {
-  margin: 0;
-  font-size: 13px;
-  color: var(--boss-chat-muted);
-}
-
-.boss-chat-queue-hint {
-  margin: 0 0 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: #2a2410;
-  border: 1px solid #5c4a1a;
-  color: #f0c674;
-  font-size: 12px;
-}
-
-.boss-chat-typing {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  align-self: flex-start;
-  max-width: 92%;
-  margin: 4px 0 8px;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: #1f3d2e;
-  border: 1px solid rgba(70, 209, 96, 0.25);
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 13px;
-}
-
-.boss-chat-typing.it {
-  background: #2c2348;
-  border-color: rgba(140, 120, 255, 0.25);
-}
-
-.boss-chat-typing-label {
-  font-style: italic;
-  opacity: 0.92;
-}
-
-.boss-chat-typing-dots {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.boss-chat-typing-dots span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.55);
-  animation: boss-chat-typing-bounce 1.4s infinite ease-in-out;
-}
-
-.boss-chat-typing-dots span:nth-child(2) {
-  animation-delay: 0.16s;
-}
-
-.boss-chat-typing-dots span:nth-child(3) {
-  animation-delay: 0.32s;
-}
-
-@keyframes boss-chat-typing-bounce {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-  40% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
-.boss-chat-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px 14px;
-  border-top: 1px solid var(--boss-chat-line);
-  background: var(--boss-chat-bg-2);
-}
-
-.boss-chat-input {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  min-height: 72px;
-  max-height: 220px;
-  background: var(--boss-chat-surface);
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 10px;
-  color: var(--boss-chat-text);
-  -webkit-text-fill-color: var(--boss-chat-text);
-  caret-color: var(--boss-chat-text);
-  padding: 11px 12px;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.45;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
-}
-
-.boss-chat-input::placeholder {
-  color: rgba(255, 255, 255, 0.45);
-  opacity: 1;
-}
-
-.boss-chat-input:focus {
-  outline: none;
-  border-color: var(--boss-chat-accent);
-  box-shadow:
-    inset 0 1px 3px rgba(0, 0, 0, 0.35),
-    0 0 0 2px rgba(70, 209, 96, 0.22);
-}
-
-.boss-chat-composer-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.boss-chat-mode-select {
-  width: 130px;
+  gap: 6px;
+  padding: 8px 8px 0;
   flex-shrink: 0;
 }
-
-.boss-chat-main :deep(.boss-chat-mode-select .n-base-selection) {
-  background: var(--boss-chat-surface) !important;
-  border: 1px solid rgba(255, 255, 255, 0.28) !important;
-  border-radius: 999px !important;
-}
-
-.boss-chat-main :deep(.boss-chat-mode-select .n-base-selection-label),
-.boss-chat-main :deep(.boss-chat-mode-select .n-base-selection-input) {
-  color: var(--boss-chat-text) !important;
-}
-
-.boss-chat-main :deep(.boss-chat-mode-select .n-base-selection:hover),
-.boss-chat-main :deep(.boss-chat-mode-select .n-base-selection--focus) {
-  border-color: var(--boss-chat-accent) !important;
-  box-shadow: 0 0 0 2px rgba(70, 209, 96, 0.18) !important;
-}
-
-.boss-chat-file-input {
-  display: none;
-}
-
-.boss-chat-attach-choices {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 4px 0;
-}
-
-.boss-chat-attach-choice-card {
+.bcm-attach-card {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: rgba(70, 209, 96, 0.08);
-  border: 1px solid rgba(70, 209, 96, 0.25);
+  background: var(--green-dim);
+  border: 1px solid rgba(34,197,94,0.25);
 }
-
-.boss-chat-attach-choice-label {
-  flex: 1;
-  min-width: 160px;
-  font-size: 12px;
-  color: var(--boss-chat-text);
-}
-
-.boss-chat-attach-choice-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.boss-chat-attach-choice-actions.inline {
-  margin-top: 8px;
-}
-
-.boss-chat-attach-choice-btn {
+.bcm-attach-label { flex: 1; font-size: 12px; color: var(--text); min-width: 140px; }
+.bcm-attach-btns { display: flex; gap: 6px; }
+.bcm-attach-btns.inline { margin-top: 8px; }
+.bcm-attach-btn {
   border: none;
   border-radius: 6px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   font-size: 12px;
   cursor: pointer;
 }
+.bcm-attach-btn.archive { background: var(--green-dim); color: var(--green); }
+.bcm-attach-btn.reference { background: var(--accent-dim); color: #93c5fd; }
+.bcm-attach-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.boss-chat-attach-choice-btn.archive {
-  background: rgba(70, 209, 96, 0.2);
-  color: var(--boss-chat-accent, #46d160);
-}
-
-.boss-chat-attach-choice-btn.reference {
-  background: rgba(100, 160, 255, 0.15);
-  color: #7eb6ff;
-}
-
-.boss-chat-attach-choice-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.boss-chat-attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 4px 8px;
-}
-
-.boss-chat-attachment-chip {
+/* OpenClaw attach trigger */
+.bcm-attach-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(70, 209, 96, 0.14);
-  border: 1px solid rgba(70, 209, 96, 0.35);
-  color: var(--boss-chat-text);
-  font-size: 12px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.bcm-attach-trigger:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.bcm-attach-trigger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── Chat log ─── */
+.bcm-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
 }
 
-.boss-chat-attachment-chip button {
+.bcm-log-empty {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bcm-queue-notice {
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(234,179,8,0.1);
+  border: 1px solid rgba(234,179,8,0.3);
+  color: #fde68a;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.bcm-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 78%;
+}
+.bcm-msg.boss { align-self: flex-end; align-items: flex-end; }
+.bcm-msg.system { align-self: center; max-width: 100%; align-items: center; }
+
+.bcm-msg-who {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 4px;
+}
+
+.bcm-msg-bubble {
+  padding: 9px 13px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.bcm-msg.boss .bcm-msg-bubble {
+  background: #1d4ed8;
+  color: #dbeafe;
+  border-radius: 12px 12px 2px 12px;
+}
+
+.bcm-msg.coo .bcm-msg-bubble,
+.bcm-msg.secretary .bcm-msg-bubble {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px 12px 12px 2px;
+}
+
+.bcm-msg.it .bcm-msg-bubble {
+  background: rgba(124,58,237,0.18);
+  border: 1px solid rgba(124,58,237,0.25);
+  border-radius: 12px 12px 12px 2px;
+}
+
+.bcm-msg.system .bcm-msg-bubble {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Typing indicator */
+.bcm-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border-radius: 12px 12px 12px 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  align-self: flex-start;
+  font-style: italic;
+}
+
+.bcm-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.bcm-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: bcm-bounce 1.4s infinite ease-in-out;
+}
+.bcm-dots span:nth-child(2) { animation-delay: 0.16s; }
+.bcm-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes bcm-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ─── Composer ─── */
+.bcm-composer {
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.bcm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.bcm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(59,130,246,0.3);
+  font-size: 11px;
+  color: var(--text);
+}
+.bcm-chip button {
   border: none;
   background: transparent;
-  color: var(--boss-chat-muted);
+  color: var(--muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
   padding: 0;
 }
 
-.boss-chat-attach {
+.bcm-composer-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  transition: border-color 0.15s;
+}
+.bcm-composer-inner:focus-within {
+  border-color: var(--accent);
+}
+
+.bcm-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 44px;
+  max-height: 160px;
+}
+.bcm-textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.bcm-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bcm-tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: var(--boss-chat-surface);
-  color: var(--boss-chat-text);
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
-  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
 }
-
-.boss-chat-attach:hover:not(:disabled) {
-  border-color: var(--boss-chat-accent);
+.bcm-tool-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.07);
+  color: var(--text);
 }
+.bcm-tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.boss-chat-attach:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.boss-chat-send {
+.bcm-send-btn {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 18px;
-  border-radius: 999px;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 8px;
   border: none;
-  background: var(--boss-chat-accent);
-  color: #102016;
+  background: var(--accent);
+  color: #fff;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
   cursor: pointer;
+  transition: opacity 0.12s, filter 0.12s;
   flex-shrink: 0;
 }
+.bcm-send-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.bcm-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.boss-chat-send:hover:not(:disabled) {
-  filter: brightness(1.05);
+/* ─── Transition ─── */
+.bcm-slide-enter-active,
+.bcm-slide-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
-
-.boss-chat-send:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.boss-chat-panel-enter-active,
-.boss-chat-panel-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.boss-chat-panel-enter-from,
-.boss-chat-panel-leave-to {
+.bcm-slide-enter-from,
+.bcm-slide-leave-to {
   opacity: 0;
-  transform: translateY(12px) scale(0.98);
+  transform: translateY(10px) scale(0.98);
 }
 
-@media (max-width: 860px) {
-  .boss-chat-panels {
-    grid-template-columns: 1fr !important;
-    grid-template-rows: auto auto 1fr;
-  }
+/* ─── Light theme overrides ─── */
+.bcm-panel--light {
+  --bg: #ffffff;
+  --bg2: #f4f5f7;
+  --surface: #eaecf0;
+  --border: rgba(0,0,0,0.1);
+  --text: #111827;
+  --muted: rgba(0,0,0,0.4);
+  --accent: #2563eb;
+  --accent-dim: rgba(37,99,235,0.1);
+  --green: #16a34a;
+  --green-dim: rgba(22,163,74,0.12);
+  color-scheme: light;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
+}
 
-  .boss-chat-side-menu {
-    border-bottom: none;
-    padding-top: 12px;
-  }
+.bcm-panel--light .bcm-msg.boss .bcm-msg-bubble {
+  background: #2563eb;
+  color: #dbeafe;
+}
 
-  .boss-chat-agents,
-  .boss-chat-threads {
-    max-height: 120px;
+.bcm-panel--light .bcm-oc-badge {
+  background: rgba(37,99,235,0.15);
+  color: #1d4ed8;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 680px) {
+  .bcm-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .bcm-sidebar {
     border-right: none;
-    border-bottom: 1px solid var(--boss-chat-line);
-  }
-
-  .boss-chat-agent-list,
-  .boss-chat-thread-list {
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding-bottom: 10px;
-  }
-
-  .boss-chat-agent-item,
-  .boss-chat-thread-item {
-    min-width: 160px;
-    margin-bottom: 0;
-  }
-
-  .boss-chat-agent-actions,
-  .boss-chat-thread-actions {
-    opacity: 1;
+    border-bottom: 1px solid var(--border);
     flex-direction: row;
+    max-height: 100px;
+    overflow-x: auto;
   }
+  .bcm-agent-list { max-height: unset; display: flex; }
+  .bcm-thread-list { display: flex; }
 }
 </style>

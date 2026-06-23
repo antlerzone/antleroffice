@@ -558,20 +558,6 @@ async function setConfig(dotPath, jsonValue) {
   return { ok: r.ok, available: true, error: r.ok ? undefined : r.stderr || r.error };
 }
 
-// Set the OpenAI (or other provider) key + provider allowlist. The secret is
-// written straight into ~/.openclaw/openclaw.json via fs — NEVER passed on the
-// command line (which would leak it to the shell / process list). Falls back to
-// reporting unavailable when OpenClaw isn't installed.
-// Store an API key the way THIS OpenClaw build expects: in its auth-profile
-// store (~/.openclaw/agents/<id>/agent/auth-profiles.json), via
-// `openclaw models auth paste-token`. The key goes over stdin (never argv), so
-// it's not exposed in the process list. Overwrites the provider's default
-// profile so the configured model can actually authenticate.
-// Save a provider API key into OpenClaw's auth store. We write the JSON file
-// directly instead of using `models auth paste-token`, because that command is
-// an interactive TUI prompt that does NOT reliably consume piped stdin when
-// spawned without a TTY — which silently left the OLD key in place. Direct write
-// is deterministic and uses the proper "api_key" profile type.
 async function setKey(provider, apiKey, { agentId } = {}) {
   if (!(await isAvailable())) return { ok: false, available: false };
   const prov = String(provider || 'openai').trim() || 'openai';
@@ -694,6 +680,37 @@ async function deleteKey(provider, { profileId, agentId } = {}) {
   } catch (e) {
     return { ok: false, available: true, error: e.message };
   }
+}
+
+function authProfilesPath(agentId) {
+  const id = agentId || store.readSettings().runtimes?.openclaw?.agentId || 'main';
+  return path.join(os.homedir(), '.openclaw', 'agents', id, 'agent', 'auth-profiles.json');
+}
+
+/** Read provider API key from OpenClaw auth store, legacy config, or AntlerOffice settings. */
+function readProviderApiKey(provider = 'openai') {
+  const prov = String(provider || 'openai').trim() || 'openai';
+  const pid = `${prov}:default`;
+  try {
+    const data = readJsonFile(authProfilesPath());
+    const profile = data?.profiles?.[pid];
+    const key = String(profile?.key || '').trim();
+    if (key) return key;
+  } catch {
+    /* missing auth store */
+  }
+  try {
+    const cfg = readJsonFile(configPath());
+    const legacy = String(cfg?.models?.providers?.[prov]?.apiKey || '').trim();
+    if (legacy) return legacy;
+  } catch {
+    /* missing config */
+  }
+  return String(store.readSettings().providers?.[prov]?.apiKey || '').trim();
+}
+
+function hasProviderApiKey(provider = 'openai') {
+  return !!readProviderApiKey(provider);
 }
 
 async function setModel(ref) {
@@ -1752,10 +1769,13 @@ module.exports = {
   listAgents,
   setKey,
   deleteKey,
+  readProviderApiKey,
+  hasProviderApiKey,
   setModel,
   modelsStatus,
   gatewayStatus,
   gatewayProbe,
+  gatewayProbeReliable,
   gatewayStart,
   gatewayStop,
   gatewayRestart,

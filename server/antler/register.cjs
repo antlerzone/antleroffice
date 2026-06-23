@@ -27,6 +27,7 @@ const billing = require('./billing');
 const payroll = require('./payroll');
 const agentCatalog = require('./agent-catalog');
 const payslip = require('./payslip.cjs');
+const skillInstallLog = require('./skill-install-log');
 const agentUsageStore = require('./agent-usage-store');
 const workerEntitlements = require('./worker-entitlements');
 const taskMeter = require('./task-meter');
@@ -36,6 +37,9 @@ const { handleInstruction, savePlanDeliverable } = require('./agent-runtime');
 const bossChat = require('./boss-chat-store');
 const antlerofficeMcp = require('./antleroffice-mcp');
 const webAccounts = require('./web-accounts-store');
+const bundleRequiredAccounts = require('./bundle-required-accounts.cjs');
+const retellStore = require('./retell-store');
+const browserCapture = require('./browser-capture-engine');
 const materials = require('./materials.cjs');
 const adminVault = require('./admin-vault');
 const { attachPaBridge, getOfficePresence } = require('./pa-bridge');
@@ -166,12 +170,6 @@ function registerAntlerRoutes(app, hooks = {}) {
   defaultMcpPack.ensureAntlerofficeToolsBinding().catch((e) => {
     console.warn('[AntlerOffice] antleroffice-tools MCP bind:', e.message);
   });
-  require('./secretary-boot')
-    .bootSecretaryFbAssets()
-    .then((r) => {
-      console.log('[Secretary] Routing + FB skills installed to main workspace');
-    })
-    .catch((e) => console.warn('[Secretary] FB boot:', e.message));
   try {
     openclaw.ensureValidOpenClawConfig();
   } catch {
@@ -1357,6 +1355,33 @@ function registerAntlerRoutes(app, hooks = {}) {
     res.json({ ok: true });
   });
 
+  // ── Config: Retell AI key (Bring-Your-Own-Key) ────────────────────────────
+  // Status only ever returns a masked preview — never the plaintext key.
+  app.get('/api/config/retell', (_req, res) => {
+    try {
+      res.json({ ok: true, ...retellStore.getStatus() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : 'Failed to read Retell key' });
+    }
+  });
+  app.post('/api/config/retell', (req, res) => {
+    try {
+      const apiKey = (req.body && req.body.apiKey) || '';
+      const status = retellStore.setApiKey(apiKey);
+      res.json({ ok: true, ...status });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : 'Failed to save Retell key' });
+    }
+  });
+  app.delete('/api/config/retell', (_req, res) => {
+    try {
+      const status = retellStore.clearApiKey();
+      res.json({ ok: true, ...status });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : 'Failed to clear Retell key' });
+    }
+  });
+
   // ── Config: MCP server catalog ────────────────────────────────────────────
   app.get('/api/config/mcps', (_req, res) => res.json({ mcps: registry.listMcps().map(redactMcp) }));
   app.post('/api/config/mcps/probe', async (req, res) => {
@@ -2048,6 +2073,25 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
 
   // ── Web login accounts (encrypted local vault; boss-only) ─────────────────
+  app.get('/api/catalog/all-required-accounts', (_req, res) => {
+    try {
+      const data = bundleRequiredAccounts.listAllRequiredAccounts();
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.get('/api/catalog/agents/:id', (req, res) => {
+    try {
+      const entry = bundleRequiredAccounts.loadAgentCatalogEntry(req.params.id);
+      if (!entry) return res.status(404).json({ ok: false, error: 'Template not found' });
+      res.json(entry);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   app.get('/api/accounts', requireBossOnly, (_req, res) => {
     res.json({ ok: true, accounts: webAccounts.listAccountsForBoss() });
   });
@@ -2102,62 +2146,49 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
   });
 
-  // ── Secretary FB intake (Boss Chat / OpenClaw — before generic LLM) ───────
-  app.post('/api/secretary/intake', async (req, res) => {
-    const owner = resolveBossOwner(req);
-    const text = String(req.body?.text || '').trim();
-    const sessionKey = String(req.body?.sessionKey || '').trim();
-    const threadId = String(req.body?.threadId || '').trim() || null;
-    const secretaryIntake = require('./secretary-intake-handler');
-
-    if (!text) return res.status(400).json({ ok: false, error: 'text required' });
-    if (sessionKey && !secretaryIntake.isSecretaryGatewaySession(sessionKey)) {
-      return res.json({ ok: true, handled: false });
-    }
-
-    const recentUserTexts = Array.isArray(req.body?.recentUserTexts)
-      ? req.body.recentUserTexts.map((t) => String(t || '').trim()).filter(Boolean)
-      : [];
-    const recentConversation = Array.isArray(req.body?.recentConversation)
-      ? req.body.recentConversation
-          .map((m) => ({
-            role: String(m?.role || '').trim(),
-            text: String(m?.text || m?.content || '').trim(),
-          }))
-          .filter((m) => m.role && m.text)
-      : [];
-
+  // ── Browser-capture login flow (boss manually logs in via Chrome) ──────────
+  // POST /api/accounts/browser-capture/start
+  //   Body: { url, website, displayName, profileId?, allowedActions? }
+  //   Opens Chrome to the given URL; returns sessionId
+  app.post('/api/accounts/browser-capture/start', requireBossOnly, async (req, res) => {
     try {
-      const result = await secretaryIntake.handleSecretaryFbIntake(text, {
-        sessionKey,
-        threadId,
-        ownerKey: owner.ownerKey,
-        recentUserTexts,
-        recentConversation,
-      });
-
-      if (result.handled && result.reply) {
-        if (threadId) {
-          bossChat.addMessage(threadId, 'boss', text, { authorName: owner.ownerName || 'Boss' });
-          bossChat.addMessage(threadId, 'secretary', result.reply, { authorName: 'Secretary' });
-        }
-        if (sessionKey) {
-          try {
-            await require('./secretary-intake-session-sync').syncIntakeTurnToOpenClaw({
-              sessionKey,
-              userText: text,
-              assistantText: result.reply,
-            });
-          } catch {
-            /* best-effort */
-          }
-        }
-      }
-
+      const { url, website, displayName, profileId, allowedActions } = req.body || {};
+      const result = await browserCapture.startCapture({ url, website, displayName, profileId, allowedActions });
       res.json({ ok: true, ...result });
     } catch (e) {
-      res.status(500).json({ ok: false, error: e.message || String(e) });
+      res.status(400).json({ ok: false, error: e.message });
     }
+  });
+
+  // POST /api/accounts/browser-capture/:sessionId/finish
+  //   Body: { username?, displayName? }
+  //   Extracts cookies from the live browser, saves account, closes Chrome
+  app.post('/api/accounts/browser-capture/:sessionId/finish', requireBossOnly, async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { username, displayName } = req.body || {};
+      const result = await browserCapture.finishCapture(sessionId, { username, displayName });
+      res.json(result);
+    } catch (e) {
+      const status = /not found|expired/i.test(e.message) ? 404 : 400;
+      res.status(status).json({ ok: false, error: e.message });
+    }
+  });
+
+  // DELETE /api/accounts/browser-capture/:sessionId
+  //   Cancels an active capture session; closes Chrome without saving
+  app.delete('/api/accounts/browser-capture/:sessionId', requireBossOnly, async (req, res) => {
+    try {
+      const result = await browserCapture.cancelCapture(req.params.sessionId);
+      res.json(result);
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // GET /api/accounts/browser-capture/sessions  (debug / admin)
+  app.get('/api/accounts/browser-capture/sessions', requireBossOnly, (_req, res) => {
+    res.json({ ok: true, sessions: browserCapture.listActiveSessions() });
   });
 
   // ── Boss instruction (optional targetAgentId for directed chat) ───────────
@@ -2256,6 +2287,141 @@ function registerAntlerRoutes(app, hooks = {}) {
     });
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
+  });
+
+  // ── Browser Agent: AI-driven visible browser (Playwright + LLM loop) ─────────
+  const browserAgent = require('./browser-agent-loop');
+
+  // POST /api/browser-agent/run  — start a browser task
+  // Body: { task, startUrl?, accountId?, headless?, threadId? }
+  app.post('/api/browser-agent/run', requireBossOnly, async (req, res) => {
+    try {
+      const { task, startUrl, accountId, threadId } = req.body || {};
+      if (!task) return res.status(400).json({ ok: false, error: 'task is required' });
+      // headless: request body overrides store setting; store setting overrides default (false)
+      const storeHeadless = store.readSettings().browserAgent?.headless ?? false;
+      const headless = req.body?.headless !== undefined ? !!req.body.headless : storeHeadless;
+
+      // Resolve credentials from web-accounts-store if accountId given
+      let credentials = {};
+      if (accountId) {
+        try {
+          const webAccounts = require('./web-accounts-store');
+          const acc = webAccounts.getAccount(accountId);
+          if (acc) {
+            credentials = {
+              email:    acc.email    || acc.username || '',
+              password: acc.password || '',
+              phone:    acc.phone    || '',
+              company:  acc.company  || '',
+            };
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Fire-and-forget — respond immediately with session id, poll for status
+      const runPromise = browserAgent.runBrowserTask({
+        task,
+        startUrl:    startUrl || null,
+        credentials,
+        headless:    headless === true,
+        threadId:    threadId || null,
+        maxSteps:    30,
+      });
+
+      // Return session id immediately; client polls /status/:id
+      runPromise.catch(() => {});
+      // Give it 50ms to register session
+      await new Promise((r) => setTimeout(r, 50));
+      const sessions = browserAgent.listSessions();
+      const latest   = sessions[sessions.length - 1];
+      res.json({ ok: true, id: latest?.id || 'pending', message: 'Browser agent started' });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // GET /api/browser-agent/status/:id  — poll session progress
+  app.get('/api/browser-agent/status/:id', requireBossOnly, (req, res) => {
+    const session = browserAgent.getSession(String(req.params.id || ''));
+    if (!session) return res.status(404).json({ ok: false, error: 'Session not found' });
+    res.json({ ok: true, session });
+  });
+
+  // GET /api/browser-agent/sessions  — list all sessions
+  app.get('/api/browser-agent/sessions', requireBossOnly, (_req, res) => {
+    res.json({ ok: true, sessions: browserAgent.listSessions() });
+  });
+
+  // POST /api/browser-agent/stop/:id  — cancel a running session
+  app.post('/api/browser-agent/stop/:id', requireBossOnly, (req, res) => {
+    const result = browserAgent.stopSession(String(req.params.id || ''));
+    res.json(result);
+  });
+
+  // GET  /api/browser-agent/settings  — read headless preference
+  app.get('/api/browser-agent/settings', requireBossOnly, (_req, res) => {
+    const s = store.readSettings();
+    res.json({ ok: true, headless: s.browserAgent?.headless ?? false });
+  });
+
+  // POST /api/browser-agent/settings  — save headless preference
+  // Body: { headless: true|false }
+  app.post('/api/browser-agent/settings', requireBossOnly, (req, res) => {
+    const headless = !!req.body?.headless;
+    const s = store.readSettings();
+    store.writeSettings({ ...s, browserAgent: { ...(s.browserAgent || {}), headless } });
+    res.json({ ok: true, headless });
+  });
+
+  // ── Tool Intake: COO analyses GitHub URLs / API PDFs before installing ───────
+  const toolIntake = require('./tool-intake');
+
+  // GET  /api/tool-intake/pending  — return staged analysis list
+  app.get('/api/tool-intake/pending', requireBossOnly, (_req, res) => {
+    res.json({ ok: true, items: toolIntake.getPendingInstalls() });
+  });
+
+  // POST /api/tool-intake/analyze  — analyse on demand (boss pastes URLs in UI)
+  app.post('/api/tool-intake/analyze', requireBossOnly, async (req, res) => {
+    try {
+      const text = String(req.body?.text || '').trim();
+      const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+      if (!text && !attachments.length) {
+        return res.status(400).json({ ok: false, error: 'No text or attachments provided' });
+      }
+      const items = await toolIntake.analyzeMessage(text, attachments);
+      if (!items || !items.length) {
+        return res.json({ ok: true, items: [], message: 'No GitHub URLs or PDF attachments found' });
+      }
+      toolIntake.stagePendingInstalls(items);
+      res.json({ ok: true, items });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // POST /api/tool-intake/install-selected  — boss confirmed, install chosen items
+  // Body: { indices: [1, 3] }  (1-based indices from the pending list)
+  app.post('/api/tool-intake/install-selected', requireBossOnly, async (req, res) => {
+    try {
+      const indices = Array.isArray(req.body?.indices)
+        ? req.body.indices.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        : [];
+      if (!indices.length) {
+        return res.status(400).json({ ok: false, error: 'No indices provided' });
+      }
+      const result = await toolIntake.executeSelectedInstalls(indices);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // POST /api/tool-intake/clear  — discard pending plan
+  app.post('/api/tool-intake/clear', requireBossOnly, (_req, res) => {
+    toolIntake.clearPendingInstalls();
+    res.json({ ok: true });
   });
 
   // ── Onboarding: detect + install OpenClaw (execution) ─────────────────────
@@ -2399,9 +2565,59 @@ function registerAntlerRoutes(app, hooks = {}) {
   app.post('/api/onboard/ai-skip', (_req, res) => {
     res.json({ ok: true, onboarding: onboard.markAiSkipped() });
   });
+  app.post('/api/onboard/company-profile', (req, res) => {
+    try {
+      res.json(onboard.saveCompanyProfile(req.body || {}));
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
   app.post('/api/onboard/installer-complete', async (_req, res) => {
     try {
       res.json(await onboard.markInstallerComplete());
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // ── Skill Install Log ─────────────────────────────────────────────────────
+  // Record a skill install (called from frontend after wizard/settings install)
+  app.post('/api/skill-installs/record', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const entry = await skillInstallLog.recordInstall({
+        skillName: body.skillName,
+        skillId: body.skillId,
+        source: body.source,
+        sourceUrl: body.sourceUrl,
+        npcTemplateId: body.npcTemplateId,
+        npcName: body.npcName,
+        tenantId: body.tenantId,
+        triggeredBy: body.triggeredBy || 'user',
+        status: body.status || 'installed',
+        errorMessage: body.errorMessage,
+      });
+      res.json({ ok: true, entry });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // List installs — admin only
+  app.get('/api/admin/skill-installs', requireBossOnly, (req, res) => {
+    try {
+      const { limit, npcTemplateId, source, status } = req.query;
+      const entries = skillInstallLog.listInstalls({ limit, npcTemplateId, source, status });
+      res.json({ ok: true, entries, total: entries.length });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Summary grouped by skill — useful for "X users installed Y" view
+  app.get('/api/admin/skill-installs/summary', requireBossOnly, (_req, res) => {
+    try {
+      res.json({ ok: true, summary: skillInstallLog.getInstallSummary() });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
@@ -2417,8 +2633,10 @@ function registerAntlerRoutes(app, hooks = {}) {
         enableCoo: body.enableCoo !== false,
         enableAdmin: body.enableAdmin !== false,
         enableIt: body.enableIt !== false,
+        enableGraphicDesign: !!body.enableGraphicDesign,
         perplexityApiKey: String(body.perplexityApiKey || '').trim(),
         firecrawlApiKey: String(body.firecrawlApiKey || '').trim(),
+        glifApiKey: String(body.glifApiKey || '').trim(),
         installPlaywright: body.installPlaywright !== false,
       });
       res.json(result);
@@ -2613,19 +2831,18 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
   });
 
-  voiceService.registerVoiceRoutes(app, upload);
+  voiceService.registerVoiceRoutes(app, upload, { resolveBossOwner });
+
+  // Realtime voice session (OpenAI Realtime API ephemeral token)
+  const voiceRealtimeService = require('./voice-realtime-service');
+  voiceRealtimeService.registerRealtimeRoutes(app);
 }
 
 function attachAntlerOffice(httpServer) {
   attachPaBridge(httpServer);
   const mcpPort = Number(process.env.ANTLEROFFICE_MCP_PORT) || 8931;
   antlerofficeMcp.startStandaloneServer(mcpPort);
-  try {
-    const voiceSidecarManager = require('./voice-sidecar-manager');
-    voiceSidecarManager.bootVoiceSidecars();
-  } catch (e) {
-    console.warn('[AntlerOffice] voice sidecar boot:', e.message);
-  }
+  // Voice sidecars start after HTTP binds (see index.js onServerListening).
 }
 
 function attachGatewayOfficeSync(gateway) {

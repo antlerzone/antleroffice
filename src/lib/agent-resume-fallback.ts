@@ -80,10 +80,10 @@ const ROLE_RESUME: Record<
   },
   secretary: {
     description:
-      'Your executive secretary and the only Boss Chat front door. Secretary records what you need and forwards work to your hired CEO.',
+      'Your COO and the only Boss Chat front door. COO records what you need and forwards work to your hired CEO.',
     examples: [
-      'Chat with Secretary about what you want done today.',
-      'After hiring a CEO, tell Secretary your goals — Secretary will pass them along.',
+      'Chat with COO about what you want done today.',
+      'After hiring a CEO, tell COO your goals — COO will pass them along.',
     ],
   },
   ceo: {

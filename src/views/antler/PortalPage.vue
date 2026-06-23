@@ -57,7 +57,7 @@ const { t } = useI18n()
 const ecsSession = useEcsSessionStore()
 const boss = useBossStore()
 const localGateway = useLocalGateway()
-const { desktopDisplayName, load: loadOfficeProfile } = useOfficeProfile()
+const { desktopDisplayName, hostname, load: loadOfficeProfile } = useOfficeProfile()
 
 const loading = ref(true)
 const connecting = ref(false)
@@ -105,6 +105,23 @@ function formatGatewayTitle(kind: 'local' | 'remote', desk?: PortalDesktop): str
   return suffix ? `${base} (${suffix})` : base
 }
 
+function normalizeHost(value: string) {
+  return String(value || '').trim().toLowerCase()
+}
+
+/** Same PC re-registered with a new desktop-id — hide stale cloud row; use 本机 only. */
+function isStaleSameMachineGateway(desk: PortalDesktop) {
+  const localDesk = ownedDesktops.value.find((d) => d.isLocal)
+  const localHost = normalizeHost(localDesk?.hostname || hostname.value)
+  const deskHost = normalizeHost(desk.hostname || '')
+  if (!localHost || !deskHost) return false
+  return localHost === deskHost
+}
+
+const remoteOwnedDesktops = computed(() =>
+  ownedDesktops.value.filter((d) => !d.isLocal && !isStaleSameMachineGateway(d)),
+)
+
 const portalItems = computed<PortalItem[]>(() => {
   const items: PortalItem[] = []
 
@@ -140,7 +157,7 @@ const portalItems = computed<PortalItem[]>(() => {
     })
   }
 
-  for (const desk of ownedDesktops.value.filter((d) => !d.isLocal)) {
+  for (const desk of remoteOwnedDesktops.value) {
     items.push({
       id: desk.desktopId,
       title: formatGatewayTitle('remote', desk),
@@ -379,6 +396,7 @@ onMounted(async () => {
     return
   }
   loading.value = false
+  await ecsSession.refreshSession().catch(() => false)
   void ecsSession.refreshOffices().catch(() => {})
   void loadOfficeProfile().catch(() => {})
   await loadDesktops()

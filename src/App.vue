@@ -15,8 +15,14 @@ import { useI18n } from "vue-i18n";
 import { useTheme } from "@/composables/useTheme";
 import { useLocaleStore } from "@/stores/locale";
 import { useBossStore } from "@/stores/boss";
-import { isElectronApp } from "@/lib/desktop-shell";
+import { useEcsSessionStore } from "@/stores/ecsSession";
+import { isElectronApp, isSummonHost } from "@/lib/desktop-shell";
+import { installAudioUnlockOnGesture } from "@/lib/audio-unlock";
+import { summonInfo } from "@/lib/summon-debug";
 import { useVoiceWake } from "@/composables/useVoiceWake";
+import { useVoiceSetupProgress } from "@/composables/useVoiceSetupProgress";
+import DownloadToastManager from "@/components/common/DownloadToastManager.vue";
+import SummonWakeNotifier from "@/components/common/SummonWakeNotifier.vue";
 
 const HEARTBEAT_MS = 5 * 60 * 1000;
 
@@ -27,8 +33,10 @@ const localeStore = useLocaleStore();
 const boss = useBossStore();
 const { t } = useI18n();
 const { bootstrap: bootstrapVoiceWake, disconnectEvents: disconnectVoiceWake } = useVoiceWake();
+useVoiceSetupProgress();
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let removeAudioUnlock: (() => void) | null = null;
 
 function startHeartbeat() {
   stopHeartbeat();
@@ -50,27 +58,52 @@ function openSettingsRoute() {
   void router.push({ name: 'Settings' })
 }
 
-onMounted(() => {
+function openPortalRoute() {
+  void router.push({ name: 'Portal' })
+}
+
+async function bootstrapSession() {
+  const ecs = useEcsSessionStore();
+  ecs.restoreFromStorage();
+  if (ecs.session?.accessToken) {
+    await ecs.refreshSession().catch(() => {});
+  }
+  await boss.ensureSession().catch(() => {});
+}
+
+onMounted(async () => {
+  removeAudioUnlock = installAudioUnlockOnGesture();
+  await bootstrapSession();
   if (boss.token) startHeartbeat();
-  if (boss.token && isElectronApp()) void bootstrapVoiceWake();
+  if (isSummonHost()) {
+    summonInfo('bootstrapping voice wake (localhost/Electron)')
+    void bootstrapVoiceWake()
+  }
   if (isElectronApp()) {
     window.antlerDesktop?.onVoiceWakeOpenSettings?.(openSettingsRoute)
   }
   window.addEventListener('antler:open-settings', openSettingsRoute)
+  window.addEventListener('antler:navigate-portal', openPortalRoute)
 });
 
 onUnmounted(() => {
   stopHeartbeat();
   disconnectVoiceWake();
+  removeAudioUnlock?.();
+  removeAudioUnlock = null;
   window.removeEventListener('antler:open-settings', openSettingsRoute)
+  window.removeEventListener('antler:navigate-portal', openPortalRoute)
 });
 
 watch(
   () => boss.token,
-  (next) => {
+  (next, prev) => {
     if (next) {
       startHeartbeat();
-      if (isElectronApp()) void bootstrapVoiceWake();
+      if (isSummonHost() && !prev) {
+        summonInfo('session restored — reconnecting voice wake')
+        void bootstrapVoiceWake();
+      }
     } else {
       stopHeartbeat();
       disconnectVoiceWake();
@@ -113,6 +146,8 @@ watch(
       <NMessageProvider>
         <NDialogProvider>
           <RouterView />
+          <DownloadToastManager />
+          <SummonWakeNotifier />
         </NDialogProvider>
       </NMessageProvider>
     </NNotificationProvider>

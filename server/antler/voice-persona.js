@@ -15,9 +15,14 @@ function loadPersona(name, vars = {}) {
   return text;
 }
 
-function buildJarvisPersonaSnippet(honorific = 'boss', template) {
+function buildJarvisPersonaSnippet(honorific = 'boss', template, replyLanguage) {
   if (!honorific && !template) return '';
-  const raw = String(template || '').trim() || loadPersona('jarvis', {});
+  let raw = String(template || '').trim();
+  if (!raw) {
+    const personaName = replyLanguage === 'zh' ? 'jarvis-zh' : 'jarvis';
+    raw = loadPersona(personaName, {});
+    if (!raw && personaName === 'jarvis-zh') raw = loadPersona('jarvis', {});
+  }
   if (!raw) return '';
   return loadPersonaFromText(raw, { honorific: honorific || 'boss' });
 }
@@ -30,7 +35,11 @@ function loadPersonaFromText(text, vars = {}) {
   return out;
 }
 
-function getJarvisTemplate() {
+function getJarvisTemplate(replyLanguage) {
+  if (replyLanguage === 'zh') {
+    const zh = loadPersona('jarvis-zh', {});
+    if (zh) return zh;
+  }
   return loadPersona('jarvis', {});
 }
 

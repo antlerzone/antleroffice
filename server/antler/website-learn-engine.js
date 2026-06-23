@@ -7,6 +7,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const store = require('./store');
+let webAccounts = null;
+try {
+  webAccounts = require('./web-accounts-store');
+} catch {
+  webAccounts = null;
+}
+// Variable names that represent the login username/email field.
+const LOGIN_USER_VARS = new Set(['account_email', 'username', 'email', 'login', 'user']);
 
 let chromium = null;
 try {
@@ -50,6 +58,8 @@ const RECORDER_INIT = () => {
         name: t.name || '',
         inputType: t.type || '',
         label: label.slice(0, 120),
+        text: (t.innerText || t.textContent || '').trim().slice(0, 80),
+        role: t.getAttribute('role') || '',
         value: t.type === 'password' ? '${PASSWORD}' : (t.value || '').slice(0, 200),
       });
     },
@@ -239,6 +249,8 @@ async function drainDomEvents(session) {
         name: raw.name,
         tag: raw.tag,
         label: raw.label,
+        text: raw.text || '',
+        role: raw.role || '',
       };
     }
     appendJsonl(session.tracePath, evt);
@@ -699,11 +711,62 @@ function discoverCheckboxGroupsFromTrace() {
   return [];
 }
 
-async function simulateOnce({ workflow_name, slow_mo_ms = 300 }) {
+// Self-healing click: try id / name / role+text / text (each must resolve to a
+// single visible element) before falling back to recorded coordinates. Worst
+// case is identical to the old coordinate-only behaviour (zero regression).
+async function selfHealingClick(page, evt) {
+  const el = evt.element || {};
+  const esc = (s) => String(s).replace(/(["\\])/g, '\\$1');
+  const roleByTag = { a: 'link', button: 'button' };
+  const role = el.role || roleByTag[el.tag] || '';
+  const candidates = [];
+  if (el.id) candidates.push({ level: 1, method: 'id', loc: page.locator(`[id="${esc(el.id)}"]`) });
+  if (el.name) candidates.push({ level: 2, method: 'name', loc: page.locator(`[name="${esc(el.name)}"]`) });
+  if (role && el.text) candidates.push({ level: 3, method: 'role+text', loc: page.getByRole(role, { name: el.text, exact: false }) });
+  if (el.text) candidates.push({ level: 4, method: 'text', loc: page.getByText(el.text, { exact: false }) });
+  for (const c of candidates) {
+    try {
+      const n = await c.loc.count();
+      if (n === 1 && (await c.loc.isVisible())) {
+        await c.loc.click({ timeout: 3000 });
+        return { healed: c.level > 1, heal_level: c.level, method: c.method };
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  if (evt.mouse) {
+    await page.mouse.click(evt.mouse.x, evt.mouse.y);
+    return { healed: false, heal_level: 5, method: 'coordinates', x: evt.mouse.x, y: evt.mouse.y };
+  }
+  return { healed: false, heal_level: null, method: 'none' };
+}
+
+// Summarise self-healing for one row's replay steps, for the batch result table.
+function summariseHeal(steps) {
+  const clicks = (steps || []).filter((s) => s.action === 'click');
+  const levels = clicks.map((c) => c.heal_level).filter((n) => typeof n === 'number');
+  return {
+    self_healed: clicks.some((c) => c.healed) ? 'yes' : 'no',
+    heal_level: levels.length ? Math.max(...levels) : '',
+    coord_fallbacks: clicks.filter((c) => c.method === 'coordinates').length,
+  };
+}
+
+async function simulateOnce({ workflow_name, slow_mo_ms = 300, row = null, account_alias = null }) {
   const wf = safeWorkflowName(workflow_name);
   const workflowPath = workflowDir(wf);
   const mapping = readJson(path.join(workflowPath, 'input_mapping.json'), { variables: [], fields: [] });
   if (!mapping.variables.length) throw new Error('No exported workflow. Complete learning and export first.');
+  // Optional: log in with a chosen saved account. No alias → behaves exactly as before (env PASSWORD).
+  let account = null;
+  if (account_alias && webAccounts) {
+    try {
+      account = webAccounts.resolveInternalAccount(account_alias);
+    } catch {
+      account = null;
+    }
+  }
   ensurePlaywright();
   const meta = readJson(path.join(workflowPath, 'meta.json'), {});
   const profileDir = path.join(workflowPath, 'profile', 'chrome');
@@ -731,18 +794,25 @@ async function simulateOnce({ workflow_name, slow_mo_ms = 300 }) {
         await page.screenshot({ path: path.join(workflowPath, shot), fullPage: true });
         steps.push({ seq: evt.seq, action: 'navigate', url: evt.url, screenshot: shot });
       }
-      if (evt.type === 'click' && evt.mouse) {
-        await page.mouse.click(evt.mouse.x, evt.mouse.y);
-        steps.push({ seq: evt.seq, action: 'click', x: evt.mouse.x, y: evt.mouse.y });
+      if (evt.type === 'click') {
+        const healed = await selfHealingClick(page, evt);
+        steps.push({ seq: evt.seq, action: 'click', ...healed });
       }
       if (evt.type === 'input' && evt.variable) {
+        const varDef = mapping.variables.find((v) => v.name === evt.variable);
+        const col = varDef?.excel_column || evt.variable;
+        const fromRow = row && row[col] != null && String(row[col]) !== '' ? String(row[col]) : null;
         const val =
           evt.variable_type === 'secret'
-            ? process.env.PASSWORD || '${PASSWORD}'
-            : mapping.variables.find((v) => v.name === evt.variable)?.example || '';
+            ? account?.password || process.env.PASSWORD || '${PASSWORD}' // ← chosen account's password
+            : account && LOGIN_USER_VARS.has(evt.variable) && account.username
+              ? account.username // ← chosen account's username/email
+              : fromRow != null
+                ? fromRow // ← use THIS row's value in batch
+                : varDef?.example || '';
         const sel = evt.element?.id ? `#${evt.element.id}` : null;
         if (sel) await page.fill(sel, val);
-        steps.push({ seq: evt.seq, action: 'input', variable: evt.variable });
+        steps.push({ seq: evt.seq, action: 'input', variable: evt.variable, source: fromRow != null ? 'row' : 'example' });
       }
     }
     return { ok: true, workflow_name: wf, steps };
@@ -757,7 +827,7 @@ async function simulateOnce({ workflow_name, slow_mo_ms = 300 }) {
   }
 }
 
-async function batchRun({ workflow_name, excel_path }) {
+async function batchRun({ workflow_name, excel_path, account_alias = null }) {
   const wf = safeWorkflowName(workflow_name);
   const workflowPath = workflowDir(wf);
   const mapping = readJson(path.join(workflowPath, 'input_mapping.json'), { variables: [] });
@@ -766,17 +836,31 @@ async function batchRun({ workflow_name, excel_path }) {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     try {
-      const sim = await simulateOnce({ workflow_name: wf, slow_mo_ms: 0 });
-      results.push({ row: i + 1, status: sim.ok ? 'ok' : 'error', data: row, detail: sim.error || null });
+      const sim = await simulateOnce({ workflow_name: wf, slow_mo_ms: 0, row, account_alias });
+      const heal = summariseHeal(sim.steps);
+      results.push({
+        row: i + 1,
+        status: sim.ok ? 'ok' : 'error',
+        data: row,
+        detail: sim.error || null,
+        self_healed: heal.self_healed,
+        heal_level: heal.heal_level,
+        coord_fallbacks: heal.coord_fallbacks,
+      });
     } catch (e) {
-      results.push({ row: i + 1, status: 'error', data: row, error: e.message });
+      results.push({ row: i + 1, status: 'error', data: row, error: e.message, self_healed: '', heal_level: '', coord_fallbacks: '' });
     }
   }
   const outJson = path.join(workflowPath, 'result.json');
   const outCsv = path.join(workflowPath, 'result.csv');
   writeJson(outJson, results);
-  const header = 'row,status,error\n';
-  const body = results.map((r) => `${r.row},${r.status},"${(r.error || r.detail || '').replace(/"/g, '""')}"`).join('\n');
+  const header = 'row,status,self_healed,heal_level,coord_fallbacks,error\n';
+  const body = results
+    .map(
+      (r) =>
+        `${r.row},${r.status},${r.self_healed},${r.heal_level},${r.coord_fallbacks},"${(r.error || r.detail || '').replace(/"/g, '""')}"`,
+    )
+    .join('\n');
   fs.writeFileSync(outCsv, header + body, 'utf8');
   return { ok: true, workflow_name: wf, count: results.length, result_json: outJson, result_csv: outCsv };
 }

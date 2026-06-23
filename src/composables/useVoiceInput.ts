@@ -1,5 +1,7 @@
 import { ref, onUnmounted } from 'vue'
 import { useAntlerApi } from '@/composables/useAntlerApi'
+import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
+import { useBossStore } from '@/stores/boss'
 
 interface BrowserSpeechRecognition extends EventTarget {
   lang: string
@@ -22,6 +24,8 @@ function getSpeechRecognition(): SpeechRecognitionCtor | null {
 
 export function useVoiceInput() {
   const api = useAntlerApi()
+  const boss = useBossStore()
+  const { settings } = useVoiceAssistantSettings()
   const isRecording = ref(false)
   const isTranscribing = ref(false)
   const error = ref<string | null>(null)
@@ -92,6 +96,17 @@ export function useVoiceInput() {
     try {
       const form = new FormData()
       form.append('audio', blob, 'recording.webm')
+      const sttModel =
+        settings.value.voiceApi.openaiSttModel?.trim() ||
+        settings.value.realtime.openaiSttModel?.trim()
+      if (sttModel) form.append('openaiSttModel', sttModel)
+      if (boss.chatOwnerKey) form.append('ownerKey', boss.chatOwnerKey)
+      if (boss.session?.username) form.append('ownerName', boss.session.username)
+      const sttKey =
+        settings.value.voiceApi.sttApiKey?.trim() ||
+        settings.value.realtime.openaiApiKey?.trim()
+      if (sttKey) form.append('openaiApiKey', sttKey)
+
       try {
         const res = await api.sendForm<{
           ok: boolean
@@ -100,10 +115,17 @@ export function useVoiceInput() {
           error?: string
         }>('POST', '/api/voice/transcribe', form, { timeoutMs: 120000 })
         if (res.ok && res.text) return res.text
-      } catch {
-        /* fall through to browser */
+        if (res.fallback === 'browser') {
+          return transcribeWithBrowser()
+        }
+        throw new Error(res.error || 'Transcription failed')
+      } catch (e) {
+        try {
+          return await transcribeWithBrowser()
+        } catch {
+          throw e
+        }
       }
-      return transcribeWithBrowser()
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Transcription failed'
       throw e

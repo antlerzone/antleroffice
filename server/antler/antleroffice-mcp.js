@@ -9,8 +9,54 @@ const MCP_HEADERS = {
 };
 
 const webAccounts = () => require('./web-accounts-store');
+const retellClient = () => require('./retell-client');
 
 const TOOLS = [
+  {
+    name: 'retell_status',
+    description:
+      'Check whether the boss has connected their Retell AI account (API key). Returns configured:true/false and a masked key preview. Call this before trying to place calls.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'retell_list_phone_numbers',
+    description:
+      "List the phone numbers in the boss's Retell account that can be used as the caller (from_number) for outbound calls.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'retell_list_agents',
+    description:
+      "List the voice agents configured in the boss's Retell account. Use an agent_id from here as the brain for an outbound call.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'retell_create_phone_call',
+    description:
+      'Place ONE outbound phone call via the boss\'s Retell account. Confirm the target list is consent-based and within allowed calling hours before calling. Charges go to the boss\'s own Retell account.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from_number: { type: 'string', description: 'Caller number (E.164, e.g. +14157774444). Use retell_list_phone_numbers to find one.' },
+        to_number: { type: 'string', description: 'Number to call (E.164, e.g. +60123456789).' },
+        agent_id: { type: 'string', description: 'Optional Retell voice agent id to use for this call (override_agent_id).' },
+        dynamic_variables: { type: 'object', description: 'Optional key/value variables injected into the agent prompt (e.g. {"customer_name":"Ali"}).' },
+        metadata: { type: 'object', description: 'Optional metadata stored on the call (e.g. {"campaign":"june_promo"}).' },
+      },
+      required: ['from_number', 'to_number'],
+    },
+  },
+  {
+    name: 'retell_get_call',
+    description: 'Get the status and outcome of a previously placed call by call_id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        call_id: { type: 'string', description: 'The call_id returned by retell_create_phone_call.' },
+      },
+      required: ['call_id'],
+    },
+  },
   {
     name: 'list_web_accounts',
     description:
@@ -371,6 +417,10 @@ const TOOLS = [
       properties: {
         workflow_name: { type: 'string' },
         slow_mo_ms: { type: 'number' },
+        account_alias: {
+          type: 'string',
+          description: 'Optional saved web-account alias to log in with. Omit to use env PASSWORD as before.',
+        },
       },
       required: ['workflow_name'],
     },
@@ -383,6 +433,10 @@ const TOOLS = [
       properties: {
         workflow_name: { type: 'string' },
         excel_path: { type: 'string', description: 'Path to .csv or .json batch file' },
+        account_alias: {
+          type: 'string',
+          description: 'Optional saved web-account alias to log in with for every row.',
+        },
       },
       required: ['workflow_name', 'excel_path'],
     },
@@ -391,6 +445,24 @@ const TOOLS = [
     name: 'website_learn_list_workflows',
     description: 'List saved website learning workflows.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'notify_coo',
+    description: 'Write a task-completion report into the COO inbox (Materials/COO Inbox/_inbox). Use after finishing a delegated job.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short report title, e.g. "Airbnb 上传完成"' },
+        summary: { type: 'string', description: 'One- or two-sentence summary for the COO' },
+        account: { type: 'string', description: 'Account alias/display name used, if any' },
+        results: {
+          type: 'object',
+          description: 'Optional counts: { total, ok, failed, needs_human }',
+        },
+        details: { type: 'string', description: 'Optional longer detail / per-item notes (markdown)' },
+      },
+      required: ['title'],
+    },
   },
 ];
 
@@ -408,6 +480,10 @@ function fbEngine() {
 
 function websiteLearnEngine() {
   return require('./website-learn-engine');
+}
+
+function cooInbox() {
+  return require('./coo-inbox');
 }
 
 function colivingBaseUrl() {
@@ -504,6 +580,31 @@ function toolText(payload) {
 
 async function callTool(name, args = {}) {
   switch (name) {
+    case 'retell_status': {
+      return toolText(retellClient().status());
+    }
+    case 'retell_list_phone_numbers': {
+      const numbers = await retellClient().listPhoneNumbers();
+      return toolText({ phone_numbers: numbers });
+    }
+    case 'retell_list_agents': {
+      const agents = await retellClient().listAgents();
+      return toolText({ agents });
+    }
+    case 'retell_create_phone_call': {
+      const call = await retellClient().createPhoneCall({
+        fromNumber: args.from_number,
+        toNumber: args.to_number,
+        agentId: args.agent_id,
+        dynamicVariables: args.dynamic_variables,
+        metadata: args.metadata,
+      });
+      return toolText({ ok: true, call });
+    }
+    case 'retell_get_call': {
+      const call = await retellClient().getCall(args.call_id);
+      return toolText(call);
+    }
     case 'list_web_accounts': {
       return toolText({ accounts: webAccounts().listAgentAccounts() });
     }
@@ -791,6 +892,7 @@ async function callTool(name, args = {}) {
         await websiteLearnEngine().simulateOnce({
           workflow_name,
           slow_mo_ms: Number(args.slow_mo_ms) || 300,
+          account_alias: String(args.account_alias || '').trim() || null,
         }),
       );
     }
@@ -799,10 +901,29 @@ async function callTool(name, args = {}) {
       const excel_path = String(args.excel_path || '').trim();
       if (!workflow_name) throw new Error('workflow_name is required');
       if (!excel_path) throw new Error('excel_path is required');
-      return toolText(await websiteLearnEngine().batchRun({ workflow_name, excel_path }));
+      return toolText(
+        await websiteLearnEngine().batchRun({
+          workflow_name,
+          excel_path,
+          account_alias: String(args.account_alias || '').trim() || null,
+        }),
+      );
     }
     case 'website_learn_list_workflows': {
       return toolText({ workflows: websiteLearnEngine().listWorkflows() });
+    }
+    case 'notify_coo': {
+      const title = String(args.title || '').trim();
+      if (!title) throw new Error('title is required');
+      return toolText(
+        cooInbox().notifyCoo({
+          title,
+          summary: String(args.summary || ''),
+          account: String(args.account || ''),
+          results: args.results && typeof args.results === 'object' ? args.results : null,
+          details: String(args.details || ''),
+        }),
+      );
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

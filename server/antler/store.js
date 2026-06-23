@@ -83,6 +83,16 @@ const DEFAULT_SETTINGS = {
     installerComplete: false,
     aiConfigured: false,
     aiSkipped: false,
+    companySetupDone: false,
+  },
+  // Company profile collected during first-run wizard.
+  companyProfile: {
+    companyName: '',
+    industry: '',       // e-commerce | fnb | services | tech | retail | education | health | other
+    size: '',           // solo | small | medium | large
+    goals: [],          // accounting | marketing | content | sales | customer_service | admin | dev | hr
+    bossStyle: '',      // brief | detailed | warm | casual
+    shareInstallData: null, // null = not yet asked, true = opted in, false = opted out
   },
   // Boss-facing labels — shown in org chart, boss chat, portal, ECS heartbeat.
   office: {
@@ -102,6 +112,10 @@ const DEFAULT_SETTINGS = {
       futurePlanCompleted: [],
       primaryRepo: '',
     },
+  },
+  // Browser Agent settings — headless = background (no window), visible = boss can watch.
+  browserAgent: {
+    headless: false,
   },
   // Local dev pipeline (Cursor CLI + Codex CLI) — Plan A: AntlerOffice spawn, not OpenClaw MCP.
   dev: {
@@ -167,19 +181,13 @@ function mergeDefaults(s) {
   if (s.materials) out.materials = { ...out.materials, ...s.materials };
   if (s.defaultMcpPack) out.defaultMcpPack = { ...out.defaultMcpPack, ...s.defaultMcpPack };
   if (s.onboarding) out.onboarding = { ...out.onboarding, ...s.onboarding };
+  if (s.companyProfile) out.companyProfile = { ...out.companyProfile, ...s.companyProfile };
   if (s.office) {
     out.office = { ...out.office, ...s.office };
     if (s.office.models) out.office.models = { ...out.office.models, ...(s.office.models || {}) };
     if (s.office.companyFramework && typeof s.office.companyFramework === 'object') {
-      out.office.companyFramework = {
-        ...out.office.companyFramework,
-        ...s.office.companyFramework,
-      };
+      out.office.companyFramework = { ...(out.office.companyFramework || {}), ...s.office.companyFramework };
     }
-  }
-  if (s.dev) out.dev = { ...out.dev, ...s.dev };
-  if (typeof s.selectedOfficeId === 'string' || s.selectedOfficeId === null) {
-    out.selectedOfficeId = s.selectedOfficeId;
   }
   if (typeof s.activeDesktopId === 'string' || s.activeDesktopId === null) {
     out.activeDesktopId = s.activeDesktopId;

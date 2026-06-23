@@ -184,7 +184,7 @@ function onPageSizeChange(size: number) {
 
       <p v-else-if="!allRows.length" class="hint">
         No channels connected yet. Click <strong>Connect channel</strong> to add one. The usual setup is one channel
-        routed to your Secretary (and CEO when hired), who delegates to the team.
+        routed to your COO (and CEO when hired), who delegates to the team.
       </p>
 
       <p v-else-if="!pageRows.length" class="hint">

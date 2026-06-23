@@ -20,6 +20,7 @@ import { useAuthStore } from '@/stores/auth'
 import TtsSettingsCard from '@/components/settings/TtsSettingsCard.vue'
 import VoiceCloneSettingsCard from '@/components/settings/VoiceCloneSettingsCard.vue'
 import AppUpdateCard from '@/components/settings/AppUpdateCard.vue'
+import VoiceSetupWizard from '@/components/settings/VoiceSetupWizard.vue'
 import { ConnectionState } from '@/api/types'
 
 const themeStore = useThemeStore()
@@ -198,6 +199,7 @@ onMounted(() => {
       </NForm>
     </NCard>
 
+    <VoiceSetupWizard />
     <TtsSettingsCard card-class="app-card" />
     <VoiceCloneSettingsCard card-class="app-card" />
 

@@ -128,6 +128,64 @@ const LOCAL_SHORTCUTS = new Map([
   ['open settings', { action: 'open_settings' }],
 ]);
 
+function normalizeVoiceCommand(text) {
+  return String(text || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[,.!?；，。！？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchStartWorkIntent(text) {
+  const t = normalizeVoiceCommand(text);
+  if (!t) return false;
+  const exact = new Set([
+    'start work',
+    'start working',
+    'begin work',
+    '开始工作',
+    '开始上班',
+    '开始干活',
+    'good morning jarvis start work now',
+    'good morning jarvis',
+    'jarvis start work',
+    'jarvis start work now',
+    'hey jarvis start work',
+    '贾维斯开始工作',
+    'jarvis 开始工作',
+  ]);
+  if (exact.has(t)) return true;
+  return (
+    /^good morning jarvis\b/.test(t) ||
+    /^(hey |ok )?jarvis[,. ]+(start work|start working|begin work)/.test(t) ||
+    /^(贾维斯|jarvis)[,. ]*(开始工作|开始上班)/.test(t)
+  );
+}
+
+function startWorkAckText(honorific = 'boss', lang = 'en') {
+  const h = String(honorific || 'boss').trim() || 'boss';
+  if (lang === 'zh') {
+    return `好的，${h}。COO 已开始巡检待办，有进展会向您汇报。`;
+  }
+  return `Right away, ${h}. COO is scanning your queue — I'll report back with progress.`;
+}
+
+function detectCommandLang(text) {
+  return /[\u4e00-\u9fff]/.test(String(text || '')) ? 'zh' : 'en';
+}
+
+function tryStartWorkCommand(text, honorific = 'boss') {
+  if (!matchStartWorkIntent(text)) return null;
+  const lang = detectCommandLang(text);
+  return {
+    ok: true,
+    local: true,
+    action: 'start_work',
+    text: startWorkAckText(honorific, lang),
+  };
+}
+
 function matchLocalShortcut(text) {
   const t = String(text || '').trim().toLowerCase();
   for (const [phrase, cmd] of LOCAL_SHORTCUTS) {
@@ -138,9 +196,18 @@ function matchLocalShortcut(text) {
   return null;
 }
 
-function buildSystemPrompt({ personaEnabled, honorific, personaPrompt }) {
-  if (!personaEnabled) return '';
-  return voicePersona.buildJarvisPersonaSnippet(honorific || 'boss', personaPrompt);
+function buildSystemPrompt({ personaEnabled, honorific, personaPrompt, replyLanguage }) {
+  const langHintZh = '必须用简体中文回复。句子要短，适合朗读。';
+  const langHintEn = 'Always reply in English. Keep sentences short and spoken-aloud friendly.';
+  if (!personaEnabled) {
+    if (replyLanguage === 'zh') return langHintZh;
+    if (replyLanguage === 'en') return langHintEn;
+    return '';
+  }
+  const base = voicePersona.buildJarvisPersonaSnippet(honorific || 'boss', personaPrompt, replyLanguage);
+  if (replyLanguage === 'zh') return `${langHintZh}\n\n${base}`;
+  if (replyLanguage === 'en') return `${langHintEn}\n\n${base}`;
+  return base;
 }
 
 async function runVoiceCommand({
@@ -150,6 +217,7 @@ async function runVoiceCommand({
   personaEnabled = true,
   honorific = 'boss',
   personaPrompt,
+  replyLanguage,
   threadId,
   agentId = 'main',
 } = {}) {
@@ -160,6 +228,9 @@ async function runVoiceCommand({
   if (shortcut) {
     return { ok: true, local: true, action: shortcut.action, text: trimmed };
   }
+
+  const startWork = tryStartWorkCommand(trimmed, honorific);
+  if (startWork) return startWork;
 
   const pdf = tryStandupPdfCommand(trimmed);
   if (pdf?.async) {
@@ -176,7 +247,7 @@ async function runVoiceCommand({
 
   const secretaryAgentId = 'secretary';
   const activeThreadId = bossChat.resolveThreadId(secretaryAgentId, threadId, ownerKey, ownerName);
-  const system = buildSystemPrompt({ personaEnabled, honorific, personaPrompt });
+  const system = buildSystemPrompt({ personaEnabled, honorific, personaPrompt, replyLanguage });
 
   const result = await ocGatewayChat.run({
     instruction: trimmed,
@@ -203,6 +274,8 @@ async function runVoiceCommand({
 module.exports = {
   runVoiceCommand,
   matchLocalShortcut,
+  matchStartWorkIntent,
+  tryStartWorkCommand,
   buildSystemPrompt,
   matchStandupIntent,
   matchStandupPdfIntent,

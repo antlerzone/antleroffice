@@ -250,6 +250,11 @@ export class ApiClient {
       : '/api/health'
 
     const response = await fetch(url)
+    if (!response.ok) {
+      const hint = await response.text().catch(() => '')
+      console.error(`[ApiClient] health ${response.status}`, hint.slice(0, 200))
+      throw new Error(`Health check failed: ${response.status}`)
+    }
     return response.json()
   }
 

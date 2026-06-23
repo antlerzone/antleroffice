@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { useRouter } from 'vue-router'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, NTabs, NTabPane, NSwitch, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOfficeProfile } from '@/composables/useOfficeProfile'
 import { useLocalGateway } from '@/composables/useLocalGateway'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useBossStore } from '@/stores/boss'
-import SummonSettingsTab from '@/components/settings/SummonSettingsTab.vue'
-import VoiceSettingsTab from '@/components/settings/VoiceSettingsTab.vue'
-import PersonaSettingsTab from '@/components/settings/PersonaSettingsTab.vue'
-import DailyStandupSettingsTab from '@/components/settings/DailyStandupSettingsTab.vue'
-import CooHeartbeatSettingsTab from '@/components/settings/CooHeartbeatSettingsTab.vue'
+import VoiceAssistantSettingsTab from '@/components/settings/VoiceAssistantSettingsTab.vue'
 import CompanyFrameworkSettingsCard from '@/components/settings/CompanyFrameworkSettingsCard.vue'
 import DevToolsSettingsTab from '@/components/settings/DevToolsSettingsTab.vue'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
@@ -21,6 +18,7 @@ const PENDING_UNBIND_KEY = 'antleroffice-pending-unbind'
 
 const { t } = useI18n()
 const message = useMessage()
+const router = useRouter()
 const themeStore = useThemeStore()
 const boss = useBossStore()
 const { bossDisplayName, desktopDisplayName, cooModel, workerModel, hostname, load, save } = useOfficeProfile()
@@ -31,11 +29,36 @@ const loading = ref(true)
 const saving = ref(false)
 const reconnecting = ref(false)
 const localBindStatus = ref<'unbound' | 'owned_by_me' | 'owned_by_other'>('unbound')
+const modelOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadModelOptions() {
+  try {
+    const headers: Record<string, string> = boss.token ? { 'X-Boss-Token': boss.token } : {}
+    const res = await fetch('/api/openclaw/models?all=1', { headers })
+    const data = await res.json()
+    modelOptions.value = (data.models || [])
+      .map((m: { key?: string; name?: string; ref?: string }) => {
+        const val = m.key || m.ref || ''
+        return val ? { label: m.name || val, value: val } : null
+      })
+      .filter(Boolean)
+  } catch {
+    modelOptions.value = []
+  }
+}
+
+// Role-gated tabs: fetch hired agents to show/hide role-specific settings
+interface HiredAgent { id: string; name: string; role: string }
+const hiredAgents = ref<HiredAgent[]>([])
+const hasITAgent = computed(() =>
+  hiredAgents.value.some((a) => a.role === 'it' || a.role === 'it_junior' || a.role?.startsWith('it')),
+)
 
 const gatewayStatus = computed(() => {
-  if (localGateway.checking.value) return { label: 'Connecting…', type: 'info' as const }
-  if (localGateway.live.value) return { label: 'Connected', type: 'success' as const }
-  return { label: 'Disconnected', type: 'error' as const }
+  const g = 'pages.settings.voiceAssistant.general'
+  if (localGateway.checking.value) return { label: t(`${g}.gatewayConnecting`), type: 'info' as const }
+  if (localGateway.live.value) return { label: t(`${g}.gatewayConnected`), type: 'success' as const }
+  return { label: t(`${g}.gatewayDisconnected`), type: 'error' as const }
 })
 
 const themeOptions = computed(() => [
@@ -43,7 +66,46 @@ const themeOptions = computed(() => [
   { label: t('pages.settings.themeDark'), value: 'dark' },
 ])
 
-const autosaveTabs = new Set(['summon', 'voice', 'persona', 'standup', 'cooHeartbeat'])
+// Browser Agent settings
+const browserAgentHeadless = ref(false)
+const savingBrowserAgent = ref(false)
+
+async function loadBrowserAgentSettings() {
+  try {
+    const headers: Record<string, string> = boss.token ? { 'X-Boss-Token': boss.token } : {}
+    const res = await fetch('/api/browser-agent/settings', { headers })
+    if (res.ok) {
+      const data = await res.json()
+      browserAgentHeadless.value = !!data.headless
+    }
+  } catch { /* ignore */ }
+}
+
+async function saveBrowserAgentHeadless(val: boolean) {
+  savingBrowserAgent.value = true
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(boss.token ? { 'X-Boss-Token': boss.token } : {}),
+    }
+    await fetch('/api/browser-agent/settings', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ headless: val }),
+    })
+    browserAgentHeadless.value = val
+    message.success(val
+      ? t('pages.settings.voiceAssistant.general.browserAgentHeadless')
+      : t('pages.settings.voiceAssistant.general.browserAgentVisible')
+    )
+  } catch {
+    message.error('保存失败')
+  } finally {
+    savingBrowserAgent.value = false
+  }
+}
+
+const autosaveTabs = new Set(['voiceAssistant'])
 const showAutosaveBadge = computed(() => autosaveTabs.has(settingsTab.value))
 
 onMounted(async () => {
@@ -53,12 +115,28 @@ onMounted(async () => {
   try {
     await load()
     await loadLocalBindStatus()
+    await loadHiredAgents()
+    loadModelOptions()
+    loadBrowserAgentSettings()
   } catch (e) {
     message.error(e instanceof Error ? e.message : 'Could not load settings')
   } finally {
     loading.value = false
   }
 })
+
+async function loadHiredAgents() {
+  try {
+    const headers: Record<string, string> = boss.token ? { 'X-Boss-Token': boss.token } : {}
+    const res = await fetch('/api/config/agents', { headers })
+    const data = await res.json()
+    if (res.ok && Array.isArray(data.agents)) {
+      hiredAgents.value = data.agents.filter((a: HiredAgent) => a.role !== 'secretary' && a.role !== 'coo')
+    }
+  } catch {
+    // silently ignore — just won't show role-gated tabs
+  }
+}
 
 async function loadLocalBindStatus() {
   if (!boss.token) return
@@ -110,7 +188,7 @@ async function onSave() {
       cooModel: cooModel.value,
       workerModel: workerModel.value,
     })
-    message.success('Settings saved')
+    message.success(t('pages.settings.voiceAssistant.general.saveSuccess'))
   } catch (e) {
     message.error(e instanceof Error ? e.message : 'Could not save settings')
   } finally {
@@ -137,63 +215,112 @@ async function onSave() {
     <NSpin :show="loading">
       <NTabs v-model:value="settingsTab" type="line" animated class="settings-tabs">
         <NTabPane name="general" :tab="t('pages.settings.voiceAssistant.tabs.general')">
-          <NCard title="OpenClaw on this PC" class="office-settings-card">
+          <NCard :title="t('pages.settings.voiceAssistant.general.openclawTitle')" class="office-settings-card">
         <NSpace align="center" style="margin-bottom: 12px">
           <NTag :type="gatewayStatus.type">{{ gatewayStatus.label }}</NTag>
           <span v-if="localGateway.gatewayUrl" class="hint sm" style="margin: 0">{{ localGateway.gatewayUrl }}</span>
         </NSpace>
         <p class="hint sm">
-          AntlerOffice talks to your local OpenClaw gateway automatically. Use reconnect only if the header shows Disconnected.
+          {{ t('pages.settings.voiceAssistant.general.gatewayHint') }}
         </p>
-        <NButton :loading="reconnecting" style="margin-top: 12px" @click="reconnectOpenClaw">
-          Reconnect OpenClaw
-        </NButton>
+        <div v-show="!localGateway.live.value">
+          <p class="hint sm" style="color: #e8a838; margin-top: 6px">
+            {{ t('pages.settings.voiceAssistant.general.gatewayOfflineHint') }}
+          </p>
+          <NButton :loading="reconnecting" style="margin-top: 8px" @click="reconnectOpenClaw">
+            {{ t('pages.settings.voiceAssistant.general.reconnect') }}
+          </NButton>
+        </div>
         <div v-if="localBindStatus === 'owned_by_me'" style="margin-top: 16px">
           <NButton type="error" secondary @click="startUnbindFlow">
-            {{ t('routes.settingsUnbindThisComputer') }}
+            {{ t('pages.settings.voiceAssistant.general.unbind') }}
           </NButton>
-          <p class="hint sm">{{ t('routes.settingsUnbindHint') }}</p>
+          <p class="hint sm">{{ t('pages.settings.voiceAssistant.general.unbindHint') }}</p>
         </div>
       </NCard>
 
-      <NCard title="Office profile" class="office-settings-card">
+      <NCard :title="t('pages.settings.voiceAssistant.general.officeProfileTitle')" class="office-settings-card">
         <NForm label-placement="top" style="max-width: 480px">
-          <NFormItem label="CEO name (you)" :show-feedback="false">
+          <NFormItem :label="t('pages.settings.voiceAssistant.general.ceoName')" :show-feedback="false">
             <NInput
               v-model:value="bossDisplayName"
               maxlength="80"
-              placeholder="e.g. Alex · shown on org chart as CEO"
+              :placeholder="t('pages.settings.voiceAssistant.general.ceoNamePlaceholder')"
             />
           </NFormItem>
-          <NFormItem label="Desktop name" :show-feedback="false">
+          <NFormItem :label="t('pages.settings.voiceAssistant.general.desktopName')" :show-feedback="false">
             <NInput
               v-model:value="desktopDisplayName"
               maxlength="80"
-              :placeholder="hostname ? `Default: ${hostname}` : 'e.g. HQ MacBook · this computer'"
+              :placeholder="hostname ? `Default: ${hostname}` : t('pages.settings.voiceAssistant.general.desktopName')"
             />
           </NFormItem>
-          <NFormItem label="Default COO model" :show-feedback="false">
-            <NInput
+          <NFormItem :label="t('pages.settings.voiceAssistant.general.cooModel')" :show-feedback="false">
+            <NSelect
               v-model:value="cooModel"
-              placeholder="e.g. openai/gpt-4o (plan / brainstorm)"
+              filterable
+              tag
+              :options="modelOptions"
+              :placeholder="t('pages.settings.voiceAssistant.general.cooModelPlaceholder')"
+              style="width: 100%"
             />
           </NFormItem>
-          <NFormItem label="Default worker model" :show-feedback="false">
-            <NInput
+          <NFormItem :label="t('pages.settings.voiceAssistant.general.workerModel')" :show-feedback="false">
+            <NSelect
               v-model:value="workerModel"
-              placeholder="e.g. openai/gpt-4o-mini (department NPCs on hire)"
+              filterable
+              tag
+              :options="modelOptions"
+              :placeholder="t('pages.settings.voiceAssistant.general.workerModelPlaceholder')"
+              style="width: 100%"
             />
           </NFormItem>
           <NFormItem :show-label="false" class="office-settings-actions">
-            <NButton type="primary" :loading="saving" @click="onSave">Save</NButton>
+            <NButton type="primary" :loading="saving" @click="onSave">{{ t('pages.settings.voiceAssistant.general.save') }}</NButton>
           </NFormItem>
         </NForm>
         <p class="hint sm">
-          CEO name appears on Hierarchy and in chat. Default models apply when hiring COO vs department workers (override per agent in Agents → Set model).
+          {{ t('pages.settings.voiceAssistant.general.profileHint') }}
         </p>
       </NCard>
 
       <CompanyFrameworkSettingsCard card-class="office-settings-card" />
+
+      <!-- Browser Agent mode -->
+      <NCard :title="t('pages.settings.voiceAssistant.general.browserAgentTitle')" class="office-settings-card">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:16px;">
+          <div>
+            <p style="margin:0 0 4px; font-size:14px; font-weight:500;">
+              {{ browserAgentHeadless
+                ? t('pages.settings.voiceAssistant.general.browserAgentHeadless')
+                : t('pages.settings.voiceAssistant.general.browserAgentVisible') }}
+            </p>
+            <p style="margin:0; font-size:12px; color:var(--n-text-color-3);">
+              {{ browserAgentHeadless
+                ? t('pages.settings.voiceAssistant.general.browserAgentHeadlessDesc')
+                : t('pages.settings.voiceAssistant.general.browserAgentVisibleDesc') }}
+            </p>
+          </div>
+          <NSwitch
+            :value="browserAgentHeadless"
+            :loading="savingBrowserAgent"
+            @update:value="saveBrowserAgentHeadless"
+          >
+            <template #checked>{{ t('pages.settings.voiceAssistant.general.browserAgentBack') }}</template>
+            <template #unchecked>{{ t('pages.settings.voiceAssistant.general.browserAgentShow') }}</template>
+          </NSwitch>
+        </div>
+      </NCard>
+
+      <!-- SaaS Admin shortcut -->
+      <NCard :title="t('pages.settings.voiceAssistant.general.saasTitle')" class="office-settings-card">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <p style="margin:0; font-size:13px;">{{ t('pages.settings.voiceAssistant.general.saasDesc') }}</p>
+          </div>
+          <NButton @click="router.push({ name: 'SkillInstalls' })">{{ t('pages.settings.voiceAssistant.general.saasLink') }}</NButton>
+        </div>
+      </NCard>
 
       <NCard :title="t('pages.settings.appearanceSettings')" class="office-settings-card">
         <NForm label-placement="top" style="max-width: 480px">
@@ -208,27 +335,11 @@ async function onSave() {
       </NCard>
         </NTabPane>
 
-        <NTabPane name="summon" :tab="t('pages.settings.voiceAssistant.tabs.summon')">
-          <SummonSettingsTab card-class="office-settings-card" />
+        <NTabPane name="voiceAssistant" :tab="t('pages.settings.voiceAssistant.tabs.voiceAssistant')">
+          <VoiceAssistantSettingsTab card-class="office-settings-card" />
         </NTabPane>
 
-        <NTabPane name="voice" :tab="t('pages.settings.voiceAssistant.tabs.voice')">
-          <VoiceSettingsTab card-class="office-settings-card" />
-        </NTabPane>
-
-        <NTabPane name="persona" :tab="t('pages.settings.voiceAssistant.tabs.persona')">
-          <PersonaSettingsTab card-class="office-settings-card" />
-        </NTabPane>
-
-        <NTabPane name="standup" :tab="t('pages.settings.voiceAssistant.tabs.standup')">
-          <DailyStandupSettingsTab card-class="office-settings-card" />
-        </NTabPane>
-
-        <NTabPane name="cooHeartbeat" :tab="t('pages.settings.voiceAssistant.tabs.cooHeartbeat')">
-          <CooHeartbeatSettingsTab card-class="office-settings-card" />
-        </NTabPane>
-
-        <NTabPane name="devtools" tab="Dev tools">
+        <NTabPane v-if="hasITAgent" name="devtools" :tab="t('pages.settings.voiceAssistant.tabs.devtools')">
           <DevToolsSettingsTab card-class="office-settings-card" />
         </NTabPane>
       </NTabs>

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NSwitch, NText, NButton } from 'naive-ui'
+import { NCard, NSwitch, NText, NButton, NTag } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { useOfficeProfile } from '@/composables/useOfficeProfile'
+import { useAiSetupStore } from '@/stores/aiSetup'
 
 withDefaults(defineProps<{ cardClass?: string }>(), { cardClass: '' })
 
 const { t } = useI18n()
 const message = useMessage()
+const aiSetup = useAiSetupStore()
 const {
   frameworkEnabled,
   productName,
@@ -21,88 +23,91 @@ const {
   save,
 } = useOfficeProfile()
 
-async function onSaveFramework() {
+async function toggleEnabled() {
   try {
     await save({})
-    message.success(t('pages.settings.saveSuccess'))
   } catch (e) {
     message.error(e instanceof Error ? e.message : t('pages.settings.saveFailed'))
   }
 }
 
-const statusHint = computed(() =>
-  frameworkConfigured.value
-    ? t('pages.settings.companyFramework.configuredHint')
-    : t('pages.settings.companyFramework.missingHint'),
-)
+const rows = computed(() => [
+  { label: t('pages.settings.companyFramework.productName'), value: productName.value },
+  { label: t('pages.settings.companyFramework.productSummary'), value: productSummary.value },
+  { label: t('pages.settings.companyFramework.inScope'), value: inScopeText.value },
+  { label: t('pages.settings.companyFramework.outOfScope'), value: outOfScopeText.value },
+  { label: t('pages.settings.companyFramework.futurePlan'), value: futurePlanText.value },
+  { label: t('pages.settings.companyFramework.primaryRepo'), value: primaryRepo.value },
+].filter(r => r.value?.trim()))
 </script>
 
 <template>
   <NCard :title="t('pages.settings.companyFramework.title')" :class="cardClass">
-    <NText depth="3" style="display: block; margin-bottom: 12px">
-      {{ t('pages.settings.companyFramework.intro') }}
-    </NText>
-    <NForm label-placement="top" style="max-width: 640px">
-      <NFormItem :show-label="false">
-        <NSwitch v-model:value="frameworkEnabled" />
-        <NText style="margin-left: 8px">{{ t('pages.settings.companyFramework.enabled') }}</NText>
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.productName')" :show-feedback="false">
-        <NInput
-          v-model:value="productName"
-          maxlength="120"
-          :placeholder="t('pages.settings.companyFramework.productNamePlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.productSummary')" :show-feedback="false">
-        <NInput
-          v-model:value="productSummary"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 8 }"
-          :placeholder="t('pages.settings.companyFramework.productSummaryPlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.inScope')" :show-feedback="false">
-        <NInput
-          v-model:value="inScopeText"
-          type="textarea"
-          :autosize="{ minRows: 4, maxRows: 10 }"
-          :placeholder="t('pages.settings.companyFramework.inScopePlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.outOfScope')" :show-feedback="false">
-        <NInput
-          v-model:value="outOfScopeText"
-          type="textarea"
-          :autosize="{ minRows: 3, maxRows: 8 }"
-          :placeholder="t('pages.settings.companyFramework.outOfScopePlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.futurePlan')" :show-feedback="false">
-        <NInput
-          v-model:value="futurePlanText"
-          type="textarea"
-          :autosize="{ minRows: 4, maxRows: 12 }"
-          :placeholder="t('pages.settings.companyFramework.futurePlanPlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :label="t('pages.settings.companyFramework.primaryRepo')" :show-feedback="false">
-        <NInput
-          v-model:value="primaryRepo"
-          maxlength="500"
-          :placeholder="t('pages.settings.companyFramework.primaryRepoPlaceholder')"
-        />
-      </NFormItem>
-      <NFormItem :show-label="false">
-        <NButton type="primary" @click="onSaveFramework">{{ t('pages.settings.save') }}</NButton>
-      </NFormItem>
-    </NForm>
-    <p class="hint sm" :class="{ 'hint-warn': !frameworkConfigured }">{{ statusHint }}</p>
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px">
+      <NSwitch v-model:value="frameworkEnabled" @update:value="toggleEnabled" />
+      <NText>{{ t('pages.settings.companyFramework.enabled') }}</NText>
+      <NTag v-if="frameworkConfigured" type="success" size="small">Configured</NTag>
+      <NTag v-else type="warning" size="small">Not configured</NTag>
+    </div>
+
+    <div v-if="rows.length" class="framework-display">
+      <div v-for="row in rows" :key="row.label" class="framework-row">
+        <NText depth="3" class="framework-label">{{ row.label }}</NText>
+        <NText class="framework-value">{{ row.value }}</NText>
+      </div>
+    </div>
+    <div v-else style="margin-bottom: 12px">
+      <NText depth="3">{{ t('pages.settings.companyFramework.missingHint') }}</NText>
+    </div>
+
+    <div class="framework-hint-box">
+      <NText depth="3" style="font-size: 12px">
+        💬 To update, chat with COO — e.g. "Update our company profile: we build X for Y audience."
+      </NText>
+      <NButton
+        size="small"
+        secondary
+        style="margin-top: 8px"
+        @click="aiSetup.open()"
+      >
+        Re-run onboarding wizard
+      </NButton>
+    </div>
   </NCard>
 </template>
 
 <style scoped>
-.hint-warn {
-  color: #e8a838;
+.framework-display {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+  max-width: 640px;
+}
+.framework-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.framework-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.framework-value {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.framework-hint-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--n-color-embedded, rgba(128,128,128,0.06));
+  border: 1px solid var(--n-border-color, rgba(128,128,128,0.2));
+  margin-top: 4px;
 }
 </style>

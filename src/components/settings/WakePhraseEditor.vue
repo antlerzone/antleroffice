@@ -5,8 +5,6 @@ import {
   NText,
   NInput,
   NButton,
-  NCheckbox,
-  NCheckboxGroup,
   NTag,
   NIcon,
   NSpin,
@@ -19,12 +17,9 @@ import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettin
 import { useVoiceInput } from '@/composables/useVoiceInput'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import {
-  BUILTIN_WAKE_PHRASES,
   dedupeWakePhrases,
-  isBuiltinWakePhrase,
   mergeWakePhrase,
   normalizeWakePhrase,
-  splitWakePhrases,
 } from '@/constants/voiceAssistant'
 
 const props = withDefaults(
@@ -40,27 +35,14 @@ const api = useAntlerApi()
 const { settings, updateSummon } = useVoiceAssistantSettings()
 const { isRecording, isTranscribing, startRecording, stopRecording, transcribeBlob } = useVoiceInput()
 
-const draftPhrase = ref('')
-const showRecordModal = ref(false)
 const recordedPhrase = ref('')
 const recordedBlob = ref<Blob | null>(null)
+const showRecordModal = ref(false)
 const savingClip = ref(false)
 const playingClipId = ref<string | null>(null)
 let previewAudio: HTMLAudioElement | null = null
 
-const phraseOptions = computed(() =>
-  BUILTIN_WAKE_PHRASES.map((p) => ({ label: p, value: p })),
-)
-
-const builtinSelected = computed({
-  get: () => splitWakePhrases(settings.value.summon.wakePhrases).builtin,
-  set: (next: string[]) => {
-    const custom = splitWakePhrases(settings.value.summon.wakePhrases).custom
-    updateSummon({ wakePhrases: dedupeWakePhrases([...next, ...custom]) })
-  },
-})
-
-const customPhrases = computed(() => splitWakePhrases(settings.value.summon.wakePhrases).custom)
+const wakePhrases = computed(() => dedupeWakePhrases(settings.value.summon.wakePhrases))
 
 const clipByPhrase = computed(() => {
   const map = new Map<string, string>()
@@ -70,28 +52,7 @@ const clipByPhrase = computed(() => {
   return map
 })
 
-function setWakePhrases(next: string[]) {
-  updateSummon({ wakePhrases: dedupeWakePhrases(next) })
-}
-
-function addDraftPhrase() {
-  const phrase = normalizeWakePhrase(draftPhrase.value)
-  if (!phrase) {
-    message.warning(t('pages.settings.voiceAssistant.summon.wakePhraseEmpty'))
-    return
-  }
-  const before = settings.value.summon.wakePhrases.length
-  const merged = mergeWakePhrase(settings.value.summon.wakePhrases, phrase)
-  if (merged.length === before) {
-    message.info(t('pages.settings.voiceAssistant.summon.wakePhraseDuplicate'))
-    return
-  }
-  setWakePhrases(merged)
-  draftPhrase.value = ''
-  message.success(t('pages.settings.voiceAssistant.summon.wakePhraseAdded'))
-}
-
-function removeCustomPhrase(phrase: string) {
+function removePhrase(phrase: string) {
   const next = settings.value.summon.wakePhrases.filter(
     (p) => p.toLowerCase() !== phrase.toLowerCase(),
   )
@@ -126,7 +87,11 @@ async function finishWakeRecord() {
     recordedBlob.value = blob
     showRecordModal.value = true
   } catch (e) {
-    message.error(e instanceof Error ? e.message : t('pages.settings.voiceClone.micFailed'))
+    message.error(
+      e instanceof Error && e.message !== 'Transcription failed'
+        ? e.message
+        : t('pages.settings.voiceAssistant.summon.transcribeFailed'),
+    )
   }
 }
 
@@ -147,6 +112,12 @@ async function confirmRecordedPhrase() {
     message.warning(t('pages.settings.voiceAssistant.summon.wakePhraseEmpty'))
     return
   }
+  const before = settings.value.summon.wakePhrases.length
+  const merged = mergeWakePhrase(settings.value.summon.wakePhrases, phrase)
+  if (merged.length === before) {
+    message.info(t('pages.settings.voiceAssistant.summon.wakePhraseDuplicate'))
+    return
+  }
   savingClip.value = true
   try {
     let clipId: string | undefined
@@ -162,7 +133,6 @@ async function confirmRecordedPhrase() {
       )
       clipId = res.clip?.id
     }
-    const merged = mergeWakePhrase(settings.value.summon.wakePhrases, phrase)
     const clips = { ...(settings.value.summon.wakePhraseClips || {}) }
     if (clipId) clips[phrase] = clipId
     updateSummon({ wakePhrases: merged, wakePhraseClips: clips })
@@ -215,26 +185,13 @@ onUnmounted(() => {
       {{ t('pages.settings.voiceAssistant.summon.wakePhrasesHint') }}
     </NText>
 
-    <NText depth="2" style="display: block; margin-top: 12px; font-size: 13px">
-      {{ t('pages.settings.voiceAssistant.summon.builtinPhrases') }}
-    </NText>
-    <NCheckboxGroup v-model:value="builtinSelected" :disabled="disabled" style="margin-top: 8px">
-      <NSpace>
-        <NCheckbox v-for="opt in phraseOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
-      </NSpace>
-    </NCheckboxGroup>
-
-    <NText depth="2" style="display: block; margin-top: 16px; font-size: 13px">
-      {{ t('pages.settings.voiceAssistant.summon.customPhrases') }}
-    </NText>
-
-    <NSpace v-if="customPhrases.length" wrap style="margin-top: 8px">
+    <NSpace v-if="wakePhrases.length" wrap style="margin-top: 12px">
       <NTag
-        v-for="phrase in customPhrases"
+        v-for="phrase in wakePhrases"
         :key="phrase"
         closable
         :disabled="disabled"
-        @close="removeCustomPhrase(phrase)"
+        @close="removePhrase(phrase)"
       >
         <NSpace :size="4" align="center">
           <span>{{ phrase }}</span>
@@ -250,24 +207,14 @@ onUnmounted(() => {
         </NSpace>
       </NTag>
     </NSpace>
-    <NText v-else depth="3" style="display: block; margin-top: 8px; font-size: 13px">
-      {{ t('pages.settings.voiceAssistant.summon.noCustomPhrases') }}
+    <NText v-else depth="3" style="display: block; margin-top: 12px; font-size: 13px">
+      {{ t('pages.settings.voiceAssistant.summon.noWakePhrases') }}
     </NText>
 
-    <NSpace align="center" style="margin-top: 12px" wrap>
-      <NInput
-        v-model:value="draftPhrase"
-        :disabled="disabled"
-        :placeholder="t('pages.settings.voiceAssistant.summon.wakePhrasePlaceholder')"
-        style="width: min(360px, 100%)"
-        @keyup.enter="addDraftPhrase"
-      />
-      <NButton :disabled="disabled" @click="addDraftPhrase">
-        {{ t('pages.settings.voiceAssistant.summon.addWakePhrase') }}
-      </NButton>
+    <NSpace align="center" style="margin-top: 16px" wrap>
       <NSpin :show="isTranscribing" size="small">
         <NButton
-          :type="isRecording ? 'error' : 'default'"
+          :type="isRecording ? 'error' : 'primary'"
           :disabled="disabled || isTranscribing"
           @click="isRecording ? finishWakeRecord() : startWakeRecord()"
         >
@@ -277,7 +224,7 @@ onUnmounted(() => {
           {{
             isRecording
               ? t('pages.settings.voiceAssistant.summon.stopRecordWake')
-              : t('pages.settings.voiceAssistant.summon.recordWakePhrase')
+              : t('pages.settings.voiceAssistant.summon.addWakePhraseRecord')
           }}
         </NButton>
       </NSpin>

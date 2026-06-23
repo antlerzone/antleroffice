@@ -1,15 +1,17 @@
 // Minimal multi-provider LLM client using global fetch (Node 18+/Electron 35).
 // Each NPC's "brain" picks a provider; the client supplies the API key in Settings.
 
-async function callOpenAI({ apiKey, model, system, prompt }) {
+async function callOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, signal }) {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
+    signal,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       model: model || 'gpt-4o-mini',
+      max_tokens: maxTokens,
       messages: [
         { role: 'system', content: system || '' },
         { role: 'user', content: prompt },
@@ -19,6 +21,59 @@ async function callOpenAI({ apiKey, model, system, prompt }) {
   if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
+/** Stream OpenAI chat completions; onDelta(textChunk) for each content delta. */
+async function streamOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, onDelta, signal }) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    signal,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || 'gpt-4o-mini',
+      max_tokens: maxTokens,
+      stream: true,
+      messages: [
+        { role: 'system', content: system || '' },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+  if (!res.body) throw new Error('OpenAI stream body missing');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const json = JSON.parse(payload);
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) {
+          full += delta;
+          if (typeof onDelta === 'function') onDelta(delta);
+        }
+      } catch {
+        /* ignore partial SSE */
+      }
+    }
+  }
+  return full.trim();
 }
 
 async function callAnthropic({ apiKey, model, system, prompt }) {
@@ -98,4 +153,4 @@ function demoAnswer(prompt, note) {
   );
 }
 
-module.exports = { runBrain };
+module.exports = { runBrain, callOpenAI, streamOpenAI };

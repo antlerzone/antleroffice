@@ -177,9 +177,8 @@ async function runStandup({
       });
 
       const coo = orgRoles.cooAgentOrFallback();
-      const sec = orgRoles.findSecretary();
       const hostIntro =
-        `Good morning. This is ${sec?.label || 'your Secretary'}. ` +
+        `Good morning. This is ${coo?.label || 'your COO'}. ` +
         `Here is the ${reportPeriod.label} standup with ${sections.length} department report(s).`;
 
       const markdown = buildStandupMarkdown({
@@ -190,9 +189,9 @@ async function runStandup({
 
       const standupSections = [
         {
-          agentId: sec?.id || 'secretary',
-          role: 'secretary',
-          label: sec?.label || 'Secretary',
+          agentId: coo?.id || 'coo',
+          role: 'coo',
+          label: coo?.label || 'COO',
           text: hostIntro,
           voice: config.hostVoice || null,
         },
@@ -202,7 +201,7 @@ async function runStandup({
           role: 'coo',
           label: coo?.label || 'COO',
           text: String(cooSummaryText || '').trim() || '(No summary generated)',
-          voice: config.ceoVoice || null,
+          voice: config.hostVoice || null,
         },
       ];
 
@@ -300,7 +299,7 @@ async function runStandupFollowUp({
   const agent =
     (section.agentId && office.getAgent(section.agentId)) ||
     (section.role && office.getAgent(section.role)) ||
-    orgRoles.findSecretary();
+    orgRoles.cooAgentOrFallback();
 
   if (!agent) {
     const err = new Error('Agent for section not found');
@@ -330,7 +329,7 @@ async function runStandupFollowUp({
 
   registry.updateDeliverableProgress(deliverableId, { standupSections: sections });
 
-  const chatAgentId = agent.id || agent.role || section.role || 'secretary';
+  const chatAgentId = agent.id || agent.role || section.role || 'coo';
   try {
     const chatThreadId = bossChat.resolveThreadId(chatAgentId, threadId, ownerKey, ownerName);
     if (chatThreadId) {

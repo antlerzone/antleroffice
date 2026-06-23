@@ -54,8 +54,18 @@ function listOfficeStandupCandidates() {
   }));
 }
 
+// Voice output for standup now routes only through cloud TTS (ElevenLabs / Fish Audio).
+// `voiceId` = ElevenLabs voiceId or Fish Audio reference_id. API keys come from the
+// client's realtime voice-assistant settings and are passed per synthesis request.
 function defaultVoice() {
-  return { engine: 'edgetts', ttsVoice: '', profileId: '' };
+  return { engine: 'fishaudio', voiceId: '' };
+}
+
+function normalizeVoice(v) {
+  const engine = v?.engine === 'elevenlabs' ? 'elevenlabs' : 'fishaudio';
+  // tolerate legacy fields (ttsVoice/profileId) by ignoring them
+  const voiceId = String(v?.voiceId || '').trim();
+  return { engine, voiceId };
 }
 
 function normalizeParticipant(p, fallbackOrder = 0) {
@@ -68,11 +78,7 @@ function normalizeParticipant(p, fallbackOrder = 0) {
     label: p.label || agent?.label || dept?.label || 'Department',
     order: Number.isFinite(p.order) ? p.order : fallbackOrder,
     enabled: p.enabled !== false,
-    voice: {
-      engine: p.voice?.engine || defaultVoice().engine,
-      ttsVoice: p.voice?.ttsVoice || '',
-      profileId: p.voice?.profileId || '',
-    },
+    voice: normalizeVoice(p.voice),
   };
 }
 
@@ -125,16 +131,8 @@ function normalizeConfig(raw) {
       ? src.defaultPeriod
       : base.defaultPeriod,
     participants,
-    hostVoice: {
-      engine: src.hostVoice?.engine || base.hostVoice.engine,
-      ttsVoice: src.hostVoice?.ttsVoice || '',
-      profileId: src.hostVoice?.profileId || '',
-    },
-    ceoVoice: {
-      engine: src.ceoVoice?.engine || base.ceoVoice.engine,
-      ttsVoice: src.ceoVoice?.ttsVoice || '',
-      profileId: src.ceoVoice?.profileId || '',
-    },
+    hostVoice: normalizeVoice(src.hostVoice),
+    ceoVoice: normalizeVoice(src.ceoVoice),
     prompts: {
       department: String(src.prompts?.department || DEFAULT_PROMPTS.department),
       cooSummary: String(src.prompts?.cooSummary || src.prompts?.ceoSummary || DEFAULT_PROMPTS.ceoSummary),

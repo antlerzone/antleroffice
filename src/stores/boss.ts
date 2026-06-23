@@ -76,15 +76,23 @@ export const useBossStore = defineStore('boss', () => {
     }
     const res = await fetch(`/api/boss/auth/session?token=${encodeURIComponent(token.value)}`)
     const data = await res.json()
-    if (!data.ok) {
-      logout()
-      return false
+    if (data.ok) {
+      session.value = mapSession(data.session)
+      return true
     }
-    session.value = mapSession(data.session)
-    return true
+    // Server restarted — boss tokens are in-memory only; re-adopt ECS access token.
+    const cfg = await loadAuthConfig()
+    if (cfg.ecsEnabled) {
+      const { useEcsSessionStore } = await import('@/stores/ecsSession')
+      const ecs = useEcsSessionStore()
+      ecs.restoreFromStorage()
+      if (await ecs.refreshSession().catch(() => false)) return true
+    }
+    logout()
+    return false
   }
 
-  async function heartbeat() {
+  async function heartbeat(retry = true) {
     if (!token.value) return false
     try {
       const res = await fetch('/api/boss/heartbeat', {
@@ -96,7 +104,12 @@ export const useBossStore = defineStore('boss', () => {
         body: JSON.stringify({ token: token.value }),
       })
       const data = await res.json()
-      if (!data.ok) return false
+      if (!data.ok) {
+        if (retry && res.status === 401 && (await ensureSession())) {
+          return heartbeat(false)
+        }
+        return false
+      }
       if (data.session) session.value = mapSession(data.session)
       return true
     } catch {
@@ -135,7 +148,14 @@ export const useBossStore = defineStore('boss', () => {
   async function ensureSession() {
     if (await refreshSession()) return true
     const cfg = await loadAuthConfig()
-    if (cfg.ecsEnabled) return false
+    if (cfg.ecsEnabled) {
+      // Boss tokens live in server memory — after dev restart, re-adopt ECS access token.
+      const { useEcsSessionStore } = await import('@/stores/ecsSession')
+      const ecs = useEcsSessionStore()
+      ecs.restoreFromStorage()
+      if (await ecs.refreshSession().catch(() => false)) return true
+      return false
+    }
     try {
       await login('boss', 'boss')
       return true

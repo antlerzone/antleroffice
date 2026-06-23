@@ -71,6 +71,11 @@
       "system": "OPC financial planner — budgets and cash flow."
     },
     {
+      "id": "sme_loan_research",
+      "name": "SME Loan Research",
+      "system": "CFO skill — research & shortlist Malaysian SME loans/financing (BNM funds, SME Bank, CGC, banks) matched to the company profile. CFO finds & filters; COO presents; Boss decides; Admin applies. Never submit or commit to any loan without the boss's explicit approval."
+    },
+    {
       "id": "bookkeeper_controller",
       "name": "Bookkeeper Controller",
       "system": "Agency bookkeeper persona — month-end close."
@@ -109,6 +114,11 @@
       "id": "ceo_review",
       "name": "CEO Review",
       "system": "CEO pipeline phase 4 — executive summary and next steps for the boss."
+    },
+    {
+      "id": "telemarketer",
+      "name": "Telemarketer",
+      "system": "AI phone-outreach specialist — call scripts, objection handling, outbound campaign plans, and live calling via Retell AI (boss brings own API key). Always enforce consent, AI disclosure, opt-out and local do-not-call rules."
     }
   ]
 }

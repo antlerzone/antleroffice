@@ -42,15 +42,13 @@ export const useWebSocketStore = defineStore('websocket', () => {
   async function ensureGatewayAuth() {
     const authStore = useAuthStore()
     const bossStore = useBossStore()
+    await bossStore.ensureSession().catch(() => {})
     await authStore.checkAuthConfig()
     if (authStore.authEnabled) {
       const valid = await authStore.checkAuth().catch(() => false)
       if (!valid) {
         await authStore.login('admin', 'admin').catch(() => {})
       }
-    }
-    if (!bossStore.token) {
-      await bossStore.ensureSession().catch(() => {})
     }
   }
 

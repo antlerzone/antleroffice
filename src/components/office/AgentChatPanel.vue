@@ -52,6 +52,10 @@ const props = withDefaults(
     compact?: boolean
     /** Boss Chat plan mode — wrap outbound user text as a planning prompt */
     planMode?: boolean
+    /** Display name for the user (CEO name) — shown instead of "User" in compact mode */
+    userDisplayName?: string
+    /** Display name for the assistant (agent label e.g. "COO") — shown instead of "Assistant" in compact mode */
+    assistantDisplayName?: string
   }>(),
   {
     title: '',
@@ -59,6 +63,8 @@ const props = withDefaults(
     externalThreadId: '',
     compact: false,
     planMode: false,
+    userDisplayName: '',
+    assistantDisplayName: '',
   }
 )
 
@@ -1703,8 +1709,10 @@ const visibleMessageEntries = computed<RenderMessage[]>(() => {
   for (let idx = 0; idx < list.length; idx += 1) {
     const item = list[idx]
     if (!item) continue
-    
+
+    // In compact (Boss Chat) mode, hide all tool role messages
     if (item.role === 'tool') {
+      if (props.compact) continue
       const structured = parseToolResultMessage(item)
       if (structured) {
         rendered.push({
@@ -1715,10 +1723,14 @@ const visibleMessageEntries = computed<RenderMessage[]>(() => {
       }
       continue
     }
-    
+
     if (item.rawContent && Array.isArray(item.rawContent)) {
       const structured = parseRawContent(item.rawContent)
       if (structured && (structured.toolCalls.length > 0 || structured.thinkings.length > 0 || structured.toolResults.length > 0 || structured.plainTexts.length > 0)) {
+        // In compact mode, skip assistant messages that have only tool calls/results and no visible text
+        if (props.compact && item.role === 'assistant') {
+          if (structured.plainTexts.length === 0 && structured.images.length === 0) continue
+        }
         rendered.push({
           key: item.id || `${item.role}-${idx}`,
           item,
@@ -1727,7 +1739,7 @@ const visibleMessageEntries = computed<RenderMessage[]>(() => {
         continue
       }
     }
-    
+
     const structured = parseStructuredMessage(item.content)
     if (isThinkingOnlyStructuredMessage(structured)) continue
     rendered.push({
@@ -1944,8 +1956,8 @@ function roleType(role: string): 'default' | 'success' | 'info' | 'warning' {
 }
 
 function roleLabel(role: string): string {
-  if (role === 'user') return t('pages.chat.roles.user')
-  if (role === 'assistant') return t('pages.chat.roles.assistant')
+  if (role === 'user') return props.userDisplayName || t('pages.chat.roles.user')
+  if (role === 'assistant') return props.assistantDisplayName || t('pages.chat.roles.assistant')
   if (role === 'tool') return t('pages.chat.roles.tool')
   if (role === 'system') return t('pages.chat.roles.system')
   return role
@@ -2245,7 +2257,11 @@ watch(
               class="chat-bubble"
               :class="`is-${entry.item.role}`"
             >
-              <NSpace justify="space-between" align="center" class="chat-bubble-meta" :size="8">
+              <!-- Compact (Boss Chat) mode: simple name label only -->
+              <div v-if="compact" class="chat-bubble-name">{{ roleLabel(entry.item.role) }}</div>
+
+              <!-- Full mode: role tag + timestamp -->
+              <NSpace v-if="!compact" justify="space-between" align="center" class="chat-bubble-meta" :size="8">
                 <NSpace align="center" :size="6">
                   <NTag size="small" :type="roleType(entry.item.role)" :bordered="false" round>
                     {{ roleLabel(entry.item.role) }}
@@ -2260,7 +2276,8 @@ watch(
               </NSpace>
 
               <div v-if="entry.structured" class="structured-message-list">
-                <div v-if="entry.structured.toolCalls.length" class="tool-call-list">
+                <!-- Tool call/result sections — hidden in compact mode -->
+                <div v-if="!compact && entry.structured.toolCalls.length" class="tool-call-list">
                   <div
                     v-for="(tool, toolIndex) in entry.structured.toolCalls"
                     :key="`${entry.key}-tool-${toolIndex}`"
@@ -2302,7 +2319,7 @@ watch(
                   </div>
                 </div>
 
-                <div v-if="entry.structured.toolResults.length" class="tool-result-list">
+                <div v-if="!compact && entry.structured.toolResults.length" class="tool-result-list">
                   <div
                     v-for="(result, resultIndex) in entry.structured.toolResults"
                     :key="`${entry.key}-tool-result-${resultIndex}`"
@@ -2662,6 +2679,7 @@ watch(
               <template #icon><NIcon :component="StopCircleOutline" /></template>
               {{ t('pages.chat.actions.stop') }}
             </NButton>
+            <slot name="composer-actions" />
             <NButton size="small" type="primary" :loading="agentBusy" :disabled="agentBusy || !draft.trim()" @click="handleSend">
               <template #icon><NIcon :component="SendOutline" /></template>
               {{ t('pages.office.chat.send') }}
@@ -3034,6 +3052,7 @@ watch(
               <template #icon><NIcon :component="StopCircleOutline" /></template>
               {{ t('pages.chat.actions.stop') }}
             </NButton>
+            <slot name="composer-actions" />
             <NButton size="small" type="primary" :loading="agentBusy" :disabled="agentBusy || !draft.trim()" @click="handleSend">
               <template #icon><NIcon :component="SendOutline" /></template>
               {{ t('pages.office.chat.send') }}
@@ -3343,6 +3362,50 @@ watch(
 
 .chat-bubble-meta {
   margin-bottom: 8px;
+}
+
+/* ─── Compact (Boss Chat) WhatsApp-style bubbles ─── */
+.chat-panel-card--compact .message-list {
+  padding: 12px 10px;
+  gap: 6px;
+}
+
+.chat-panel-card--compact .chat-bubble {
+  max-width: 78%;
+  padding: 8px 12px 6px;
+  border-radius: 14px;
+}
+
+.chat-panel-card--compact .chat-bubble.is-user {
+  align-self: flex-end;
+  border-radius: 14px 14px 3px 14px;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.chat-panel-card--compact .chat-bubble.is-assistant {
+  align-self: flex-start;
+  border-radius: 3px 14px 14px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color, rgba(0,0,0,0.08));
+}
+
+.chat-bubble-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin-bottom: 4px;
+}
+
+.chat-panel-card--compact .chat-bubble.is-user .chat-bubble-name {
+  text-align: right;
+  color: #16a34a;
+}
+
+.chat-panel-card--compact .chat-bubble.is-assistant .chat-bubble-name {
+  color: #2563eb;
 }
 
 .chat-bubble-content-wrapper {

@@ -258,6 +258,16 @@ function isWorking(agent: UserAgent) {
   return npc?.npcState === 'working'
 }
 
+function agentDisplayName(agent: UserAgent) {
+  if (agent.role === 'secretary') return 'COO'
+  return agent.name
+}
+
+function agentDisplayRole(agent: UserAgent) {
+  if (agent.role === 'secretary') return 'coo'
+  return agent.role
+}
+
 function tokenLabel(openclawAgentId?: string | null, role?: string) {
   if (!connected.value) return '—'
   const stats = lookupTokens(openclawAgentId, role)
@@ -889,7 +899,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-show="agentTab === 'mine'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Your hired NPC employees plus built-in Secretary and CEO station. Salary auto-renews each billing period until you resign at contract end.
+          Your hired NPC employees plus built-in COO and CEO station. Salary auto-renews each billing period until you resign at contract end.
         </p>
         <div class="inline">
           <div class="seg">
@@ -1001,7 +1011,7 @@ onUnmounted(() => stopSkinPreviews())
                 </td>
                 <td class="agent-td-name">
                   <div class="agent-td-name-inner">
-                    <strong>{{ a.name }}</strong>
+                    <strong>{{ agentDisplayName(a) }}</strong>
                     <span class="pill" :class="{ ok: isWorking(a) }">{{ isWorking(a) ? 'Working' : 'Idle' }}</span>
                     <span v-if="a.payrollStatus === 'suspended'" class="tag warn">Suspended</span>
                     <span v-if="a.payrollStatus === 'pending_termination'" class="tag warn">
@@ -1009,7 +1019,7 @@ onUnmounted(() => stopSkinPreviews())
                     </span>
                   </div>
                 </td>
-                <td>{{ a.role }}</td>
+                <td>{{ agentDisplayRole(a) }}</td>
                 <td>{{ a.runtime }}</td>
                 <td class="agent-td-muted">{{ agentSalaryLabel(a) }}</td>
                 <td class="agent-td-muted">{{ contractEndLabel(a) }}</td>
@@ -1114,7 +1124,7 @@ onUnmounted(() => stopSkinPreviews())
             </div>
           </div>
           <div class="npc-market-body">
-            <h3 class="npc-market-name">{{ a.name }}</h3>
+            <h3 class="npc-market-name">{{ agentDisplayName(a) }}</h3>
             <div class="npc-market-tagline">
               <span class="npc-market-tagline-icon">◆</span>
               {{ a.role }} · {{ a.runtime }}
@@ -1184,7 +1194,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-if="agentTab === 'hierarchy'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Boss → Secretary (front door) → CEO (hire from Browse) → department workers.
+          Boss → COO (front door) → CEO (hire from Browse) → department workers.
         </p>
       </div>
       <OfficeOrgChart :snapshot="officeSnapshot" :user-agents="agents" />

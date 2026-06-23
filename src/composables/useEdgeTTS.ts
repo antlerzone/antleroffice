@@ -121,8 +121,13 @@ export function useEdgeTTS(options: UseEdgeTTSOptions = {}) {
         utterance.voice = voice
         console.log('[WebSpeechTTS] Using voice:', voice.name, '(' + voice.lang + ')')
       } else {
-        console.warn('[WebSpeechTTS] Voice not found:', voiceName, ', using default')
+        console.warn('[WebSpeechTTS] Voice not found:', voiceName, ', using lang fallback')
+        if (voiceName.startsWith('zh')) utterance.lang = 'zh-CN'
+        else if (voiceName.startsWith('en')) utterance.lang = 'en-US'
+        else if (/[\u4e00-\u9fff]/.test(text)) utterance.lang = 'zh-CN'
       }
+    } else if (/[\u4e00-\u9fff]/.test(text)) {
+      utterance.lang = 'zh-CN'
     }
 
     // 设置参数

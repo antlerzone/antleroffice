@@ -168,7 +168,7 @@ function resolveOpenClawAgentId(agentIdOrRole) {
   const agent = getAgent(agentIdOrRole);
   if (!agent || agent.external) return null;
   if (agent.openclawAgentId) return agent.openclawAgentId;
-  if (agent.role === 'secretary') return 'main';
+  if (agent.role === 'coo') return agent.openclawAgentId || 'main';
   return null;
 }
 

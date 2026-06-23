@@ -154,9 +154,14 @@ function registerEcsPortalAuthRoutes(app) {
   });
 
   app.get('/api/ecs/auth/desktop-pending', (_req, res) => {
-    const hit = desktopHandoff.takePending();
-    if (!hit) return res.json({ ok: true, pending: false });
-    res.json({ ok: true, pending: true, ...hit });
+    try {
+      const hit = desktopHandoff.takePending();
+      if (!hit) return res.json({ ok: true, pending: false });
+      res.json({ ok: true, pending: true, ...hit });
+    } catch (e) {
+      console.error('[ecs/auth] desktop-pending failed:', e);
+      res.status(500).json({ ok: false, error: e.message || 'desktop-pending failed' });
+    }
   });
 
   app.get('/api/ecs/auth/me', async (req, res) => {

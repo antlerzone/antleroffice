@@ -40,7 +40,11 @@ function clipAudioPath(id, ext = '.webm') {
 }
 
 function createClip({ phrase, buffer, mimeType, originalName }) {
-  const trimmed = String(phrase || '').trim();
+  const trimmed = String(phrase || '')
+    .trim()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!trimmed) throw new Error('phrase is required');
   if (!buffer?.length) throw new Error('audio is required');
 

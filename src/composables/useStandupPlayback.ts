@@ -41,8 +41,7 @@ function sectionVoiceOpts(section: DeliverableStandupSection, bargeIn = true): S
   if (!voice?.engine) return { bargeIn }
   return {
     engine: voice.engine as SpeakOptions['engine'],
-    ttsVoice: voice.ttsVoice,
-    profileId: voice.profileId,
+    voiceId: voice.voiceId,
     bargeIn,
   }
 }

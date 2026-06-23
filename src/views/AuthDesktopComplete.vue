@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NSpin, NText } from 'naive-ui'
 import { useEcsSessionStore } from '@/stores/ecsSession'
-import { isElectronApp } from '@/lib/desktop-shell'
+import { isElectronApp, isLocalDevHost } from '@/lib/desktop-shell'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,7 +27,7 @@ onMounted(async () => {
     await ecsSession.adoptAccessToken(accessToken)
     const next = String(route.query.next || '/portal')
     const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/portal'
-    if (isElectronApp()) {
+    if (isElectronApp() || isLocalDevHost()) {
       await router.replace(safeNext)
     } else {
       browserDone.value = true

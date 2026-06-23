@@ -23,6 +23,8 @@ export interface DeliverableStandupSection {
   text: string
   voice?: {
     engine?: string
+    /** ElevenLabs voiceId / Fish Audio reference_id */
+    voiceId?: string
     ttsVoice?: string
     profileId?: string
   } | null

@@ -4,9 +4,10 @@ import { useAntlerApi } from '@/composables/useAntlerApi'
 export type StandupPeriod = 'yesterday' | 'last_week' | 'last_7_days'
 
 export interface StandupParticipantVoice {
+  /** Cloud TTS engine: 'elevenlabs' | 'fishaudio' */
   engine: string
-  ttsVoice?: string
-  profileId?: string
+  /** ElevenLabs voiceId / Fish Audio reference_id */
+  voiceId?: string
 }
 
 export interface StandupParticipant {

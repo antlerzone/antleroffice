@@ -9,6 +9,24 @@
   --accent-2: #46d160;
 }
 
+/* Light-mode overrides — data-theme="light" on <html> */
+[data-theme="light"] .antler-v1-root {
+  --panel: var(--bg-card, #f4f6fa);
+  --panel-2: var(--bg-muted, #eaeef5);
+  --line: var(--border-color, rgba(0, 0, 0, 0.16));
+  --muted: var(--text-color-3, rgba(0, 0, 0, 0.45));
+  --text: var(--text-color, #1a1a2e);
+}
+
+/* Dark-mode explicit override (already the default but keeping for clarity) */
+[data-theme="dark"] .antler-v1-root {
+  --panel: var(--bg-card, #1e222d);
+  --panel-2: var(--bg-muted, #252a36);
+  --line: var(--border-color, rgba(255, 255, 255, 0.12));
+  --muted: var(--text-color-3, rgba(255, 255, 255, 0.55));
+  --text: var(--text-color, #e8eaed);
+}
+
 .antler-v1-root .btn {
   background: var(--accent);
   color: #1a1205;

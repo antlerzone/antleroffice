@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NSelect, NSpace, NText } from 'naive-ui'
+import { NSelect, NSpace, NText, NInput } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import { TTS_VOICE_PRESETS, type TtsEngine } from '@/constants/voiceAssistant'
 import type { StandupParticipant } from '@/composables/useDailyStandupSettings'
-import type { VoiceProfile } from '@/composables/useVoiceSettings'
 
 const props = defineProps<{
   participant: StandupParticipant
   disabled?: boolean
-  profiles: VoiceProfile[]
 }>()
 
 const emit = defineEmits<{
@@ -19,31 +16,16 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const engineOptions = computed(() => [
-  { label: t('pages.settings.voiceAssistant.voice.engineEdgetts'), value: 'edgetts' },
-  { label: t('pages.settings.voiceAssistant.voice.engineKokoro'), value: 'kokoro' },
-  { label: t('pages.settings.voiceAssistant.voice.engineCosyvoice'), value: 'cosyvoice' },
-  { label: t('pages.settings.voiceAssistant.voice.engineWebspeech'), value: 'webspeech' },
+  { label: 'Fish Audio', value: 'fishaudio' },
+  { label: 'ElevenLabs', value: 'elevenlabs' },
 ])
 
-const voiceOptions = computed(() => {
-  const engine = (props.participant.voice?.engine || 'edgetts') as TtsEngine
-  return TTS_VOICE_PRESETS.filter((p) => p.engine === engine).map((p) => ({
-    label: t(p.labelKey),
-    value: p.voice,
-  }))
-})
+const engine = computed(() => props.participant.voice?.engine || 'fishaudio')
+const voiceId = computed(() => props.participant.voice?.voiceId || '')
 
-const profileOptions = computed(() =>
-  props.profiles.map((p) => ({ label: p.name, value: p.id })),
-)
-
-function onEngineChange(engine: string) {
-  const preset = TTS_VOICE_PRESETS.find((p) => p.engine === engine)
-  emit('update', {
-    engine,
-    ttsVoice: preset?.voice || '',
-    profileId: engine === 'cosyvoice' ? props.participant.voice?.profileId || '' : '',
-  })
+function onEngineChange(value: string) {
+  // Keep the same voiceId when switching providers is rarely meaningful, so clear it.
+  emit('update', { engine: value, voiceId: '' })
 }
 </script>
 
@@ -51,32 +33,20 @@ function onEngineChange(engine: string) {
   <NSpace align="center" :size="8" wrap style="margin-left: auto">
     <NText depth="3" style="font-size: 12px">{{ t('pages.settings.voiceAssistant.standup.voiceLabel') }}</NText>
     <NSelect
-      :value="participant.voice?.engine || 'edgetts'"
+      :value="engine"
       :options="engineOptions"
       :disabled="disabled"
       size="small"
       style="width: 130px"
       @update:value="onEngineChange"
     />
-    <NSelect
-      v-if="participant.voice?.engine !== 'cosyvoice'"
-      :value="participant.voice?.ttsVoice || voiceOptions[0]?.value"
-      :options="voiceOptions"
-      :disabled="disabled || !voiceOptions.length"
+    <NInput
+      :value="voiceId"
+      :placeholder="t('pages.settings.voiceAssistant.standup.voiceIdPlaceholder')"
+      :disabled="disabled"
       size="small"
-      style="width: 180px"
-      @update:value="(v) => emit('update', { ttsVoice: v })"
-    />
-    <NSelect
-      v-else
-      :value="participant.voice?.profileId || null"
-      :options="profileOptions"
-      :placeholder="t('pages.settings.voiceAssistant.standup.clonePlaceholder')"
-      :disabled="disabled || !profileOptions.length"
-      clearable
-      size="small"
-      style="width: 180px"
-      @update:value="(v) => emit('update', { profileId: v || '' })"
+      style="width: 200px"
+      @update:value="(v: string) => emit('update', { voiceId: v.trim() })"
     />
   </NSpace>
 </template>

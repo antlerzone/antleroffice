@@ -371,6 +371,14 @@ function testAccount(alias) {
   return { ok: true, alias: hit.alias, status: hit.status };
 }
 
+function upsertAccount(accounts, record) {
+  const idx = accounts.findIndex((x) => x.alias === record.alias);
+  if (idx < 0) return [...accounts, record];
+  const next = [...accounts];
+  next[idx] = { ...accounts[idx], ...record, updatedAt: Date.now() };
+  return next;
+}
+
 function formatAgentBlock() {
   const list = listAgentAccounts();
   if (!list.length) return '';
@@ -380,6 +388,37 @@ function formatAgentBlock() {
     'Tools: `list_web_accounts`, `get_account(alias)`, `save_web_account(username, password, display_name)`. ' +
     'display_name is required (e.g. 妈妈家). When the boss gives credentials in chat, ask for display name if missing, then call save_web_account — never repeat the password in your reply.'
   );
+}
+
+/**
+ * Import an account captured via browser login (cookie-only; username/password optional).
+ * Used by the browser-capture flow where the boss logs in manually.
+ */
+function importBrowserAccount(body = {}) {
+  const accounts = readAll();
+  const displayName = resolveDisplayName(body);
+  const alias = inferAlias(body, accounts);
+
+  const record = normalizeRecord({
+    alias,
+    displayName,
+    username: encryptField(body.username || ''),
+    password: '',
+    otpSecret: '',
+    cookie: encryptField(body.cookie || ''),
+    website: typeof body.website === 'string' ? body.website.trim() : '',
+    websiteUrl: typeof body.websiteUrl === 'string' ? body.websiteUrl.trim() : '',
+    browserProfile: typeof body.browserProfile === 'string' ? body.browserProfile.trim() : '',
+    notes: typeof body.notes === 'string' ? body.notes : '',
+    status: 'active',
+    allowedActions: Array.isArray(body.allowedActions) ? body.allowedActions : [],
+    notes: typeof body.notes === 'string' ? body.notes.trim() : '',
+    status: 'active',
+  });
+
+  const updated = upsertAccount(accounts, record);
+  writeAll(updated);
+  return { ok: true, alias: record.alias };
 }
 
 module.exports = {
@@ -399,4 +438,5 @@ module.exports = {
   formatAgentBlock,
   validateAlias,
   normalizeAlias,
+  importBrowserAccount,
 };

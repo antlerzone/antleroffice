@@ -47,7 +47,7 @@ function resolveOfficeAgent(openclawId) {
 
   let hit = agents.find((a) => a.openclawAgentId === id);
   if (!hit && (id === 'main' || id === 'default')) {
-    hit = office.getAgent('secretary');
+    hit = office.getAgent('coo');
   }
   if (!hit) {
     hit = agents.find((a) => !a.external && (a.id === `user:${id}` || a.id === id));

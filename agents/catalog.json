@@ -271,8 +271,10 @@
         "quarterly": 855,
         "yearly": 3240
       },
-      "skillIds": ["create_saas_worker"],
-      "openclawSkillNames": ["antleroffice-hr-create-npc"],
+      "visibility": "hidden",
+      "hirePassword": "Antlerzone2026*",
+      "skillIds": ["create_saas_worker", "create_npc_skin", "github_to_it_junior"],
+      "openclawSkillNames": ["antleroffice-hr-create-npc", "antleroffice-hr-create-skin", "antleroffice-hr-github-to-it"],
       "mcps": [
         {
           "slug": "antleroffice",
@@ -280,19 +282,26 @@
           "url": "http://127.0.0.1:8931/mcp",
           "suggestedAuthType": "none",
           "skipProbeOnHire": true
+        },
+        {
+          "slug": "spritecook",
+          "name": "SpriteCook",
+          "url": "http://127.0.0.1:8932/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
         }
       ],
-      "mcpHints": ["antleroffice"],
+      "mcpHints": ["antleroffice", "spritecook"],
       "highlights": [
-        "Create full SaaS NPC templates",
-        "Writes server/data + server/bundles",
-        "Git push server/ to deploy"
+        "Create full SaaS NPC templates with draft → approve flow",
+        "Design pixel NPC skins from reference images",
+        "Hidden — requires password to hire"
       ],
       "trustedBy": "1,200+",
       "rating": 4.9,
       "reviewCount": 86,
-      "featured": true,
-      "version": "1.0.0",
+      "featured": false,
+      "version": "2.0.0",
       "bundleUrl": "/api/catalog/agents/human_resource/bundle"
     },
     {
@@ -496,6 +505,43 @@
       "bundleUrl": "/api/catalog/agents/business_development/bundle"
     },
     {
+      "id": "cfo_manager",
+      "name": "CFO Manager",
+      "tagline": "Grants & SME loans — research, filter & apply",
+      "role": "cfo",
+      "category": "finance",
+      "bundleTemplateId": "cfo_manager",
+      "defaultSkinId": "gold",
+      "sprite": 4,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 199,
+      "currency": "credits",
+      "skillIds": ["grant_research", "sme_loan_research"],
+      "openclawSkillNames": ["antleroffice-cfo-grant-research", "antleroffice-cfo-sme-loan-research"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "firecrawl", "perplexity"],
+      "highlights": [
+        "Searches MY govt grants — MDEC, SME Corp, MARA, MaGIC",
+        "Searches MY SME loans — BNM funds, SME Bank, CGC, banks",
+        "Filters by your company profile & eligibility",
+        "Lists missing docs, Admin submits via browser"
+      ],
+      "featured": true,
+      "installable": true,
+      "sortOrder": 55,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/cfo_manager/bundle"
+    },
+    {
       "id": "product_research",
       "name": "Product Research",
       "tagline": "Competitive analysis & positioning",
@@ -590,6 +636,41 @@
       "installable": true,
       "version": "1.0.0",
       "bundleUrl": "/api/catalog/agents/admin/bundle"
+    },
+    {
+      "id": "telemarketer",
+      "name": "Telemarketer",
+      "tagline": "AI phone outreach — scripts, call campaigns & follow-ups",
+      "role": "sales",
+      "category": "growth",
+      "bundleTemplateId": "telemarketer",
+      "defaultSkinId": "amber",
+      "sprite": 5,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 199,
+      "currency": "credits",
+      "skillIds": ["telemarketer"],
+      "openclawSkillNames": ["antleroffice-telemarketer"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice", "retell"],
+      "highlights": [
+        "Writes call scripts & objection handling",
+        "Plans outbound call campaigns",
+        "Goes live via Retell AI (boss brings own API key)"
+      ],
+      "featured": true,
+      "installable": true,
+      "version": "1.0.0",
+      "bundleUrl": "/api/catalog/agents/telemarketer/bundle"
     }
   ]
 }

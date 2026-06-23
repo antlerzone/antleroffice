@@ -27,13 +27,29 @@ export interface VoiceStatus {
     message?: string
     error?: string | null
   }
-  stt?: { available: boolean; engine: string }
+  stt?: {
+    available: boolean
+    engine: string
+    openclawOpenAiKeyConfigured?: boolean
+    sttKeyAvailable?: boolean
+    typewhisper?: { url: string; available: boolean }
+  }
   tts?: {
     available: boolean
     engine: string
     sidecarRunning?: boolean
     gpuReady?: boolean
     gpuRequired?: boolean
+  }
+  listener?: {
+    available: boolean
+    sidecarUp: boolean
+    wakeBackend?: string | null
+    wakeError?: string | null
+    clapDetectorActive?: boolean
+    clapThreshold?: number | null
+    peakRms?: number | null
+    config?: Record<string, unknown>
   }
 }
 
@@ -84,9 +100,8 @@ export function useVoiceSettings() {
   async function refreshStatus() {
     try {
       status.value = await api.get<VoiceStatus>('/api/voice/status')
-    } catch (e) {
-      status.value = null
-      throw e
+    } catch {
+      // Keep last known status; avoid uncaught rejections from background polls.
     }
   }
 

@@ -499,12 +499,17 @@ app.post('/api/config', authMiddleware, async (req, res) => {
 })
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    gateway: gateway.isConnected ? 'connected' : 'disconnected',
-    gatewayVersion: gateway.isConnected ? gatewayVersion : null,
-    clients: sseClients.size,
-  })
+  try {
+    res.json({
+      ok: true,
+      gateway: gateway?.isConnected ? 'connected' : 'disconnected',
+      gatewayVersion: gateway?.isConnected ? gatewayVersion : null,
+      clients: sseClients.size,
+    })
+  } catch (err) {
+    console.error('[health] failed:', err)
+    res.status(500).json({ ok: false, error: err?.message || 'health check failed' })
+  }
 })
 
 app.get('/api/npm/versions', async (req, res) => {
@@ -4133,7 +4138,7 @@ if (hasDist) {
   })
 }
 
-server.listen(envConfig.PORT, () => {
+function onServerListening() {
   console.log(`Server running on http://localhost:${envConfig.PORT}`)
   console.log(`OpenClaw Gateway: ${envConfig.OPENCLAW_WS_URL}`)
   if (isAuthEnabled()) {
@@ -4181,24 +4186,70 @@ server.listen(envConfig.PORT, () => {
   } catch (err) {
     console.error('[Backup] Failed to cleanup interrupted tasks:', err.message)
   }
-})
 
-process.on('SIGINT', () => {
-  console.log('\nShutting down...')
+  try {
+    const voiceSidecarManager = require('./antler/voice-sidecar-manager')
+    voiceSidecarManager.bootVoiceSidecars()
+  } catch (err) {
+    console.warn('[voice] sidecar boot:', err.message)
+  }
+}
+
+let listenAttempt = 0
+let binding = false
+
+function startHttpServer() {
+  if (binding) return
+  binding = true
+  server.setMaxListeners(Math.max(server.getMaxListeners(), 32))
+  const port = envConfig.PORT
+  const onError = (err) => {
+    binding = false
+    server.removeListener('error', onError)
+    if (err?.code === 'EADDRINUSE' && listenAttempt < 30) {
+      listenAttempt += 1
+      console.warn(`[server] Port ${port} busy — retry ${listenAttempt}/30 in 1s`)
+      setTimeout(() => {
+        try {
+          server.close(() => startHttpServer())
+        } catch {
+          startHttpServer()
+        }
+      }, 1000)
+      return
+    }
+    console.error('[server] Failed to listen:', err)
+    console.error('[server] Run: node scripts/kill-antleroffice-dev-ports.cjs  then npm run dev:server')
+    process.exit(1)
+  }
+  server.once('error', onError)
+  server.listen(port, () => {
+    binding = false
+    server.removeListener('error', onError)
+    listenAttempt = 0
+    onServerListening()
+  })
+}
+
+startHttpServer()
+
+function shutdownServer(signal) {
+  console.log(`\nShutting down (${signal})...`)
   cleanupAllTerminalSessions()
   gateway.disconnect()
+  if (typeof server.closeAllConnections === 'function') {
+    server.closeAllConnections()
+  }
+  const forceExit = setTimeout(() => {
+    console.warn('[server] Force exit after shutdown timeout')
+    process.exit(0)
+  }, 2000)
   server.close(() => {
+    clearTimeout(forceExit)
     console.log('Server closed')
     process.exit(0)
   })
-})
+}
 
-process.on('SIGTERM', () => {
-  console.log('\nShutting down (SIGTERM)...')
-  cleanupAllTerminalSessions()
-  gateway.disconnect()
-  server.close(() => {
-    console.log('Server closed')
-    process.exit(0)
-  })
-})
+process.on('SIGINT', () => shutdownServer('SIGINT'))
+process.on('SIGTERM', () => shutdownServer('SIGTERM'))

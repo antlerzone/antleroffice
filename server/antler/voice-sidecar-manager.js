@@ -20,6 +20,8 @@ const ALT_TTS_URL = (process.env.VOICE_ALT_TTS_URL || `http://${ALT_TTS_HOST}:${
 
 const COSYVOICE_REPO = 'https://github.com/FunAudioLLM/CosyVoice.git';
 const COSYVOICE_MODEL = process.env.COSYVOICE_MODEL || 'FunAudioLLM/Fun-CosyVoice3-0.5B-2512';
+/** CosyVoice clone TTS removed — EdgeTTS/Kokoro via alt-tts sidecar only. */
+const COSYVOICE_DISABLED = true;
 
 let ttsProcess = null;
 let altTtsProcess = null;
@@ -96,7 +98,7 @@ function bundledSidecarRoot() {
     path.join(__dirname, '..', 'voice-sidecar'),
   ];
   for (const p of candidates) {
-    if (fs.existsSync(path.join(p, 'cosyvoice_server.py'))) return p;
+    if (fs.existsSync(path.join(p, 'listener_server.py'))) return p;
   }
   return candidates[1];
 }
@@ -148,6 +150,7 @@ function setPhase(phase, message, error = null) {
 }
 
 async function probeHealth(timeoutMs = 2000) {
+  if (COSYVOICE_DISABLED) return { up: false, ready: false, disabled: true };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -424,6 +427,10 @@ async function waitForReady(timeoutMs = 45 * 60 * 1000) {
 }
 
 async function ensureCosyVoiceSidecar(opts = {}) {
+  if (COSYVOICE_DISABLED) {
+    stopCosyVoiceSidecar();
+    return { ok: false, disabled: true, error: 'CosyVoice has been removed from this build' };
+  }
   const force = opts.force === true;
 
   if (force) {
@@ -439,6 +446,12 @@ async function ensureCosyVoiceSidecar(opts = {}) {
   if (existing.ready) {
     setPhase('running', 'CosyVoice engine running');
     return { ok: true, alreadyRunning: true };
+  }
+
+  if (existing.up && !force) {
+    setPhase('starting', 'Loading CosyVoice model (first run downloads ~2–4 GB)');
+    await waitForReady();
+    return { ok: true, starting: true };
   }
 
   if (ttsProcess && !force) {
@@ -490,6 +503,18 @@ function ensureCosyVoiceSidecarAsync(opts = {}) {
 }
 
 function getSetupStatus() {
+  if (COSYVOICE_DISABLED) {
+    return {
+      phase: 'removed',
+      message: 'CosyVoice clone TTS removed — use EdgeTTS in Voice settings',
+      error: null,
+      engine: 'edgetts',
+      ttsUrl: ALT_TTS_URL,
+      bundledRoot: bundledSidecarRoot(),
+      runtimeRoot: runtimeRoot(),
+      processRunning: false,
+    };
+  }
   return {
     ...setupState,
     engine: 'cosyvoice',
@@ -559,24 +584,106 @@ function startAltTtsProcess(py) {
   });
 }
 
+function altTtsDepsMarker() {
+  return path.join(runtimeRoot(), '.alt-tts-deps-installed');
+}
+
 async function pipInstallAltTts(py) {
+  const marker = altTtsDepsMarker();
+  if (fs.existsSync(marker)) return;
   const req = path.join(bundledSidecarRoot(), 'requirements-alt-tts.txt');
   if (!fs.existsSync(req)) return;
+  pushLog('Installing alt-TTS Python deps (first run)', 'info');
   await runProcess(py, ['-m', 'pip', 'install', '-r', req, '--quiet', '--disable-pip-version-check']);
+  fs.writeFileSync(marker, new Date().toISOString(), 'utf8');
+}
+
+async function resolveAltTtsPython() {
+  if (fs.existsSync(venvPython())) return venvPython();
+  const base = await findSystemPython();
+  if (!base) return null;
+  fs.mkdirSync(runtimeRoot(), { recursive: true });
+  if (!fs.existsSync(venvPython())) {
+    await runProcess(base, ['-m', 'venv', venvDir()], { cwd: runtimeRoot() });
+  }
+  const vpy = venvPython();
+  if (!fs.existsSync(vpy)) return null;
+  await ensurePip(vpy);
+  await pipInstallAltTts(vpy);
+  return vpy;
+}
+
+async function synthesizeEdgeTtsDirect({ text, voice, rate }) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return { ok: false, error: 'Text is required' };
+  const py = await resolveAltTtsPython();
+  if (!py) {
+    return { ok: false, fallback: 'webspeech', error: 'Python 3.10–3.12 not found for EdgeTTS' };
+  }
+  const script = path.join(bundledSidecarRoot(), 'edgetts_once.py');
+  if (!fs.existsSync(script)) {
+    return { ok: false, fallback: 'webspeech', error: `Missing script: ${script}` };
+  }
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({
+      text: trimmed,
+      voice: String(voice || 'en-GB-RyanNeural'),
+      rate: Number(rate) || 1.0,
+    });
+    const child = spawn(py, [script], {
+      cwd: bundledSidecarRoot(),
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const chunks = [];
+    let stderr = '';
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      resolve({ ok: false, fallback: 'webspeech', error: 'EdgeTTS timed out' });
+    }, 90000);
+    child.stdout.on('data', (c) => chunks.push(c));
+    child.stderr.on('data', (c) => {
+      stderr += c.toString();
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, fallback: 'webspeech', error: e.message || 'EdgeTTS spawn failed' });
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && chunks.length) {
+        resolve({
+          ok: true,
+          buffer: Buffer.concat(chunks),
+          contentType: 'audio/mpeg',
+          engine: 'edgetts',
+        });
+        return;
+      }
+      resolve({
+        ok: false,
+        fallback: 'webspeech',
+        error: stderr.trim() || `EdgeTTS exited ${code}`,
+      });
+    });
+    child.stdin.write(payload);
+    child.stdin.end();
+  });
 }
 
 async function ensureAltTtsSidecar() {
   const existing = await probeAltTtsHealth();
   if (existing.ready) return { ok: true, alreadyRunning: true };
 
-  const py = fs.existsSync(venvPython()) ? venvPython() : await findSystemPython();
-  if (!fs.existsSync(venvPython())) {
-    fs.mkdirSync(runtimeRoot(), { recursive: true });
-    await runProcess(py, ['-m', 'venv', venvDir()], { cwd: runtimeRoot() });
+  const vpy = await resolveAltTtsPython();
+  if (!vpy) {
+    throw new Error('Python 3.10–3.12 not found for alt TTS sidecar');
   }
-  const vpy = venvPython();
-  await ensurePip(vpy);
-  await pipInstallAltTts(vpy);
   startAltTtsProcess(vpy);
 
   const started = Date.now();
@@ -603,15 +710,20 @@ function ensureAltTtsSidecarAsync() {
 }
 
 function bootVoiceSidecars() {
+  stopCosyVoiceSidecar();
   try {
     loadPersistedState();
   } catch {
     /* ignore */
   }
-  ensureCosyVoiceSidecarAsync().catch((e) => {
-    console.warn('[voice] auto-start failed:', e.message);
+  if (!COSYVOICE_DISABLED) {
+    ensureCosyVoiceSidecarAsync().catch((e) => {
+      console.warn('[voice] auto-start failed:', e.message);
+    });
+  }
+  ensureAltTtsSidecarAsync().catch((e) => {
+    console.warn('[voice/alt-tts] auto-start failed:', e.message);
   });
-  ensureAltTtsSidecarAsync().catch(() => {});
   try {
     const voiceListenerManager = require('./voice-listener-manager');
     voiceListenerManager.bootListenerSidecar();
@@ -626,6 +738,7 @@ module.exports = {
   ensureCosyVoiceSidecarAsync,
   ensureAltTtsSidecar,
   ensureAltTtsSidecarAsync,
+  synthesizeEdgeTtsDirect,
   getSetupStatus,
   stopCosyVoiceSidecar,
   probeHealth,

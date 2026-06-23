@@ -115,13 +115,19 @@ const synthesizingHintText = computed(() =>
     : t('pages.settings.voiceClone.synthesizingHint'),
 )
 const ttsAvailable = computed(() => status.value?.tts?.available === true)
-const cosySidecarRunning = computed(() => status.value?.tts?.sidecarRunning === true)
-const sttAvailable = computed(() => status.value?.stt?.available === true)
+const altTtsRunning = computed(() => status.value?.altTts?.available === true || ttsAvailable.value)
+const sttAvailable = computed(() => {
+  if (status.value?.stt?.available === true) return true
+  const va = assistantSettings.value.voiceApi
+  if (va.sttKeyAvailable || va.openclawOpenAiKeyConfigured) return true
+  if (va.sttApiKey?.trim() || va.hasSttKey) return true
+  return !!assistantSettings.value.realtime.openaiApiKey?.trim()
+})
 
 const activeProfile = computed(() => profiles.value.find((p) => p.id === activeId.value) || null)
 const needsRefText = computed(() => Boolean(activeProfile.value && !activeProfile.value.refText))
 const previewBusy = computed(() => isSynthesizing.value || (isLoading.value && !isPlaying.value))
-const lastPlayedEngine = ref<'cosyvoice' | 'kokoro' | 'edgetts' | 'webspeech' | null>(null)
+const lastPlayedEngine = ref<'kokoro' | 'edgetts' | 'webspeech' | null>(null)
 const playingRefId = ref<string | null>(null)
 const cloningProfileId = ref<string | null>(null)
 const isDownloading = ref(false)
@@ -213,37 +219,14 @@ const statusBadges = computed(() => {
     })
   }
 
-  if (gpuMeetsRequirements.value) {
-    if (cosySidecarRunning.value) {
-      items.push({
-        key: 'cosy',
-        type: 'success',
-        label: t('pages.settings.voiceClone.badgeCosy'),
-        tip: t('pages.settings.voiceClone.cosyReady'),
-      })
-    } else if (setupInProgress.value) {
-      items.push({
-        key: 'cosy',
-        type: 'info',
-        label: t('pages.settings.voiceClone.badgeCosy'),
-        tip: setupMessage.value || t('pages.settings.voiceClone.setupWait'),
-      })
-    } else if (setupFailed.value) {
-      items.push({
-        key: 'cosy',
-        type: 'warning',
-        label: t('pages.settings.voiceClone.badgeCosy'),
-        tip: status.value?.setup?.error || t('pages.settings.voiceClone.cosySetupFailed'),
-      })
-    } else {
-      items.push({
-        key: 'cosy',
-        type: 'warning',
-        label: t('pages.settings.voiceClone.badgeCosy'),
-        tip: t('pages.settings.voiceClone.cosyPending'),
-      })
-    }
-  }
+  items.push({
+    key: 'tts',
+    type: altTtsRunning.value ? 'success' : setupInProgress.value ? 'info' : 'warning',
+    label: 'EdgeTTS',
+    tip: altTtsRunning.value
+      ? t('pages.settings.voiceClone.cosyReady')
+      : setupMessage.value || t('pages.settings.voiceClone.cosyPending'),
+  })
 
   items.push({
     key: 'stt',
@@ -437,7 +420,7 @@ async function playProfileClone(profileId: string) {
     message.info(t('pages.settings.voiceClone.synthStarting', { text: previewText.value.slice(0, 40) }))
     await speak(previewText.value, { profileId })
     lastPlayedEngine.value = engine.value
-    if (engine.value === 'cosyvoice') {
+    if (engine.value === 'edgetts' || engine.value === 'kokoro') {
       message.success(t('pages.settings.voiceClone.previewCloneDone'))
     } else {
       message.warning(t('pages.settings.voiceClone.previewNotClone'))
@@ -462,14 +445,14 @@ async function downloadProfileClone(profileId: string) {
       {
         text: previewText.value.trim(),
         profileId,
-        engine: 'cosyvoice',
+        engine: 'edgetts',
       },
-      { timeoutMs: 300000 },
+      { timeoutMs: 120000 },
     )
     if (!('blob' in result)) {
       throw new Error('error' in result ? result.error : t('pages.settings.voiceClone.downloadFailed'))
     }
-    if (result.engine && result.engine !== 'cosyvoice') {
+    if (result.engine && result.engine !== 'edgetts' && result.engine !== 'kokoro') {
       message.warning(t('pages.settings.voiceClone.previewNotClone'))
       return
     }
@@ -547,7 +530,7 @@ function syncStatusPoll() {
     clearInterval(statusPollTimer)
     statusPollTimer = null
   }
-  if (setupInProgress.value || (gpuMeetsRequirements.value && !cosySidecarRunning.value && !setupFailed.value)) {
+  if (setupInProgress.value || (!altTtsRunning.value && !setupFailed.value)) {
     statusPollTimer = setInterval(() => {
       void refreshStatus()
     }, 3000)
@@ -577,7 +560,7 @@ async function loadVoicePanel() {
   syncStatusPoll()
 }
 
-watch([setupInProgress, cosySidecarRunning, setupFailed], () => syncStatusPoll())
+watch([setupInProgress, altTtsRunning, setupFailed], () => syncStatusPoll())
 
 onMounted(() => {
   void loadVoicePanel()
@@ -803,7 +786,7 @@ onUnmounted(() => {
           <NText v-if="isSynthesizing" depth="3" style="font-size: 13px; display: block; margin-top: 8px">
             {{ synthesizingHintText }}
           </NText>
-          <NText v-if="lastPlayedEngine === 'cosyvoice'" depth="3" style="font-size: 12px; display: block; margin-top: 8px">
+          <NText v-if="lastPlayedEngine === 'edgetts' || lastPlayedEngine === 'kokoro'" depth="3" style="font-size: 12px; display: block; margin-top: 8px">
             {{ t('pages.settings.voiceClone.lastEngineClone') }}
           </NText>
           <NText

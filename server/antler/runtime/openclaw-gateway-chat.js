@@ -101,10 +101,10 @@ function liveStatusFromMessages(messages) {
 function pushCooLiveStatus(messages) {
   try {
     const office = require('../office-state');
-    const sec = office.getAgent('secretary');
+    const coo = office.getAgent('coo');
     const { bubble, step } = liveStatusFromMessages(messages);
-    const label = sec?.currentJob?.label || '';
-    office.setAgent('secretary', {
+    const label = coo?.currentJob?.label || '';
+    office.setAgent('coo', {
       npcState: 'working',
       bubbleText: bubble,
       currentJob: { label, step, progress: 2, total: 2 },

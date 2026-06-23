@@ -177,7 +177,7 @@ function resolveNode(dept: RosterDept): OrgNode {
       return {
         role: dept.role,
         deptLabel: dept.label,
-        occupantName: user?.name || snap.label || 'Secretary',
+        occupantName: user?.name || snap.label || 'COO',
         npcState: snap.npcState === 'working' ? 'working' : 'idle',
         charSprite: snap.charSprite ?? user?.sprite ?? dept.charSprite,
         hueShift: snap.hueShift ?? user?.hueShift ?? 0,
@@ -389,7 +389,7 @@ defineExpose({ refresh })
     <template v-else>
       <div class="tab-toolbar org-toolbar">
         <p class="hint">
-          <strong>{{ resolvedDesktopName }}</strong> · CEO → Secretary → COO → departments.
+          <strong>{{ resolvedDesktopName }}</strong> · CEO → COO → departments.
           {{ filledDeptCount }} of {{ departmentGroups.length }} departments ·
           {{ hiredEmployeeCount }} employees hired.
         </p>
@@ -424,7 +424,7 @@ defineExpose({ refresh })
 
           <div class="org-connector org-connector-down" aria-hidden="true" />
 
-          <!-- Secretary (front door, below Boss) -->
+          <!-- COO (front door, below Boss) -->
           <div class="org-level org-level-leader">
             <article
               v-if="secretaryNode"
@@ -441,7 +441,7 @@ defineExpose({ refresh })
               </div>
               <div class="org-node-body">
                 <span class="org-node-dept">{{ secretaryNode.deptLabel }}</span>
-                <strong class="org-node-name">{{ secretaryNode.occupantName || 'Secretary' }}</strong>
+                <strong class="org-node-name">{{ secretaryNode.occupantName || 'COO' }}</strong>
                 <span class="tag built">Front door · OpenClaw main</span>
                 <span class="pill" :class="{ ok: secretaryNode.npcState === 'working' }">
                   {{ secretaryNode.npcState === 'working' ? 'Working' : 'Idle' }}
@@ -452,7 +452,7 @@ defineExpose({ refresh })
 
           <div class="org-connector org-connector-down" aria-hidden="true" />
 
-          <!-- CEO (below Secretary) -->
+          <!-- CEO (below COO) -->
           <div class="org-level org-level-leader">
             <article
               v-if="cooNode"

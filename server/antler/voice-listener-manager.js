@@ -3,6 +3,33 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const voiceSidecarManager = require('./voice-sidecar-manager');
+const wakeClipsStore = require('./wake-clips-store');
+
+function normalizeWakePhraseText(text) {
+  return String(text || '')
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\bhey\s*jarvis\b/gi, 'hey jarvis')
+    .replace(/\bhi\s*jarvis\b/gi, 'hi jarvis')
+    .toLowerCase()
+    .replace(/[^\w\s\u4e00-\u9fff]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Merge phrases saved with onboarding wake clips so STT match uses recorded text. */
+function mergeWakePhrasesFromClips(phrases) {
+  const merged = [...(phrases || [])];
+  const seen = new Set(merged.map((p) => normalizeWakePhraseText(p)).filter(Boolean));
+  for (const clip of wakeClipsStore.listClips()) {
+    const phrase = String(clip.phrase || '').trim();
+    const key = normalizeWakePhraseText(phrase);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(phrase);
+  }
+  return merged;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -16,10 +43,14 @@ const SERVER_CALLBACK = (process.env.VOICE_LISTENER_CALLBACK || `http://127.0.0.
 
 let listenerProcess = null;
 let setupPromise = null;
+let cachedHealth = { up: false, ready: false };
+let cachedHealthAt = 0;
+let healthProbePromise = null;
+const HEALTH_CACHE_MS = 1200;
 
 const listenerConfig = {
   globalListenEnabled: true,
-  wakePhrases: ['Hey Antler', 'Jarvis', '你好 Antler', '贾维斯'],
+  wakePhrases: ['Hey Jarvis', 'Hi Jarvis'],
   idleTimeoutSec: 300,
   wakeEngine: 'openwakeword',
   sensitivity: 0.5,
@@ -27,9 +58,13 @@ const listenerConfig = {
   personaEnabled: true,
   honorific: 'boss',
   personaPrompt: '',
+  replyLanguage: 'auto',
   ownerKey: 'local:boss',
   ownerName: 'Boss',
   autoDispatch: true,
+  inputDeviceIndex: null,
+  replyLanguage: 'auto',
+  realtimeSessionActive: false,
 };
 
 const eventSubscribers = new Set();
@@ -59,19 +94,43 @@ function listenerScript() {
   return path.join(bundledSidecarRoot(), 'listener_server.py');
 }
 
-async function probeListenerHealth(timeoutMs = 2000) {
+async function fetchListenerHealth(timeoutMs = 1500) {
+  const now = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${LISTENER_URL}/health`, { signal: ctrl.signal });
-    if (!res.ok) return { up: false, ready: false };
+    if (!res.ok) {
+      cachedHealth = { up: false, ready: false };
+      cachedHealthAt = now;
+      return cachedHealth;
+    }
     const data = await res.json();
-    return { up: true, ready: data.ready === true, data };
+    cachedHealth = { up: true, ready: data.ready === true, data };
+    cachedHealthAt = now;
+    return cachedHealth;
   } catch {
-    return { up: false, ready: false };
+    cachedHealth = { up: false, ready: false, stale: cachedHealthAt > 0 };
+    cachedHealthAt = now;
+    return cachedHealth;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function probeListenerHealth(timeoutMs = 1500, opts = {}) {
+  const force = opts.force === true;
+  const now = Date.now();
+  if (!force && now - cachedHealthAt < HEALTH_CACHE_MS) {
+    return cachedHealth;
+  }
+  if (healthProbePromise) {
+    return healthProbePromise;
+  }
+  healthProbePromise = fetchListenerHealth(timeoutMs).finally(() => {
+    healthProbePromise = null;
+  });
+  return healthProbePromise;
 }
 
 function startListenerProcess(py) {
@@ -87,6 +146,8 @@ function startListenerProcess(py) {
       VOICE_LISTENER_HOST: LISTENER_HOST,
       VOICE_LISTENER_CALLBACK: SERVER_CALLBACK,
       PYTHONUNBUFFERED: '1',
+      VOICE_MIC_GAIN: process.env.VOICE_MIC_GAIN || '8',
+      VOICE_MAX_TOTAL_GAIN: process.env.VOICE_MAX_TOTAL_GAIN || '64',
     },
     stdio: 'pipe',
     windowsHide: true,
@@ -105,30 +166,100 @@ function startListenerProcess(py) {
   });
 }
 
+const DEFAULT_LISTENER_WAKE_PHRASES = ['Hey Jarvis', 'Hi Jarvis'];
+
+function mergeDefaultWakePhrases(phrases) {
+  const merged = [...(phrases || [])];
+  const seen = new Set(merged.map((p) => normalizeWakePhraseText(p)).filter(Boolean));
+  for (const phrase of DEFAULT_LISTENER_WAKE_PHRASES) {
+    const key = normalizeWakePhraseText(phrase);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(phrase);
+  }
+  return merged;
+}
+
+/** True when STT text is only wake phrases (echo / prompt bleed) — not a command. */
+function isWakeOnlyPhrase(text, phrases) {
+  const list = mergeDefaultWakePhrases(mergeWakePhrasesFromClips(phrases || listenerConfig.wakePhrases || []));
+  let norm = normalizeWakePhraseText(text);
+  if (!norm) return true;
+  const sorted = [...list].map((p) => normalizeWakePhraseText(p)).filter(Boolean).sort((a, b) => b.length - a.length);
+  let changed = true;
+  while (changed && norm) {
+    changed = false;
+    for (const p of sorted) {
+      if (norm === p) {
+        norm = '';
+        changed = true;
+        break;
+      }
+      if (norm.startsWith(`${p} `)) {
+        norm = norm.slice(p.length).trim();
+        changed = true;
+        break;
+      }
+      if (` ${norm} `.includes(` ${p} `)) {
+        norm = norm.replace(new RegExp(`\\b${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), ' ').replace(/\s+/g, ' ').trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+  return !norm;
+}
+
 async function pushConfigToListener() {
   const health = await probeListenerHealth();
-  if (!health.up) return;
-  try {
-    await fetch(`${LISTENER_URL}/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(listenerConfig),
-    });
-  } catch {
-    /* ignore */
+  if (!health.up) return false;
+  const config = {
+    ...listenerConfig,
+    wakePhrases: mergeDefaultWakePhrases(mergeWakePhrasesFromClips(listenerConfig.wakePhrases || [])),
+    realtimeSessionActive: listenerConfig.realtimeSessionActive === true,
+  };
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const res = await fetch(`${LISTENER_URL}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      if (res.ok) {
+        console.log('[voice/listener] config pushed', {
+          wakeBackend: config.wakeEngine,
+          wakePhrases: config.wakePhrases,
+          attempt,
+        });
+        return true;
+      }
+      console.warn('[voice/listener] config push HTTP', res.status, attempt);
+    } catch (e) {
+      console.warn('[voice/listener] config push failed:', e.message, `(attempt ${attempt})`);
+    }
+    await new Promise((r) => setTimeout(r, 400 * attempt));
   }
+  return false;
 }
 
 async function ensureListenerDeps(py) {
   const req = path.join(bundledSidecarRoot(), 'requirements-listener.txt');
   if (!fs.existsSync(req)) return;
-  try {
-    await execFileAsync(py, ['-m', 'pip', 'install', '-q', '-r', req], {
-      cwd: bundledSidecarRoot(),
-      windowsHide: true,
-    });
-  } catch (e) {
-    console.warn('[voice/listener] pip install:', e.message);
+  // Install each package individually so one failure doesn't block the rest
+  const lines = fs.readFileSync(req, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  for (const pkg of lines) {
+    try {
+      await execFileAsync(py, ['-m', 'pip', 'install', '-q', pkg], {
+        cwd: bundledSidecarRoot(),
+        windowsHide: true,
+      });
+      console.log(`[voice/listener] installed: ${pkg}`);
+    } catch (e) {
+      console.warn(`[voice/listener] pip install ${pkg} failed (non-fatal):`, e.message);
+    }
   }
 }
 
@@ -175,7 +306,18 @@ function ensureListenerSidecarAsync() {
 }
 
 function updateListenerConfig(patch) {
-  Object.assign(listenerConfig, patch || {});
+  const next = { ...(patch || {}) };
+  if (Array.isArray(next.wakePhrases) || wakeClipsStore.listClips().length) {
+    next.wakePhrases = mergeWakePhrasesFromClips(next.wakePhrases || listenerConfig.wakePhrases || []);
+  }
+  Object.assign(listenerConfig, next);
+  cachedHealthAt = 0;
+  console.log('[voice/listener] config sync', {
+    wakeEngine: listenerConfig.wakeEngine,
+    wakePhrases: listenerConfig.wakePhrases,
+    globalListenEnabled: listenerConfig.globalListenEnabled,
+    clipCount: wakeClipsStore.listClips().length,
+  });
   void pushConfigToListener();
   return { ...listenerConfig };
 }
@@ -186,6 +328,13 @@ function getListenerConfig() {
 
 function publishListenerEvent(event) {
   const payload = { ...event, at: Date.now() };
+  if (payload.type === 'wake') {
+    console.log('[summon] publish wake → SSE', {
+      phrase: payload.phrase || null,
+      source: payload.source || 'listener',
+      mode: payload.mode || 'active',
+    });
+  }
   for (const fn of eventSubscribers) {
     try {
       fn(payload);
@@ -251,6 +400,9 @@ function clearStandupPlaybackState() {
 }
 
 function bootListenerSidecar() {
+  listenerConfig.wakePhrases = mergeDefaultWakePhrases(
+    mergeWakePhrasesFromClips(listenerConfig.wakePhrases || []),
+  );
   if (listenerConfig.globalListenEnabled) {
     ensureListenerSidecarAsync().catch(() => {});
   }
@@ -271,4 +423,5 @@ module.exports = {
   getStandupPlaybackState,
   setStandupPlaybackState,
   clearStandupPlaybackState,
+  isWakeOnlyPhrase,
 };

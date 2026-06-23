@@ -56,7 +56,7 @@ const form = ref({
 
 function agentLabel(job: CronJob) {
   const id = job.agentId || 'main'
-  if (id === 'main' || id === 'secretary') return 'Secretary'
+  if (id === 'main' || id === 'secretary') return 'COO'
   const hit = agents.value.find((a) => a.openclawAgentId === id || a.id === id)
   return hit?.name || id
 }
@@ -129,7 +129,7 @@ const filteredJobs = computed(() => {
 })
 
 function ocAgentOptions() {
-  const opts = [{ label: 'Secretary (main)', value: 'main' }]
+  const opts = [{ label: 'COO (main)', value: 'main' }]
   for (const a of agents.value) {
     if (a.openclawAgentId) {
       opts.push({ label: a.name, value: a.openclawAgentId })
@@ -232,7 +232,7 @@ onMounted(() => refresh())
     </div>
 
     <p class="hint">
-      Recurring work for your agents — e.g. daily report through Secretary or CEO. Finished runs appear as summaries in Complete Job.
+      Recurring work for your agents — e.g. daily report through COO or CEO. Finished runs appear as summaries in Complete Job.
     </p>
 
     <div v-if="available && (jobs.length || loading)" class="schedule-toolbar">
@@ -290,7 +290,7 @@ onMounted(() => refresh())
     <p v-if="loading && !jobs.length" class="hint">Loading schedules…</p>
     <p v-else-if="!available" class="hint">OpenClaw isn't available. Install it in Settings first.</p>
     <p v-else-if="!jobs.length" class="hint">
-      No schedules yet. Click <strong>Add schedule</strong> to assign recurring work (e.g. daily report via Secretary).
+      No schedules yet. Click <strong>Add schedule</strong> to assign recurring work (e.g. daily report via COO).
     </p>
     <p v-else-if="!filteredJobs.length" class="hint">
       No schedules match your search or filter.
@@ -340,7 +340,7 @@ onMounted(() => refresh())
     </div>
 
     <NModal v-model:show="addOpen" preset="card" title="Add schedule" style="max-width: 520px">
-      <p class="hint">Assign recurring work. Most offices route through Secretary, then CEO delegates to specialists.</p>
+      <p class="hint">Assign recurring work. Most offices route through COO, then CEO delegates to specialists.</p>
       <label class="modal-label">Job name</label>
       <input v-model="form.name" type="text" class="field" placeholder="e.g. Daily report" />
       <label class="modal-label">Agent</label>

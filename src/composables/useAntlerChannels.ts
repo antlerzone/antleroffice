@@ -81,7 +81,7 @@ export function useAntlerChannels() {
   const waStatusMap = ref<Record<string, WaStatus>>({})
   const gatewayUp = ref(false)
   const gatewayStarting = ref(false)
-  const secretaryLabel = ref('Secretary')
+  const secretaryLabel = ref('COO')
 
   const viewMode = ref<'list' | 'grid'>(
     localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list',

@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
+import { useBossStore } from '@/stores/boss'
 
 const AUTH_TOKEN_KEY = 'auth_token'
 
@@ -44,24 +45,31 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function checkAuth(): Promise<boolean> {
-    if (!token.value) return false
-    
-    try {
-      const response = await fetch('/api/auth/check', {
-        headers: {
-          'Authorization': `Bearer ${token.value}`,
-        },
-      })
-      
-      if (response.ok) {
-        return true
-      } else {
-        setToken(null)
+    const bossStore = useBossStore()
+    await bossStore.ensureSession().catch(() => {})
+
+    async function probe(headers: Record<string, string>): Promise<boolean> {
+      try {
+        const response = await fetch('/api/auth/check', { headers })
+        return response.ok
+      } catch {
         return false
       }
-    } catch {
-      return false
     }
+
+    // ECS boss token (accepted by authMiddleware via X-Boss-Token)
+    if (bossStore.token && (await probe({ 'X-Boss-Token': bossStore.token }))) {
+      return true
+    }
+
+    if (!token.value) return false
+
+    if (await probe({ Authorization: `Bearer ${token.value}` })) {
+      return true
+    }
+
+    setToken(null)
+    return false
   }
 
   async function login(username: string, password: string): Promise<boolean> {

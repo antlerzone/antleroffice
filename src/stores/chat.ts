@@ -1095,7 +1095,7 @@ export const useChatStore = defineStore('chat', () => {
                 id: assistantId,
                 role: 'assistant',
                 content: intakeData.reply,
-                name: 'Secretary',
+                name: 'COO',
                 timestamp: new Date().toISOString(),
               },
             ]

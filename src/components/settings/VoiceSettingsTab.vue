@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import {
   NCard,
   NSpace,
@@ -12,20 +12,33 @@ import {
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
-import { TTS_VOICE_PRESETS } from '@/constants/voiceAssistant'
-import VoiceCloneSettingsCard from '@/components/settings/VoiceCloneSettingsCard.vue'
+import { TTS_VOICE_PRESETS, type TtsEngine, type ReplyLanguage } from '@/constants/voiceAssistant'
+import VoiceApiKeyCard from '@/components/settings/VoiceApiKeyCard.vue'
+import VoiceSetupWizard from '@/components/settings/VoiceSetupWizard.vue'
 
-withDefaults(defineProps<{ cardClass?: string }>(), { cardClass: '' })
+const props = withDefaults(
+  defineProps<{ cardClass?: string; section?: 'full' | 'core' | 'advanced' }>(),
+  { cardClass: '', section: 'full' },
+)
 
-const { t } = useI18n()
-const { settings, updateVoice } = useVoiceAssistantSettings()
+const { t, locale } = useI18n()
+const showCore = computed(() => props.section === 'full' || props.section === 'core')
+const showAdvanced = computed(() => props.section === 'full' || props.section === 'advanced')
+const { settings, updateVoice, applyReplyLanguageChange } = useVoiceAssistantSettings()
 
-const engineOptions = computed(() => [
-  { label: t('pages.settings.voiceAssistant.voice.engineCosyvoice'), value: 'cosyvoice' },
-  { label: t('pages.settings.voiceAssistant.voice.engineKokoro'), value: 'kokoro' },
-  { label: t('pages.settings.voiceAssistant.voice.engineEdgetts'), value: 'edgetts' },
-  { label: t('pages.settings.voiceAssistant.voice.engineWebspeech'), value: 'webspeech' },
-])
+const CORE_ENGINES: TtsEngine[] = ['edgetts', 'kokoro', 'webspeech']
+
+const engineOptions = computed(() =>
+  CORE_ENGINES.map((value) => ({
+    value,
+    label:
+      value === 'edgetts'
+        ? t('pages.settings.voiceAssistant.voice.engineEdgetts')
+        : value === 'kokoro'
+          ? t('pages.settings.voiceAssistant.voice.engineKokoro')
+          : t('pages.settings.voiceAssistant.voice.engineWebspeech'),
+  })),
+)
 
 const voicePresetOptions = computed(() =>
   TTS_VOICE_PRESETS.filter((p) => p.engine === settings.value.voice.ttsEngine).map((p) => ({
@@ -34,29 +47,32 @@ const voicePresetOptions = computed(() =>
   })),
 )
 
-function onEngineChange(engine: string) {
-  const preset = TTS_VOICE_PRESETS.find((p) => p.engine === engine)
-  updateVoice({
-    ttsEngine: engine as typeof settings.value.voice.ttsEngine,
-    ttsVoice: preset?.voice || settings.value.voice.ttsVoice,
-    useCloneVoice: engine === 'cosyvoice',
-  })
+const replyLanguageOptions = computed(() => [
+  { label: t('pages.settings.voiceAssistant.voice.replyLangAuto'), value: 'auto' as ReplyLanguage },
+  { label: t('pages.settings.voiceAssistant.voice.replyLangZh'), value: 'zh' as ReplyLanguage },
+  { label: t('pages.settings.voiceAssistant.voice.replyLangEn'), value: 'en' as ReplyLanguage },
+])
+
+function onReplyLanguageChange(lang: ReplyLanguage) {
+  applyReplyLanguageChange(lang)
 }
 
-watch(
-  () => settings.value.voice.ttsEngine,
-  (engine) => {
-    const wantClone = engine === 'cosyvoice'
-    if (settings.value.voice.useCloneVoice !== wantClone) {
-      updateVoice({ useCloneVoice: wantClone })
-    }
-  },
-  { immediate: true },
-)
+function onEngineChange(engine: string) {
+  const eng = engine as TtsEngine
+  if (!CORE_ENGINES.includes(eng)) return
+  const preset = TTS_VOICE_PRESETS.find((p) => p.engine === eng)
+  updateVoice({
+    ttsEngine: eng,
+    ttsVoice: preset?.voice || settings.value.voice.ttsVoice,
+    useCloneVoice: false,
+  })
+}
 </script>
 
 <template>
-  <div>
+  <div v-if="showCore">
+    <VoiceSetupWizard v-if="props.section === 'core'" />
+
     <NCard :title="t('pages.settings.voiceAssistant.voice.title')" :class="cardClass">
       <NSpace vertical :size="16">
         <div>
@@ -70,12 +86,21 @@ watch(
             {{ t('pages.settings.tts.autoPlayHint') }}
           </NText>
         </div>
-        <div>
-          <NSwitch :value="settings.voice.streamingTts" @update:value="(v) => updateVoice({ streamingTts: v })" />
-          <NText style="margin-left: 8px">{{ t('pages.settings.voiceAssistant.voice.streamingTts') }}</NText>
-        </div>
 
         <NDivider />
+
+        <div>
+          <NText strong>{{ t('pages.settings.voiceAssistant.voice.replyLanguage') }}</NText>
+          <NSelect
+            :value="settings.voice.replyLanguage"
+            :options="replyLanguageOptions"
+            style="margin-top: 8px; max-width: 360px"
+            @update:value="onReplyLanguageChange"
+          />
+          <NText depth="3" style="display: block; font-size: 12px; margin-top: 6px">
+            {{ t('pages.settings.voiceAssistant.voice.replyLanguageHint') }}
+          </NText>
+        </div>
 
         <div>
           <NText strong>{{ t('pages.settings.voiceAssistant.voice.engine') }}</NText>
@@ -85,9 +110,12 @@ watch(
             style="margin-top: 8px; max-width: 360px"
             @update:value="onEngineChange"
           />
+          <NText depth="3" style="display: block; font-size: 12px; margin-top: 6px">
+            {{ t('pages.settings.voiceAssistant.voice.engineHint') }}
+          </NText>
         </div>
 
-        <div v-if="settings.voice.ttsEngine !== 'cosyvoice'">
+        <div>
           <NText strong>{{ t('pages.settings.voiceAssistant.voice.presetVoice') }}</NText>
           <NSelect
             :value="settings.voice.ttsVoice"
@@ -121,11 +149,24 @@ watch(
         </div>
       </NSpace>
     </NCard>
+  </div>
 
-    <VoiceCloneSettingsCard
-      v-if="settings.voice.ttsEngine === 'cosyvoice'"
-      card-class="office-settings-card"
-      style="margin-top: 16px"
-    />
+  <div v-else-if="showAdvanced && props.section === 'advanced'">
+    <VoiceApiKeyCard :card-class="cardClass" />
+
+    <NCard :class="cardClass" style="margin-top: 16px">
+      <NSpace vertical :size="12">
+        <div>
+          <NSwitch
+            :value="settings.voice.streamingTts"
+            @update:value="(v) => updateVoice({ streamingTts: v })"
+          />
+          <NText style="margin-left: 8px">{{ t('pages.settings.voiceAssistant.voice.streamingTts') }}</NText>
+        </div>
+      </NSpace>
+      <NText depth="3" style="display: block; font-size: 12px; margin-top: 12px; line-height: 1.6">
+        {{ t('pages.settings.voiceAssistant.voice.cloneCloudHint') }}
+      </NText>
+    </NCard>
   </div>
 </template>

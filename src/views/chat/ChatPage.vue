@@ -1658,7 +1658,8 @@ function roleType(role: string): 'default' | 'success' | 'info' | 'warning' {
 
 function roleLabel(role: string, name?: string): string {
   const displayName = String(name || '').trim()
-  if (displayName === 'Secretary' || displayName === 'Boss') return displayName
+  if (displayName === 'Secretary') return 'COO'
+  if (displayName === 'Boss') return displayName
   if (displayName && displayName !== 'gateway-injected') return displayName
   if (role === 'user') return t('pages.chat.roles.user')
   if (role === 'assistant') return t('pages.chat.roles.assistant')

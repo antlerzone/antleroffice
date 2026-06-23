@@ -39,7 +39,7 @@ for (const t of [
 }
 
 // 2. Intake classification
-const intake = require('./secretary-website-learn-intake');
+const intake = require('./website-learn-intake');
 const engine = require('./website-learn-engine');
 assert(intake.classifyWebsiteLearnMessage('进入学习模式 workflow invoice-download') === 'learn_start', 'learn_start intent');
 engine.setPendingIntake({ workflow_name: 'wf', waitingForProfile: true });

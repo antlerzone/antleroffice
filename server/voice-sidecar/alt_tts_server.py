@@ -7,12 +7,29 @@ import asyncio
 import io
 import json
 import os
+import re
 import sys
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = os.environ.get('VOICE_ALT_TTS_HOST', '127.0.0.1')
 PORT = int(os.environ.get('VOICE_ALT_TTS_PORT', '8766'))
+
+FISH_REFERENCE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
+
+
+def _normalize_fish_reference_id(raw: str) -> str:
+    s = str(raw or '').strip().strip('"').strip("'")
+    if not s:
+        return ''
+    m = re.search(r'fish\.audio/(?:voice/|m/|model/)?([A-Za-z0-9_-]{1,128})', s, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    if '/' in s:
+        seg = s.rstrip('/').split('/')[-1]
+        if FISH_REFERENCE_ID_RE.fullmatch(seg):
+            return seg
+    return s
 
 _kokoro_pipeline = None
 _kokoro_error: str | None = None
@@ -70,6 +87,21 @@ def _get_kokoro():
         raise
 
 
+def _synth_fishaudio(text: str, api_key: str, reference_id: str, latency: str = 'balanced') -> bytes:
+    """Synthesise speech via Fish Audio Python SDK (bypasses browser CORS)."""
+    from fishaudio import FishAudio
+    from fishaudio.types import TTSConfig
+
+    client = FishAudio(api_key=api_key)
+    config = TTSConfig(
+        reference_id=reference_id or None,
+        format='mp3',
+        latency=latency,   # 'low' | 'balanced' | 'normal'
+    )
+    audio = client.tts.convert(text=text, config=config)
+    return audio
+
+
 def _synth_kokoro(text: str, voice: str, rate: float) -> bytes:
     import numpy as np
     import soundfile as sf
@@ -111,7 +143,47 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path.split('?')[0] != '/synthesize':
+        path = self.path.split('?')[0]
+
+        # ── Fish Audio TTS proxy (bypasses browser CORS) ─────────────────────
+        if path == '/tts/fishaudio':
+            length = int(self.headers.get('Content-Length', '0'))
+            raw = self.rfile.read(length) if length else b'{}'
+            try:
+                body = json.loads(raw.decode('utf-8'))
+            except json.JSONDecodeError:
+                _json_response(self, 400, {'ok': False, 'error': 'Invalid JSON'})
+                return
+            text = str(body.get('text') or '').strip()
+            api_key = str(body.get('apiKey') or '').strip()
+            reference_id = _normalize_fish_reference_id(body.get('referenceId') or '')
+            latency = str(body.get('latency') or 'balanced')
+            if not text:
+                _json_response(self, 400, {'ok': False, 'error': 'text is required'})
+                return
+            if not api_key:
+                _json_response(self, 400, {'ok': False, 'error': 'apiKey is required'})
+                return
+            if not FISH_REFERENCE_ID_RE.fullmatch(reference_id):
+                _json_response(
+                    self,
+                    400,
+                    {
+                        'ok': False,
+                        'error': 'reference_id must be 1..=128 chars of [A-Za-z0-9_-] (copy from fish.audio → My Voices)',
+                    },
+                )
+                return
+            try:
+                data = _synth_fishaudio(text, api_key, reference_id, latency)
+                _audio_response(self, data, 'audio/mpeg', 'fishaudio')
+            except Exception as e:
+                traceback.print_exc()
+                _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return
+
+        # ── EdgeTTS / Kokoro ──────────────────────────────────────────────────
+        if path != '/synthesize':
             self.send_error(404)
             return
         length = int(self.headers.get('Content-Length', '0'))

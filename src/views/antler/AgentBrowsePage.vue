@@ -43,6 +43,8 @@ import {
   type DevCliInstallBundle,
 } from '@/lib/dev-cli-install'
 import ItGuysSetupModal from '@/components/settings/ItGuysSetupModal.vue'
+import NpcOnboardingWizard from '@/components/antler/NpcOnboardingWizard.vue'
+import { getNpcOnboardingConfig } from '@/lib/npc-onboarding-configs'
 import {
   BILLING_INTERVALS,
   creditsPerPeriod,
@@ -171,6 +173,24 @@ const itSetupAgentName = ref('')
 const itSetupNeedCursorKey = ref(true)
 const itSetupNeedCodexKey = ref(true)
 const itSetupNeedClaudeKey = ref(true)
+
+// NPC onboarding wizard (shown after hire for non-dev templates)
+const onboardingOpen = ref(false)
+const onboardingTemplateId = ref('')
+const onboardingAgentName = ref('')
+const onboardingAgentRole = ref('')
+
+function triggerOnboarding(t: Template, name: string) {
+  const config = getNpcOnboardingConfig(t.id)
+  if (config) {
+    onboardingTemplateId.value = t.id
+    onboardingAgentName.value = name || t.name
+    onboardingAgentRole.value = t.role || ''
+    onboardingOpen.value = true
+  } else {
+    message.success(`${name || t.name} joined your office!`)
+  }
+}
 const hireDevScopeCanWrite = ref(true)
 const hireDevScopeCanReview = ref(true)
 const hireTemplate = ref<Template | null>(null)
@@ -927,8 +947,9 @@ async function confirmHire() {
       showMcpDialog()
     } else if (mcps.length) {
       showMcpDialog()
+      triggerOnboarding(t, hireName.value)
     } else {
-      message.success(`${t.name} joined your office!`)
+      triggerOnboarding(t, hireName.value)
     }
   } catch (e) {
     const raw = e instanceof Error ? e.message : 'Hire failed'
@@ -1668,7 +1689,14 @@ onUnmounted(() => {
       :need-cursor-key="itSetupNeedCursorKey"
       :need-codex-key="itSetupNeedCodexKey"
       :need-claude-key="itSetupNeedClaudeKey"
-      @skip="message.info('可稍后在 Settings → Dev tools 配置，或跟 Secretary 说「配置开发工具」')"
+      @skip="message.info('可稍后在 Settings → Dev tools 配置，或跟 COO 说「配置开发工具」')"
+    />
+
+    <NpcOnboardingWizard
+      v-model:show="onboardingOpen"
+      :template-id="onboardingTemplateId"
+      :agent-name="onboardingAgentName"
+      :agent-role="onboardingAgentRole"
     />
   </div>
 </template>

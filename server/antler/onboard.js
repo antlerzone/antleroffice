@@ -287,6 +287,17 @@ function markAiSkipped() {
   return writeOnboarding({ aiSkipped: true });
 }
 
+async function markInstallerComplete() {
+  const onboarding = writeOnboarding({ installerComplete: true });
+  let mcp = { applied: false };
+  try {
+    mcp = await ensureMcpPackFromInstaller();
+  } catch {
+    /* non-fatal — installer step still marked complete */
+  }
+  return { ok: true, onboarding, mcp };
+}
+
 async function ensureMcpPackFromInstaller() {
   const pack = readPackSettingsSafe();
   if (pack.enabled) return { applied: false, reason: 'already-enabled' };
@@ -320,7 +331,9 @@ async function getAppState() {
     defaultMcpPack.getStatus(),
     hasAnyAiKey(),
   ]);
-  const onboarding = readOnboarding();
+  const s = store.readSettings();
+  const onboarding = s.onboarding || {};
+  const companyProfile = s.companyProfile || {};
   const openclawReady = !!runtimes.openclaw?.installed;
   const cursorReady = !!runtimes.cursor?.installed;
   const codexReady = !!runtimes.codex?.installed;
@@ -330,6 +343,13 @@ async function getAppState() {
   const aiConfigured = !!onboarding.aiConfigured || hasKey;
   const aiSkipped = !!onboarding.aiSkipped;
   const needsAiSetup = !aiConfigured && !aiSkipped;
+  let companySetupDone = !!onboarding.companySetupDone;
+  // Legacy installs: AI was configured before company-profile wizard shipped.
+  if (!companySetupDone && aiConfigured) {
+    writeOnboarding({ companySetupDone: true });
+    companySetupDone = true;
+  }
+  const needsCompanySetup = !companySetupDone;
 
   if (stackReady && !onboarding.stackReady) {
     writeOnboarding({ stackReady: true });
@@ -350,15 +370,32 @@ async function getAppState() {
     aiConfigured,
     aiSkipped,
     needsAiSetup,
-    showSetupWizard: needsAiSetup,
+    companySetupDone,
+    needsCompanySetup,
+    companyProfile,
+    // Show full wizard if company not set up yet, or AI not configured
+    showSetupWizard: needsCompanySetup || needsAiSetup,
     defaultMcpPack: packStatus.pack,
   };
 }
 
-async function markInstallerComplete() {
-  const result = await ensureMcpPackFromInstaller();
-  writeOnboarding({ stackReady: true, installerComplete: true });
-  return { ok: true, ...result };
+function saveCompanyProfile(profile = {}) {
+  const allowed = ['companyName', 'industry', 'size', 'goals', 'bossStyle', 'desktopName', 'language', 'shareInstallData'];
+  const clean = {};
+  for (const key of allowed) {
+    if (profile[key] !== undefined) clean[key] = profile[key];
+  }
+  // Persist profile
+  const s = store.readSettings();
+  s.companyProfile = { ...(s.companyProfile || {}), ...clean };
+  // Also persist desktopName into office settings
+  if (clean.desktopName) {
+    s.    s.office = s.office || {};
+    s.office.desktopDisplayName = clean.desktopName;
+  }
+  s.onboarding = { ...(s.onboarding || {}), companySetupDone: true };
+  store.writeSettings(s);
+  return { ok: true, companyProfile: s.companyProfile };
 }
 
 module.exports = {
@@ -374,4 +411,5 @@ module.exports = {
   markAiSkipped,
   markInstallerComplete,
   ensureMcpPackFromInstaller,
+  saveCompanyProfile,
 };

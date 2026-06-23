@@ -242,6 +242,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'routes.openClawAgents', icon: 'PeopleOutline', gateway: 'openclaw', tier: 'advanced', hidden: true },
       },
       {
+        path: 'skill-installs',
+        name: 'SkillInstalls',
+        component: () => import('@/views/antler/SkillInstallsPage.vue'),
+        meta: { titleKey: 'routes.skillInstalls', icon: 'DownloadOutline', gateway: 'openclaw', tier: 'boss', hidden: true },
+      },
+      {
         path: 'workshop',
         name: 'Workshop',
         component: () => import('@/views/office/OfficePage.vue'),
