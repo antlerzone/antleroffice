@@ -191,7 +191,54 @@ export function stripLegacyBuiltinWakePhrases(phrases: string[]): string[] {
   const kept = dedupeWakePhrases(
     (phrases || []).filter((p) => !legacy.has(normalizeWakePhrase(p).toLowerCase())),
   )
-  return kept.length ? kept : [...DEFAULT_SUMMON_WAKE_PHRASES]
+  return kept
+}
+
+/** STT language codes for wake transcription — independent of reply language. */
+export type WakeSttLanguage = 'zh' | 'en' | 'ko' | 'ja'
+
+/** Summon wake STT: auto = infer from wake phrase scripts; otherwise force one language. */
+export type WakeSttLanguageSetting = 'auto' | WakeSttLanguage
+
+const HANGUL_RE = /[\uac00-\ud7af]/
+const CJK_RE = /[\u4e00-\u9fff]/
+const KANA_RE = /[\u3040-\u30ff]/
+
+export function detectWakeSttLanguages(phrases: string[]): WakeSttLanguage[] {
+  const norms = dedupeWakePhrases(phrases || []).map((p) => normalizeWakePhrase(p).toLowerCase())
+  const order: WakeSttLanguage[] = []
+  const seen = new Set<WakeSttLanguage>()
+  const add = (lang: WakeSttLanguage) => {
+    if (!seen.has(lang)) {
+      seen.add(lang)
+      order.push(lang)
+    }
+  }
+  for (const norm of norms) {
+    if (CJK_RE.test(norm)) add('zh')
+    if (HANGUL_RE.test(norm)) add('ko')
+    if (KANA_RE.test(norm)) add('ja')
+    if (norm && /[a-z]/.test(norm) && !CJK_RE.test(norm) && !HANGUL_RE.test(norm) && !KANA_RE.test(norm)) {
+      add('en')
+    }
+  }
+  if (!order.length) add('en')
+  return order
+}
+
+export function resolveWakeSttLanguages(
+  phrases: string[],
+  setting: WakeSttLanguageSetting | undefined,
+): WakeSttLanguage[] {
+  if (setting && setting !== 'auto') return [setting]
+  return detectWakeSttLanguages(phrases)
+}
+
+export function wakeListenHint(phrases: string[]): string {
+  const list = dedupeWakePhrases(phrases || [])
+  const sample = list[0]
+  if (sample) return `说唤醒词：${sample}`
+  return 'say your wake phrase'
 }
 
 export function splitWakePhrases(phrases: string[]) {

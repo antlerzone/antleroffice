@@ -22,6 +22,7 @@ from wake_engines import (
     WhisperPhraseDetector,
     build_frame_detector,
     needs_whisper_fallback,
+    wlog,
 )
 
 HOST = os.environ.get('VOICE_LISTENER_HOST', '127.0.0.1')
@@ -46,11 +47,38 @@ MAX_TOTAL_GAIN = max(MIC_GAIN, min(96.0, float(os.environ.get('VOICE_MAX_TOTAL_G
 WAKE_TARGET_RMS = 160.0
 # Sleep-mode wake phrases should be short; cap runaway VAD (room noise) utterances.
 WAKE_MAX_SPEECH_MS = 5000
+WAKE_MAX_SPEECH_MS_STT = 2600
 WAKE_EMIT_MIN_INTERVAL = 3.0
 WAKE_BLOCK_AFTER_SPEAKING_SEC = 3.0
+# Ignore active-mode STT briefly after TTS ends — blocks speaker echo / room reverb.
+ACTIVE_POST_SPEAK_GRACE_SEC = 3.0
+MIN_WAKE_PEAK_RMS = 28.0
+MIN_WHISPER_WAKE_UTTERANCE_RMS = 24.0
+# STT wake needs a full phrase — short VAD blips often hallucinate ("you", "peace").
+WAKE_MIN_SPEECH_MS_STT = 520
+# Wait longer before deciding the user finished — lets "Hey ... Jarvis" with a
+# small pause stay in one clip instead of being cut to just "Hey".
+WAKE_END_SILENCE_MS_STT = 1100
+ORPHAN_ACTIVE_GRACE_SEC = 2.5
+
+# Common Whisper outputs on clips too short for wake STT.
+_STT_NOISE_WORDS = frozenset({
+    'a', 'i', 'uh', 'um', 'oh', 'ah', 'hm', 'hmm', 'mm', 'ok', 'okay',
+    'you', 'the', 'he', 'she', 'we', 'so', 'no', 'yes', 'yeah', 'yea',
+    'bye', 'buy', 'peace', 'and', 'it', 'is', 'to', 'of', 'in', 'on',
+    'go', 'do', 'me', 'my', 'or', 'at', 'up', 'us', 'am', 'an', 'as',
+})
+# Tokens that may appear in real wake phrases (incl. common Whisper mis-hears).
+_WAKE_CUE_WORDS = frozenset({
+    'hey', 'hi', 'hay', 'hej', 'hello', 'hiya', 'heya', 'hallo',
+    'jarvis', 'alice', 'service', 'travis', 'charice', 'charis', 'chargers',
+    'jarvus', 'gervais', 'harvis', 'janice',
+    '贾维斯', '加维斯', '杰维斯', '嘿', '你好',
+})
 
 _last_wake_emit_at = 0.0
 _wake_block_until = 0.0
+_last_speaking_end_at = 0.0
 
 _state_lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -68,9 +96,10 @@ _state: dict[str, Any] = {
 
 _config: dict[str, Any] = {
     'globalListenEnabled': True,
-    'wakePhrases': ['Hey Jarvis', 'Hi Jarvis'],
+    'wakePhrases': [],
     'idleTimeoutSec': 300,
     'wakeEngine': 'openwakeword',
+    'wakeRequireStt': False,
     'sensitivity': 0.5,
     'porcupineAccessKey': '',
     'clapWake': False,
@@ -78,6 +107,7 @@ _config: dict[str, Any] = {
     'inputDeviceIndex': None,
     'replyLanguage': 'auto',
     'realtimeSessionActive': False,
+    'summonSessionEngaged': False,
   }
 
 _detector_lock = threading.Lock()
@@ -126,6 +156,7 @@ def _clap_threshold(sensitivity: float) -> float:
 def _config_fingerprint(cfg: dict[str, Any]) -> str:
     keys = (
         'wakeEngine',
+        'wakeRequireStt',
         'wakePhrases',
         'sensitivity',
         'porcupineAccessKey',
@@ -134,6 +165,18 @@ def _config_fingerprint(cfg: dict[str, Any]) -> str:
         'clapWakeCount',
     )
     return json.dumps({k: cfg.get(k) for k in keys}, sort_keys=True, ensure_ascii=False)
+
+
+def _wake_requires_stt() -> bool:
+    """When true, summon only fires after STT text matches a wake phrase."""
+    engine = str(_config.get('wakeEngine') or '').lower()
+    # Acoustic engines (openWakeWord / Porcupine) match by sound — never gate them
+    # behind STT text matching, which mis-hears "Jarvis" as guys / Jason / Bryan.
+    if engine in ('openwakeword', 'porcupine'):
+        return False
+    if bool(_config.get('wakeRequireStt', False)):
+        return True
+    return engine == 'whisper'
 
 
 def _rebuild_detectors() -> None:
@@ -156,19 +199,12 @@ def _rebuild_detectors() -> None:
         phrases = list(cfg.get('wakePhrases') or [])
 
         try:
-            if engine == 'whisper':
+            if _wake_requires_stt():
+                _frame_detector = None
+                wake_backend = 'stt-match'
+            elif engine == 'whisper':
                 _frame_detector = None
                 wake_backend = 'whisper'
-                # Instant wake for Hey/Hi Jarvis via openWakeWord while keeping Whisper STT fallback.
-                try:
-                    oww_cfg = dict(cfg)
-                    oww_cfg['wakeEngine'] = 'openwakeword'
-                    oww_det = build_frame_detector(oww_cfg)
-                    if oww_det:
-                        _frame_detector = oww_det
-                        wake_backend = 'openwakeword+whisper'
-                except Exception as oww_exc:
-                    print(f'[listener] whisper+oww hybrid skipped: {oww_exc}', flush=True)
             elif not phrases:
                 _frame_detector = None
                 wake_backend = 'idle'
@@ -189,7 +225,7 @@ def _rebuild_detectors() -> None:
 
         # Build (or clear) clap detector.
         print(f'[listener/debug] clapWake={cfg.get("clapWake")!r} clapWakeCount={cfg.get("clapWakeCount")!r}', flush=True)
-        if bool(cfg.get('clapWake')):
+        if bool(cfg.get('clapWake')) and not _wake_requires_stt():
             clap_count = int(cfg.get('clapWakeCount') or 2)
             clap_thr = _clap_threshold(float(cfg.get('sensitivity') or 0.5))
             _clap_detector = ClapDetector(threshold=clap_thr, count=clap_count, window_sec=3.0)
@@ -209,6 +245,10 @@ def _rebuild_detectors() -> None:
             f'[listener] wake backend={wake_backend} whisper_fallback={_use_whisper_fallback} '
             f'phrases={phrases} whisper_phrases={_whisper_detector._phrases}',
             flush=True,
+        )
+        wlog(
+            f'=== REBUILD wake_backend={wake_backend} requires_stt={_wake_requires_stt()} '
+            f'engine={engine} wake_error={wake_error} phrases={phrases} ==='
         )
 
 
@@ -301,26 +341,52 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
-def _wake_stt_language() -> str | None:
-    """Pick STT language for wake utterances. Mixed en+zh lists use replyLanguage."""
+def _wake_stt_lang_order() -> list[str | None]:
+    """Wake STT languages — explicit wakeSttLanguage overrides phrase-script inference."""
+    explicit = str(_config.get('wakeSttLanguage') or 'auto').strip().lower()
+    if explicit in ('zh', 'en', 'ko', 'ja'):
+        return [explicit]
+
     phrases = list(_config.get('wakePhrases') or [])
     norms = [_normalize_phrase(p) for p in phrases if _normalize_phrase(p)]
-    has_zh = any(re.search(r'[\u4e00-\u9fff]', n) for n in norms)
-    has_en = any(n and not re.search(r'[\u4e00-\u9fff]', n) for n in norms)
-    reply = str(_config.get('replyLanguage') or 'auto').strip().lower()
-    if has_zh and not has_en:
-        return 'zh'
-    if has_en and not has_zh:
-        return 'en'
-    if has_zh and has_en:
-        # Mixed wake list (Hi Jarvis + 贾维斯): auto-detect — forcing zh breaks English wake.
-        return None
-    if reply in ('zh', 'en'):
-        return reply
-    return None
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def add(lang: str) -> None:
+        if lang not in seen:
+            seen.add(lang)
+            order.append(lang)
+
+    for norm in norms:
+        if re.search(r'[\u4e00-\u9fff]', norm):
+            add('zh')
+        if re.search(r'[\uac00-\ud7af]', norm):
+            add('ko')
+        if re.search(r'[\u3040-\u30ff]', norm):
+            add('ja')
+        if norm and re.search(r'[a-z]', norm) and not re.search(
+            r'[\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]', norm
+        ):
+            add('en')
+
+    if not order:
+        order.append('en')
+    return order
 
 
-def _transcribe_wav_with_language(wav_bytes: bytes, language: str | None) -> str:
+def _wake_stt_language() -> str | None:
+    order = _wake_stt_lang_order()
+    return order[0] if order else None
+
+
+def _transcribe_wav_with_language(
+    wav_bytes: bytes,
+    language: str | None,
+    *,
+    for_wake: bool = False,
+    prompt: str | None = None,
+    stt_model: str | None = None,
+) -> str:
     boundary = f'----antler{int(time.time() * 1000)}'
     owner_key = str(_config.get('ownerKey') or 'local:boss')
     owner_name = str(_config.get('ownerName') or 'Boss')
@@ -349,13 +415,30 @@ def _transcribe_wav_with_language(wav_bytes: bytes, language: str | None) -> str
             ]
         )
     wake_phrases = [str(p).strip() for p in (_config.get('wakePhrases') or []) if str(p).strip()]
-    if wake_phrases:
-        hint = 'Hey Jarvis. Hi Jarvis.'
+    hint = str(prompt or '').strip()
+    if not hint and wake_phrases:
+        if for_wake:
+            # Bias wake STT toward the configured wake phrases so quiet / far-field
+            # clips transcribe as the phrase instead of hallucinating "you" / "hey".
+            hint = ' '.join(f'{p}.' for p in wake_phrases[:3])
+        else:
+            hint = 'Hey Jarvis. Hi Jarvis.'
+    if hint:
         parts.extend(
             [
                 f'--{boundary}\r\n'.encode(),
                 b'Content-Disposition: form-data; name="prompt"\r\n\r\n',
                 hint.encode('utf-8'),
+                b'\r\n',
+            ]
+        )
+    model = str(stt_model or '').strip()
+    if model:
+        parts.extend(
+            [
+                f'--{boundary}\r\n'.encode(),
+                b'Content-Disposition: form-data; name="openaiSttModel"\r\n\r\n',
+                model.encode('utf-8'),
                 b'\r\n',
             ]
         )
@@ -374,8 +457,113 @@ def _transcribe_wav_with_language(wav_bytes: bytes, language: str | None) -> str
     return str(data.get('text') or '').strip()
 
 
-def _transcribe_via_server(wav_bytes: bytes) -> str:
-    return _transcribe_wav_with_language(wav_bytes, _wake_stt_language())
+def _transcribe_via_server(wav_bytes: bytes, *, for_wake: bool = False) -> str:
+    return _transcribe_wav_with_language(wav_bytes, _wake_stt_language(), for_wake=for_wake)
+
+
+def _is_stt_hint_echo(text: str) -> bool:
+    """Reject legacy prompt-shaped hallucinations (user did not say both phrases)."""
+    norm = _normalize_phrase(text)
+    if not norm:
+        return True
+    return norm in ('hey jarvis hi jarvis', 'hey jarvis hi jarvis hey jarvis')
+
+
+def _is_stt_noise_hallucination(text: str) -> bool:
+    """Reject single-syllable / filler STT on wake clips that are too short to trust."""
+    norm = _normalize_phrase(text)
+    if not norm:
+        return True
+    if _is_stt_repeat_hallucination(norm):
+        return True
+    if len(norm) <= 2:
+        return True
+    words = norm.split()
+    if len(words) == 1 and norm in _STT_NOISE_WORDS:
+        return True
+    if len(words) == 1 and len(norm) <= 4 and not re.search(r'[\u4e00-\u9fff\uac00-\ud7af\u3040-\u30ff]', norm):
+        return True
+    return False
+
+
+def _is_stt_repeat_hallucination(norm: str) -> bool:
+    """Whisper on long/noisy clips often repeats nonsense ('changebytes...', 'hello hello')."""
+    parts = [w.strip('.,!?') for w in norm.split() if w.strip('.,!?')]
+    if len(parts) < 2:
+        return False
+    counts: dict[str, int] = {}
+    for part in parts:
+        counts[part] = counts.get(part, 0) + 1
+        if counts[part] >= 3:
+            return True
+    filler = frozenset({'hello', 'hi', 'hey', 'thanks', 'bye', 'ok', 'yeah', 'yes', 'no'})
+    for word, count in counts.items():
+        if count >= 2 and word in filler:
+            return True
+    if len(parts) >= 2 and len(set(parts)) == 1 and len(parts[0]) <= 10:
+        return True
+    return False
+
+
+def _has_wake_cue(norm: str) -> bool:
+    for word in norm.split()[:4]:
+        w = word.strip('.,!?')
+        if not w:
+            continue
+        if w in _WAKE_CUE_WORDS:
+            return True
+        if 'jarv' in w or 'alic' in w or 'charic' in w or 'travis' in w:
+            return True
+        if re.search(r'[\u4e00-\u9fff]', w):
+            return True
+    return False
+
+
+def _is_wake_stt_gibberish(text: str, whisper: Any | None = None) -> bool:
+    """Long / conversational STT on a wake clip — almost always room noise or TV, not a wake phrase."""
+    if whisper and whisper.matches(text):
+        return False
+    norm = _normalize_phrase(text)
+    if not norm:
+        return True
+    words = norm.split()
+    if len(words) > 5:
+        return True
+    if len(words) >= 3 and not _has_wake_cue(norm):
+        return True
+    return False
+
+
+def _should_discard_active_transcript(text: str) -> bool:
+    """Drop filler / echo STT before publishing voice commands."""
+    norm = _normalize_phrase(text)
+    if not norm:
+        return True
+    if _is_stt_hint_echo(text) or _is_stt_noise_hallucination(text):
+        return True
+    if _is_stt_repeat_hallucination(norm):
+        return True
+    if _is_wake_stt_gibberish(text):
+        return True
+    return False
+
+
+def _wake_phrase_prompt() -> str | None:
+    phrases = [str(p).strip() for p in (_config.get('wakePhrases') or []) if str(p).strip()]
+    return phrases[0] if phrases else None
+
+
+def _should_discard_wake_transcript(text: str, whisper: Any) -> bool:
+    """Drop filler STT — but keep anything that already matches a wake phrase (incl. fuzzy)."""
+    if whisper and whisper.matches(text):
+        return False
+    if _is_stt_hint_echo(text):
+        return True
+    if _is_stt_noise_hallucination(text):
+        return True
+    if _is_wake_stt_gibberish(text, whisper):
+        return True
+    return False
 
 
 def _transcribe_typewhisper(wav_bytes: bytes) -> str:
@@ -576,7 +764,7 @@ def _block_wake_for(seconds: float) -> None:
         _wake_block_until = until
 
 
-def _emit_wake(detected_phrase: str | None = None) -> None:
+def _emit_wake(detected_phrase: str | None = None, *, transcript: str | None = None) -> None:
     global _last_wake_emit_at
     now = time.time()
     if now < _wake_block_until:
@@ -598,10 +786,23 @@ def _emit_wake(detected_phrase: str | None = None) -> None:
             return
     if now - _last_wake_emit_at < WAKE_EMIT_MIN_INTERVAL:
         return
-    print(f'[summon] wake detected phrase={detected_phrase!r}', flush=True)
-    payload: dict[str, Any] = {'type': 'wake', 'mode': 'active'}
+    if _peak_rms < MIN_WAKE_PEAK_RMS and detected_phrase not in (None, 'clap'):
+        print(
+            f'[summon] wake suppressed — mic too quiet peak_rms={_peak_rms:.0f} '
+            f'(need {MIN_WAKE_PEAK_RMS:.0f}) phrase={detected_phrase!r}',
+            flush=True,
+        )
+        return
+    print(
+        f'[summon] wake detected phrase={detected_phrase!r} '
+        f'transcript={transcript!r} peak_rms={_peak_rms:.0f}',
+        flush=True,
+    )
+    payload: dict[str, Any] = {'type': 'wake', 'mode': 'active', 'source': 'stt' if transcript else 'frame'}
     if detected_phrase:
         payload['phrase'] = detected_phrase
+    if transcript:
+        payload['transcript'] = transcript
     if not _post_callback(payload):
         print('[summon] wake callback failed — staying in sleep so wake can retry', flush=True)
         with _state_lock:
@@ -616,14 +817,54 @@ def _emit_wake(detected_phrase: str | None = None) -> None:
 
 
 def _emit_transcript(text: str) -> None:
+    if _should_discard_active_transcript(text):
+        print(f'[listener] transcript skipped (stt noise): "{text}"', flush=True)
+        return
     cleaned = _strip_all_wake_phrases(text)
     if not cleaned or _is_wake_only_text(text):
         print(f'[listener] transcript skipped (wake-only): "{text}"', flush=True)
+        return
+    if _should_discard_active_transcript(cleaned):
+        print(f'[listener] transcript skipped (stt noise after strip): "{text}"', flush=True)
         return
     with _state_lock:
         mode = _state.get('mode', 'sleep')
         _state['last_command_at'] = time.time()
     _post_callback({'type': 'transcript', 'text': cleaned, 'raw': text, 'mode': mode})
+
+
+def _client_session_engaged() -> bool:
+    return bool(_config.get('summonSessionEngaged'))
+
+
+def _browser_realtime_owns_mic() -> bool:
+    return bool(_config.get('realtimeSessionActive'))
+
+
+def _reset_orphan_active(reason: str) -> None:
+    print(f'[listener] orphan active reset — {reason}', flush=True)
+    with _state_lock:
+        _state['mode'] = 'sleep'
+        _state['last_wake_at'] = None
+        _state['speaking'] = False
+        _state['barge_in'] = False
+    with _detector_lock:
+        if _frame_detector:
+            _frame_detector.reset()
+
+
+def _maybe_reset_orphan_active(mode: str) -> str:
+    """Listener active without browser summon ack — revert to sleep for STT wake."""
+    if mode not in ('active', 'speaking'):
+        return mode
+    if _client_session_engaged():
+        return mode
+    with _state_lock:
+        lw = float(_state.get('last_wake_at') or 0)
+    if lw <= 0 or (time.time() - lw) <= ORPHAN_ACTIVE_GRACE_SEC:
+        return mode
+    _reset_orphan_active('no client session after wake grace')
+    return 'sleep'
 
 
 def _maybe_rebuild_detectors() -> None:
@@ -634,6 +875,8 @@ def _maybe_rebuild_detectors() -> None:
 
 def _process_sleep_wake_frame(pcm: bytes) -> bool:
     """Run frame-based wake detectors. Returns True if wake fired."""
+    if _wake_requires_stt():
+        return False
     with _detector_lock:
         detector = _frame_detector
         if detector is not None and hasattr(detector, 'set_quiet_context'):
@@ -650,7 +893,7 @@ def _process_sleep_wake_frame(pcm: bytes) -> bool:
     return False
 
 
-def _process_sleep_whisper_utterance(utterance: bytes) -> bool:
+def _process_sleep_whisper_utterance(utterance: bytes, speech_ms: int = 0) -> bool:
     with _detector_lock:
         whisper = _whisper_detector
         use_fb = _use_whisper_fallback
@@ -665,49 +908,110 @@ def _process_sleep_whisper_utterance(utterance: bytes) -> bool:
     wav = _pcm_to_wav(_normalize_utterance_for_stt(utterance))
     wav_rms = _rms(utterance)
     stt_rms = _rms(_normalize_utterance_for_stt(utterance))
+    if speech_ms > 0 and speech_ms < WAKE_MIN_SPEECH_MS_STT:
+        print(
+            f'[wake/whisper] SKIP — utterance too short {speech_ms}ms '
+            f'(need {WAKE_MIN_SPEECH_MS_STT}ms for STT wake)',
+            flush=True,
+        )
+        _post_callback({
+            'type': 'wake_miss',
+            'reason': 'utterance_too_short',
+            'speechMs': speech_ms,
+            'peakRms': round(_peak_rms),
+            'utteranceRms': round(wav_rms),
+        })
+        return False
+
+    if wav_rms < MIN_WHISPER_WAKE_UTTERANCE_RMS:
+        print(
+            f'[wake/whisper] SKIP — utterance too quiet rms={wav_rms:.0f} '
+            f'(need {MIN_WHISPER_WAKE_UTTERANCE_RMS:.0f})',
+            flush=True,
+        )
+        _post_callback({
+            'type': 'wake_miss',
+            'reason': 'quiet_utterance',
+            'speechMs': speech_ms,
+            'peakRms': round(_peak_rms),
+            'utteranceRms': round(wav_rms),
+        })
+        return False
     print(
         f'[wake/whisper] wav rms in={wav_rms:.0f} normalized={stt_rms:.0f} peak={_peak_rms:.0f}',
         flush=True,
     )
-    norms = [_normalize_phrase(p) for p in (_config.get('wakePhrases') or []) if _normalize_phrase(p)]
-    has_en = any(n and not re.search(r'[\u4e00-\u9fff]', n) for n in norms)
-    has_zh = any(re.search(r'[\u4e00-\u9fff]', n) for n in norms)
-
-    lang_order: list[str | None] = []
-    if has_en:
-        lang_order.extend(['en', None])
-    if has_zh:
-        lang_order.append('zh')
-    if not lang_order:
-        lang_order = [None]
+    lang_order = _wake_stt_lang_order()
+    print(
+        f'[wake/whisper] stt lang order={lang_order} wakeSttLanguage={_config.get("wakeSttLanguage")!r} '
+        f'phrases={_config.get("wakePhrases")!r} replyLanguage={_config.get("replyLanguage")!r} (reply only)',
+        flush=True,
+    )
 
     transcripts: list[tuple[str, str]] = []
     seen: set[str] = set()
+    raw_candidates: list[tuple[str, str]] = []
+    last_raw = ''
+    wake_prompt = _wake_phrase_prompt()
+
+    def _ingest_wake_transcript(text: str, tag: str) -> bool:
+        nonlocal last_raw
+        if not text:
+            return False
+        last_raw = text
+        key = _normalize_phrase(text)
+        if key and key not in seen:
+            seen.add(key)
+            raw_candidates.append((text, tag))
+        if _should_discard_wake_transcript(text, whisper):
+            print(f'[wake/whisper] SKIP discarded transcript="{text}" ({tag})', flush=True)
+            return False
+        transcripts.append((text, tag))
+        print(f'[wake/whisper] accepted ({tag}): "{text}"', flush=True)
+        return bool(whisper.matches(text))
+
     for lang in lang_order:
         try:
-            text = _transcribe_wav_with_language(wav, lang)
-            key = _normalize_phrase(text)
-            if not key or key in seen:
+            text = _transcribe_wav_with_language(wav, lang, for_wake=True)
+        except Exception as exc:
+            print(f'[wake/whisper] transcribe ({lang or "auto"}/primary) failed: {exc}', flush=True)
+            continue
+        if _ingest_wake_transcript(text, f'{lang or "auto"}:primary'):
+            break
+
+    # whisper-1 + prompt only when primary returned nothing useful (prompt on noise causes TV-style gibberish).
+    primary_empty = not raw_candidates
+    if not transcripts and primary_empty:
+        for lang in lang_order:
+            try:
+                text = _transcribe_wav_with_language(
+                    wav,
+                    lang,
+                    for_wake=True,
+                    prompt=wake_prompt,
+                    stt_model='whisper-1',
+                )
+            except Exception as exc:
+                print(f'[wake/whisper] transcribe ({lang or "auto"}/whisper-1) failed: {exc}', flush=True)
                 continue
-            seen.add(key)
-            transcripts.append((text, lang or 'auto'))
-        except Exception as exc:
-            print(f'[wake/whisper] transcribe ({lang or "auto"}) failed: {exc}', flush=True)
+            if _ingest_wake_transcript(text, f'{lang or "auto"}:whisper-1'):
+                break
 
     if not transcripts:
-        try:
-            text = _transcribe_typewhisper(wav)
-            key = _normalize_phrase(text)
-            if key and key not in seen:
-                transcripts.append((text, 'typewhisper'))
-        except Exception as exc:
-            print(f'[wake/whisper] typewhisper fallback failed: {exc}', flush=True)
+        for text, tag in reversed(raw_candidates):
+            if whisper.matches(text):
+                print(f'[wake/whisper] fuzzy accept from raw: "{text}"', flush=True)
+                transcripts.append((text, tag))
+                break
 
+    # Wake STT must use language-tagged OpenAI only — TypeWhisper auto-detect mis-hears (e.g. Japanese).
     if not transcripts:
-        print('[wake/whisper] empty transcript, skipping', flush=True)
+        print(f'[wake/whisper] no valid transcript after language-tagged STT last_raw="{last_raw}"', flush=True)
         _post_callback({
             'type': 'wake_miss',
-            'reason': 'empty_transcript',
+            'reason': 'stt_noise',
+            'lastTranscript': last_raw,
+            'speechMs': speech_ms,
             'peakRms': round(_peak_rms),
             'utteranceRms': round(wav_rms),
         })
@@ -719,21 +1023,66 @@ def _process_sleep_whisper_utterance(utterance: bytes) -> bool:
         print(f'[wake/whisper] phrase match → "{matched}"  (phrases={whisper._phrases})', flush=True)
         if not matched:
             continue
-        _emit_wake(matched)
-        remainder = _strip_all_wake_phrases(text)
-        if remainder:
-            _emit_transcript(remainder)
+        _emit_wake(matched, transcript=text)
+        # Do not chain wake utterance into a voice command — user speaks again after greeting.
         return True
+    if transcripts:
+        heard = transcripts[0][0]
+        heard_lang = transcripts[0][1]
+        if _is_wake_stt_gibberish(heard, whisper):
+            print(f'[wake/whisper] gibberish transcript discarded="{heard}"', flush=True)
+            _post_callback({
+                'type': 'wake_miss',
+                'reason': 'stt_noise',
+                'lastTranscript': heard,
+                'speechMs': speech_ms,
+                'peakRms': round(_peak_rms),
+                'utteranceRms': round(wav_rms),
+            })
+            return False
+        print(f'[wake/whisper] no phrase match for transcript="{heard}"', flush=True)
+        _post_callback({
+            'type': 'wake_miss',
+            'reason': 'no_phrase_match',
+            'transcript': heard,
+            'sttLang': heard_lang,
+            'speechMs': speech_ms,
+            'peakRms': round(_peak_rms),
+            'utteranceRms': round(wav_rms),
+        })
     return False
 
 
-def _process_active_utterance(utterance: bytes) -> None:
-    try:
-        text = _transcribe_wav(_pcm_to_wav(utterance))
-    except Exception as exc:
-        print(f'[listener] transcribe failed: {exc}', flush=True)
+def _process_active_utterance(utterance: bytes, speech_ms: int = 0) -> None:
+    if _last_speaking_end_at > 0 and (time.time() - _last_speaking_end_at) < ACTIVE_POST_SPEAK_GRACE_SEC:
+        print(
+            f'[wake/active] utterance skipped — post-TTS grace '
+            f'({time.time() - _last_speaking_end_at:.1f}s < {ACTIVE_POST_SPEAK_GRACE_SEC}s)',
+            flush=True,
+        )
         return
+    wav_pcm = _normalize_utterance_for_stt(utterance)
+    wav_rms = _rms(utterance)
+    if wav_rms < MIN_WHISPER_WAKE_UTTERANCE_RMS:
+        print(f'[wake/active] utterance skipped — too quiet rms={wav_rms:.0f}', flush=True)
+        return
+    wav = _pcm_to_wav(wav_pcm)
+    text = ''
+    for lang in _wake_stt_lang_order():
+        try:
+            text = _transcribe_wav_with_language(wav, lang, for_wake=False)
+            if _normalize_phrase(text):
+                break
+        except Exception as exc:
+            print(f'[wake/active] transcribe ({lang or "auto"}) failed: {exc}', flush=True)
     if not text:
+        try:
+            text = _transcribe_wav(wav)
+        except Exception as exc:
+            print(f'[listener] transcribe failed: {exc}', flush=True)
+            return
+    if not text or _should_discard_active_transcript(text):
+        print(f'[wake/active] transcript discarded: "{text}" speech_ms={speech_ms}', flush=True)
         return
     with _detector_lock:
         whisper = _whisper_detector
@@ -783,6 +1132,10 @@ def _mic_loop() -> None:
 
     min_speech_ms = 400
     end_silence_ms = 700
+    stt_wake = _wake_requires_stt()
+    if stt_wake:
+        min_speech_ms = WAKE_MIN_SPEECH_MS_STT
+        end_silence_ms = WAKE_END_SILENCE_MS_STT
 
     speech_frames: list[bytes] = []
     in_speech = False
@@ -793,14 +1146,31 @@ def _mic_loop() -> None:
     oww_accum = bytearray()
     _debug_clap_log_at = time.time()
     threshold = _vad_threshold(float(_config.get('sensitivity') or 0.5))
-    rec_kwargs: dict[str, Any] = {
-        'samplerate': SAMPLE_RATE,
-        'channels': 1,
-        'dtype': 'int16',
-        'blocking': True,
-    }
+    # Persistent continuous input stream. openWakeWord needs a SMOOTH, gapless
+    # audio stream — opening/closing sd.rec() every frame drops audio between
+    # reads and the acoustic model scores a flat 0. Keep one stream open.
+    _mic_stream: Any = None
+
+    def _close_mic_stream() -> None:
+        nonlocal _mic_stream
+        if _mic_stream is not None:
+            try:
+                _mic_stream.stop()
+                _mic_stream.close()
+            except Exception:
+                pass
+            _mic_stream = None
 
     print(f'[listener] mic loop started vad_threshold={threshold:.0f} mic_gain={MIC_GAIN}x', flush=True)
+    try:
+        _din = sd.query_devices(kind='input')
+        wlog(
+            f'>>> MIC LOOP START build=stream-v4 oww_input=RAW capture=CONTINUOUS '
+            f'input_name={_din.get("name")!r} device_default_samplerate={_din.get("default_samplerate")} '
+            f'capture_samplerate={SAMPLE_RATE} mic_gain={MIC_GAIN}'
+        )
+    except Exception as _e:
+        wlog(f'>>> MIC LOOP START build=raw-audio-v3 oww_input=RAW (device query failed: {_e!r}) capture_samplerate={SAMPLE_RATE}')
 
     while not _stop_event.is_set():
         _maybe_rebuild_detectors()
@@ -811,6 +1181,8 @@ def _mic_loop() -> None:
             barge_in = bool(_state.get('barge_in'))
             mode = str(_state.get('mode') or 'sleep')
             idle_timeout = int(_config.get('idleTimeoutSec') or 300)
+
+        mode = _maybe_reset_orphan_active(mode)
 
         # Periodic debug: every 10 s log clap detector status
         now_ts = time.time()
@@ -835,6 +1207,7 @@ def _mic_loop() -> None:
                         flush=True,
                     )
                     _input_device = best_idx
+                    _close_mic_stream()
 
         if not enabled:
             time.sleep(0.1)
@@ -843,15 +1216,40 @@ def _mic_loop() -> None:
         desired_device = _resolve_input_device(sd)
         if desired_device is not None and desired_device != _input_device:
             _input_device = desired_device
+            _close_mic_stream()  # reopen the continuous stream on the new device
             print(f'[listener] input device changed → #{_input_device}', flush=True)
+            try:
+                _di = sd.query_devices(_input_device)
+                wlog(
+                    f'INPUT DEVICE #{_input_device} name={_di.get("name")!r} '
+                    f'default_samplerate={_di.get("default_samplerate")} '
+                    f'(we capture at {SAMPLE_RATE})'
+                )
+            except Exception as _exc:
+                wlog(f'INPUT DEVICE #{_input_device} query failed: {_exc!r}')
 
         try:
-            frame = sd.rec(FRAME_SAMPLES, device=_input_device, **rec_kwargs)
-            pcm, raw_level, level = _process_frame_pcm(frame.tobytes())
+            if _mic_stream is None:
+                _mic_stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype='int16',
+                    blocksize=FRAME_SAMPLES,
+                    device=_input_device,
+                )
+                _mic_stream.start()
+                wlog(
+                    f'CONTINUOUS STREAM opened device={_input_device} '
+                    f'rate={SAMPLE_RATE} block={FRAME_SAMPLES}'
+                )
+            data, _overflowed = _mic_stream.read(FRAME_SAMPLES)
+            raw_frame = data.tobytes()
+            pcm, raw_level, level = _process_frame_pcm(raw_frame)
             _raw_rms = raw_level
         except Exception as exc:
             print(f'[listener] mic read failed: {exc}', flush=True)
-            time.sleep(0.5)
+            _close_mic_stream()
+            time.sleep(0.3)
             continue
 
         _current_rms = level
@@ -887,8 +1285,15 @@ def _mic_loop() -> None:
                     if _frame_detector:
                         _frame_detector.reset()
 
-        if mode == 'sleep' and not bool(_config.get('realtimeSessionActive')):
-            oww_accum.extend(pcm)
+        if (
+            mode == 'sleep'
+            and not bool(_config.get('realtimeSessionActive'))
+            and not _wake_requires_stt()
+        ):
+            # openWakeWord expects natural, un-normalized 16 kHz PCM. Feed the RAW
+            # frame (not the gain-boosted one) — boosting/normalizing makes the
+            # acoustic model score a constant 0.000.
+            oww_accum.extend(raw_frame)
             while len(oww_accum) >= OWW_CHUNK_SAMPLES * 2:
                 chunk = bytes(oww_accum[: OWW_CHUNK_SAMPLES * 2])
                 del oww_accum[: OWW_CHUNK_SAMPLES * 2]
@@ -898,9 +1303,15 @@ def _mic_loop() -> None:
                     pre_roll = []
                     oww_accum.clear()
                     break
+            if len(oww_accum) > OWW_CHUNK_SAMPLES * 16:
+                oww_accum = oww_accum[-OWW_CHUNK_SAMPLES * 8 :]
 
         # Clap-wake only in sleep while browser realtime is not handling the session.
-        if mode == 'sleep' and not bool(_config.get('realtimeSessionActive')):
+        if (
+            mode == 'sleep'
+            and not bool(_config.get('realtimeSessionActive'))
+            and not _wake_requires_stt()
+        ):
             with _detector_lock:
                 cd = _clap_detector
             if cd and cd.process_frame(level):
@@ -931,7 +1342,7 @@ def _mic_loop() -> None:
 
         if (
             mode == 'sleep'
-            and speech_ms >= WAKE_MAX_SPEECH_MS
+            and speech_ms >= (WAKE_MAX_SPEECH_MS_STT if _wake_requires_stt() else WAKE_MAX_SPEECH_MS)
             and not bool(_config.get('realtimeSessionActive'))
         ):
             print(f'[wake/vad] max speech {speech_ms}ms — flushing wake utterance', flush=True)
@@ -947,25 +1358,40 @@ def _mic_loop() -> None:
         silence_ms = 0
 
         quiet_mic = _peak_rms < 40
-        min_ms = 280 if quiet_mic else min_speech_ms
+        stt_wake = _wake_requires_stt()
+        if stt_wake:
+            min_ms = WAKE_MIN_SPEECH_MS_STT
+        elif quiet_mic:
+            min_ms = 280
+        else:
+            min_ms = min_speech_ms
+        captured_speech_ms = speech_ms
         if speech_ms < min_ms:
             print(f'[wake/vad] utterance too short ({speech_ms}ms < {min_ms}ms), ignored', flush=True)
             speech_ms = 0
             continue
         speech_ms = 0
 
-        print(f'[wake/vad] utterance captured mode={mode} len={len(utterance)} bytes', flush=True)
+        print(
+            f'[wake/vad] utterance captured mode={mode} len={len(utterance)} bytes '
+            f'speech_ms={captured_speech_ms}',
+            flush=True,
+        )
 
         if mode == 'sleep' and not bool(_config.get('realtimeSessionActive')):
-            _process_sleep_whisper_utterance(utterance)
+            if _wake_requires_stt():
+                _process_sleep_whisper_utterance(utterance, captured_speech_ms)
             continue
 
         if mode == 'active':
-            if bool(_config.get('realtimeSessionActive')):
+            if not _client_session_engaged():
+                print('[wake/vad] active utterance skipped — no client summon session', flush=True)
+                continue
+            if _browser_realtime_owns_mic():
                 print('[wake/vad] active utterance skipped — browser realtime owns mic', flush=True)
                 continue
             last_active = time.time()
-            _process_active_utterance(utterance)
+            _process_active_utterance(utterance, captured_speech_ms)
 
 
 def _ensure_mic_thread() -> None:
@@ -1037,8 +1463,13 @@ class Handler(BaseHTTPRequestHandler):
             _config.update(body)
             if 'realtimeSessionActive' in body:
                 _config['realtimeSessionActive'] = bool(body['realtimeSessionActive'])
+            if 'summonSessionEngaged' in body:
+                _config['summonSessionEngaged'] = bool(body['summonSessionEngaged'])
             elif str(_state.get('mode') or 'sleep') == 'sleep':
-                _config['realtimeSessionActive'] = False
+                _config['summonSessionEngaged'] = False
+            if 'realtimeSessionActive' not in body and 'summonSessionEngaged' not in body:
+                if str(_state.get('mode') or 'sleep') == 'sleep':
+                    _config['realtimeSessionActive'] = False
             if _config_fingerprint(_config) != _config_token:
                 _rebuild_detectors()
             with _state_lock:
@@ -1061,6 +1492,7 @@ class Handler(BaseHTTPRequestHandler):
                         _state['speaking'] = False
                         _state['barge_in'] = False
                         _config['realtimeSessionActive'] = False
+                        _config['summonSessionEngaged'] = False
                 if mode == 'sleep':
                     with _detector_lock:
                         if _frame_detector:
@@ -1070,7 +1502,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == '/speaking':
+            global _last_speaking_end_at
             with _state_lock:
+                was_speaking = bool(_state.get('speaking'))
                 _state['speaking'] = bool(body.get('speaking'))
                 _state['barge_in'] = bool(body.get('bargeIn')) if _state['speaking'] else False
                 if _state['speaking']:
@@ -1083,6 +1517,8 @@ class Handler(BaseHTTPRequestHandler):
                     if _state.get('last_wake_at'):
                         _state['last_wake_at'] = time.time()
                 else:
+                    if was_speaking:
+                        _last_speaking_end_at = time.time()
                     if _state['mode'] == 'speaking':
                         _state['mode'] = 'active' if _state.get('last_wake_at') else 'sleep'
                 _json(self, 200, {'ok': True, 'state': dict(_state)})

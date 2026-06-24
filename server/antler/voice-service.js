@@ -20,6 +20,7 @@ const ALT_TTS_URL = (process.env.VOICE_ALT_TTS_URL || 'http://127.0.0.1:8766').r
 const MAX_REF_TEXT_CHARS = Number(process.env.VOICE_MAX_REF_TEXT_CHARS || process.env.QWEN_MAX_REF_TEXT_CHARS) || 48;
 
 const FISH_REFERENCE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+let lastSummonWakeAt = 0;
 
 function normalizeFishAudioReferenceId(input) {
   let s = String(input || '').trim().replace(/^["']|["']$/g, '');
@@ -177,7 +178,8 @@ async function transcribeWithOpenAI(buffer, filename, mimeType, apiKey, model, l
     form.append('file', blob, filename || 'audio.webm');
     form.append('model', String(model || 'gpt-4o-mini-transcribe').trim() || 'gpt-4o-mini-transcribe');
     const lang = String(language || '').trim().toLowerCase();
-    if (lang === 'zh' || lang === 'en') form.append('language', lang);
+    const iso = lang.split('-')[0];
+    if (/^[a-z]{2}$/.test(iso)) form.append('language', iso);
     const hint = String(prompt || '').trim();
     if (hint) form.append('prompt', hint.slice(0, 500));
     const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -444,6 +446,7 @@ async function handleListenerEvent(body = {}) {
   const published = voiceListenerManager.publishListenerEvent(body);
 
   if (type === 'wake') {
+    lastSummonWakeAt = Date.now();
     console.log('[summon] server wake event', {
       phrase: body.phrase || null,
       mode: body.mode || 'active',
@@ -462,6 +465,11 @@ async function handleListenerEvent(body = {}) {
     const text = String(body.text || '').trim();
     if (!text) return { ok: true, event: published, skipped: true };
 
+    if (Date.now() - lastSummonWakeAt < 5000) {
+      console.log('[summon] transcript skipped (post-wake grace):', text.slice(0, 80));
+      return { ok: true, event: published, skipped: true, reason: 'post_wake_grace' };
+    }
+
     if (voiceListenerManager.isWakeOnlyPhrase(text)) {
       console.log('[summon] transcript skipped (wake-only):', text.slice(0, 80));
       return { ok: true, event: published, skipped: true, reason: 'wake_only' };
@@ -469,6 +477,10 @@ async function handleListenerEvent(body = {}) {
 
     if (config.realtimeSessionActive) {
       return { ok: true, event: published, dispatched: false, reason: 'realtime_active' };
+    }
+
+    if (!config.summonSessionEngaged) {
+      return { ok: true, event: published, dispatched: false, reason: 'client_not_engaged' };
     }
 
     if (String(body.mode || '').toLowerCase() === 'sleep') {

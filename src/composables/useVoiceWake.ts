@@ -9,7 +9,10 @@ import { useBossStore } from '@/stores/boss'
 import { isElectronApp, isSummonHost, showItemInFolder } from '@/lib/desktop-shell'
 import { unlockAudioPlayback } from '@/lib/audio-unlock'
 import { getCachedGreetingBlob } from '@/lib/persona-greeting-cache'
-import { dedupeWakePhrases, DEFAULT_SUMMON_WAKE_PHRASES, DEFAULT_ZH_WAKE_PHRASES, resolveReplyLanguage } from '@/constants/voiceAssistant'
+import {
+  dedupeWakePhrases,
+  wakeListenHint,
+} from '@/constants/voiceAssistant'
 import { summonBanner, summonError, summonInfo, summonLog, summonMark, summonMic, summonVerbose, summonWarn, resetSummonTimer } from '@/lib/summon-debug'
 import { clearSummonSession, markSummonSessionActive, startSummonIdleWatch, summonSessionActive } from '@/lib/summon-session'
 
@@ -67,12 +70,37 @@ let micMonitorTimer: ReturnType<typeof setTimeout> | null = null
 let micMonitorActive = false
 let micMonitorInFlight = false
 let micWasAboveVad = false
+let lastMicAboveVadAt = 0
+let listenerOrphanActiveSince = 0
+let lastStaleRealtimeRepairAt = 0
 let lastMicLogAt = 0
 let lastWakeIdleWarnAt = 0
 const MIC_POLL_OK_MS = 800
 const MIC_POLL_ERR_MS = 3000
 let micPollDelayMs = MIC_POLL_OK_MS
 let bootstrapPromise: Promise<void> | null = null
+/** Prevents overlapping greet playback (HMR duplicate SSE / race). */
+let greetingInFlight = false
+let wakeHandlerInFlight = false
+let summonSettingsWatchInstalled = false
+
+const SUMMON_ES_GLOBAL = '__antlerSummonEventSource'
+
+function closeSummonEventSource() {
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  try {
+    if (typeof window !== 'undefined') {
+      const prev = (window as unknown as Record<string, EventSource | undefined>)[SUMMON_ES_GLOBAL]
+      if (prev && prev !== eventSource) prev.close()
+      delete (window as unknown as Record<string, unknown>)[SUMMON_ES_GLOBAL]
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 export function useVoiceWake() {
   const api = useAntlerApi()
@@ -126,13 +154,22 @@ export function useVoiceWake() {
 
   async function onWakeGreeting(wakeGen: number) {
     if (wakeGen !== wakeGeneration) return
+    if (greetingInFlight) {
+      summonWarn('greeting skipped — already playing')
+      return
+    }
     const line = resolvedSampleReply.value
     if (!line) {
       summonWarn('greeting skipped — no sample reply (save one in Persona)')
       return
     }
+    greetingInFlight = true
+    stop()
     await unlockAudioPlayback()
-    if (wakeGen !== wakeGeneration) return
+    if (wakeGen !== wakeGeneration) {
+      greetingInFlight = false
+      return
+    }
     const opts = personaSpeakOptions()
     const cached = getCachedGreetingBlob(line, opts)
     summonLog('persona greeting →', {
@@ -161,16 +198,31 @@ export function useVoiceWake() {
         summonError('persona greeting failed (click the page once to unlock audio)', e2)
       }
     } finally {
+      greetingInFlight = false
       await notifySpeaking(false)
     }
   }
 
   async function setListenerSummonSession(active: boolean) {
     try {
-      await api.send('POST', '/api/voice/listener/config', { realtimeSessionActive: active })
+      await api.send('POST', '/api/voice/listener/config', {
+        summonSessionEngaged: active,
+        realtimeSessionActive: realtime.isActive.value,
+      })
     } catch {
       /* ignore */
     }
+  }
+
+  async function rollbackAbortedWake(wakeGen: number, stage: string, source: string) {
+    if (wakeGen === wakeGeneration) return
+    summonVerbose(`wake aborted ${stage}`, { source })
+    wakeHandshakeUntil = 0
+    wakeFlowInProgress = false
+    clearSummonSession()
+    mode.value = 'sleep'
+    await setListenerSummonSession(false)
+    await setMode('sleep')
   }
 
   async function handleSummonWake(source: string, payload: Record<string, unknown> = {}) {
@@ -180,6 +232,11 @@ export function useVoiceWake() {
     }
     const now = Date.now()
     const isManualTest = source === 'test-button' || source === 'simulate'
+
+    if (!isManualTest && (wakeHandlerInFlight || greetingInFlight)) {
+      summonLog('wake deduped — greeting flow in flight', { source })
+      return
+    }
 
     if (!isManualTest && !settings.value.summon.globalListenEnabled) {
       summonInfo('wake ignored — global listen disabled', { source, phrase: payload.phrase })
@@ -205,59 +262,62 @@ export function useVoiceWake() {
       return
     }
     lastWakeHandledAt = now
+    wakeHandlerInFlight = true
     wakeHandshakeUntil = now + WAKE_HANDSHAKE_MS
     wakeFlowInProgress = true
     const wakeGen = ++wakeGeneration
     resetSummonTimer(`wake (${source})`)
     const phrase = String(payload.phrase || payload.source || '').trim() || null
-    summonMic('mic receive!! wake word', { source, phrase: phrase || '(none)' })
-    summonInfo('detected', { source, phrase, mode: mode.value, realtime: realtime.isActive.value })
-    summonBanner('Wake detected', { source, phrase: phrase || '(none)' })
+    const transcript = String(payload.transcript || '').trim() || null
+    summonMic('mic receive!! wake word', { source, phrase: phrase || '(none)', transcript })
+    summonInfo('detected', { source, phrase, transcript, mode: mode.value, realtime: realtime.isActive.value })
+    summonBanner('Wake detected', { source, phrase: phrase || '(none)', transcript: transcript || undefined })
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('antler:summon-wake', { detail: { source, phrase: phrase || '' } }),
       )
     }
-    await unlockAudioPlayback()
-    if (wakeGen !== wakeGeneration) {
-      summonVerbose('wake aborted after unlock', { source })
-      wakeHandshakeUntil = 0
-      wakeFlowInProgress = false
-      return
-    }
-    mode.value = 'active'
-    markSummonSessionActive()
-    await setMode('active')
-    if (wakeGen !== wakeGeneration) {
-      summonVerbose('wake aborted after setMode', { source })
-      wakeHandshakeUntil = 0
-      wakeFlowInProgress = false
-      return
-    }
-    await setListenerSummonSession(true)
-    await onWakeGreeting(wakeGen)
-    if (wakeGen !== wakeGeneration) {
-      summonVerbose('wake aborted after greeting', { source })
-      wakeHandshakeUntil = 0
-      wakeFlowInProgress = false
-      return
-    }
-    if (settings.value.realtime.enabled && !realtime.isActive.value) {
-      summonLog('starting realtime after greeting')
-      try {
-        await realtime.start({ afterWake: true })
-        summonLog('realtime session started')
-      } catch (err) {
-        summonError('realtime start failed after greeting', err)
+    try {
+      stop()
+      await unlockAudioPlayback()
+      if (wakeGen !== wakeGeneration) {
+        summonVerbose('wake aborted after unlock', { source })
+        wakeHandshakeUntil = 0
+        wakeFlowInProgress = false
+        return
       }
+      mode.value = 'active'
+      markSummonSessionActive()
+      await setListenerSummonSession(true)
+      await setMode('active')
+      if (wakeGen !== wakeGeneration) {
+        await rollbackAbortedWake(wakeGen, 'after setMode', source)
+        return
+      }
+      await onWakeGreeting(wakeGen)
+      if (wakeGen !== wakeGeneration) {
+        await rollbackAbortedWake(wakeGen, 'after greeting', source)
+        return
+      }
+      if (settings.value.realtime.enabled && !realtime.isActive.value) {
+        summonLog('starting realtime after greeting')
+        try {
+          await realtime.start({ afterWake: true })
+          summonLog('realtime session started')
+        } catch (err) {
+          summonError('realtime start failed after greeting', err)
+        }
+      }
+      startSummonIdleWatch(
+        () => settings.value.summon.idleTimeoutSec || 300,
+        () => summonSessionActive.value,
+      )
+      summonLog('complete', { source, phrase })
+      wakeHandshakeUntil = 0
+      wakeFlowInProgress = false
+    } finally {
+      wakeHandlerInFlight = false
     }
-    startSummonIdleWatch(
-      () => settings.value.summon.idleTimeoutSec || 300,
-      () => summonSessionActive.value,
-    )
-    summonLog('complete', { source, phrase })
-    wakeHandshakeUntil = 0
-    wakeFlowInProgress = false
   }
 
   async function endSummonSession(reason: string) {
@@ -267,15 +327,19 @@ export function useVoiceWake() {
     wakeFlowInProgress = false
     clearSummonSession()
     stop()
-    await notifySpeaking(false)
     mode.value = 'sleep'
     lastWakeHandledAt = Date.now()
-    await setListenerSummonSession(false)
-    if (realtime.isActive.value) {
-      await realtime.stop()
+    try {
+      await notifySpeaking(false)
+      await setListenerSummonSession(false)
+      if (realtime.isActive.value) {
+        await realtime.stop()
+      }
+      await setMode('sleep')
+      await syncListenerConfig()
+    } catch (e) {
+      summonWarn('endSummonSession partial cleanup failed', e)
     }
-    await setMode('sleep')
-    await syncListenerConfig()
   }
 
   function isSummonEngaged() {
@@ -314,31 +378,8 @@ export function useVoiceWake() {
     )
   }
 
-  async function testWakeGreeting() {
-    summonInfo('manual test greeting')
-    await handleSummonWake('test-button')
-  }
-
-  async function simulateWake() {
-    summonInfo('simulate wake — testing greeting + listener pipeline')
-    await unlockAudioPlayback()
-    try {
-      await api.send('POST', '/api/voice/listener/wake', { source: 'simulate' })
-    } catch (e) {
-      summonWarn('listener wake API failed, continuing with local greeting', e)
-    }
-    await handleSummonWake('simulate')
-  }
-
   function effectiveWakePhrases(): string[] {
-    const phrases = dedupeWakePhrases(settings.value.summon.wakePhrases)
-    const base = dedupeWakePhrases([...(phrases.length ? phrases : []), ...DEFAULT_SUMMON_WAKE_PHRASES])
-    const uiLocale = typeof navigator !== 'undefined' ? navigator.language : 'en'
-    const lang = resolveReplyLanguage(settings.value.voice.replyLanguage, uiLocale)
-    if (lang === 'zh') {
-      return dedupeWakePhrases([...base, ...DEFAULT_ZH_WAKE_PHRASES])
-    }
-    return base
+    return dedupeWakePhrases(settings.value.summon.wakePhrases)
   }
 
   let syncDebounce: ReturnType<typeof setTimeout> | null = null
@@ -357,11 +398,12 @@ export function useVoiceWake() {
       globalListenEnabled: summon.globalListenEnabled,
       wakePhrases: effectiveWakePhrases(),
       idleTimeoutSec: summon.idleTimeoutSec,
-      wakeEngine: summon.wakeEngine,
+      wakeEngine: 'openwakeword',
+      wakeRequireStt: false,
       sensitivity: Math.min(0.9, Math.max(0.45, summon.sensitivity ?? 0.65)),
       porcupineAccessKey: summon.porcupineAccessKey,
-      clapWake: summon.clapWake,
-      clapWakeCount: summon.clapWakeCount,
+      clapWake: false,
+      clapWakeCount: 2,
       inputDeviceIndex: summon.inputDeviceIndex ?? null,
       personaEnabled: settings.value.persona.enabled,
       honorific: honorific.value,
@@ -370,11 +412,13 @@ export function useVoiceWake() {
       ownerKey: boss.chatOwnerKey || 'local:boss',
       ownerName: boss.session?.username || 'Boss',
       autoDispatch: true,
-      realtimeSessionActive:
+      realtimeSessionActive: realtime.isActive.value,
+      summonSessionEngaged:
         summonSessionActive.value && (mode.value === 'active' || mode.value === 'speaking'),
     }
     wakeLog('syncListenerConfig', {
       wakeEngine: body.wakeEngine,
+      wakeRequireStt: body.wakeRequireStt,
       sensitivity: body.sensitivity,
       wakePhrases: body.wakePhrases,
       replyLanguage: body.replyLanguage,
@@ -390,7 +434,11 @@ export function useVoiceWake() {
 
   async function setMode(next: VoiceWakeMode) {
     mode.value = next
-    await api.send('POST', '/api/voice/listener/mode', { mode: next })
+    try {
+      await api.send('POST', '/api/voice/listener/mode', { mode: next })
+    } catch (e) {
+      summonWarn('setMode failed — is dev server running?', e)
+    }
     if (isElectronApp()) {
       const m = next === 'speaking' ? 'active' : next
       await window.antlerDesktop?.voiceWakeSetMode?.(m === 'active' ? 'active' : 'sleep')
@@ -398,7 +446,11 @@ export function useVoiceWake() {
   }
 
   async function notifySpeaking(speaking: boolean) {
-    await api.send('POST', '/api/voice/listener/speaking', { speaking })
+    try {
+      await api.send('POST', '/api/voice/listener/speaking', { speaking })
+    } catch (e) {
+      summonWarn('notifySpeaking failed — is dev server running?', e)
+    }
     if (speaking) mode.value = 'speaking'
     else if (mode.value === 'speaking') mode.value = 'active'
   }
@@ -448,6 +500,10 @@ export function useVoiceWake() {
       summonVerbose('command_result ignored — session sleep', payload.text)
       return
     }
+    if (wakeFlowInProgress || isWakeFlowBusy()) {
+      summonVerbose('command_result ignored — wake greeting in progress', payload.text)
+      return
+    }
     if (realtime.isActive.value) {
       summonVerbose('command_result ignored — browser realtime active', payload.text)
       return
@@ -478,12 +534,16 @@ export function useVoiceWake() {
 
   function connectEvents() {
     if (typeof EventSource === 'undefined') return
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
-    }
+    closeSummonEventSource()
     clearReconnectTimer()
     eventSource = new EventSource('/api/voice/listener/events', { withCredentials: true })
+    try {
+      if (typeof window !== 'undefined') {
+        ;(window as unknown as Record<string, EventSource>)[SUMMON_ES_GLOBAL] = eventSource
+      }
+    } catch {
+      /* ignore */
+    }
 
     eventSource.onopen = () => {
       connected.value = true
@@ -517,12 +577,21 @@ export function useVoiceWake() {
         return
       }
       if (type === 'wake_miss') {
+        const reason = String(payload.reason || '')
         const rms = Number(payload.utteranceRms ?? payload.peakRms ?? 0)
-        const hint =
-          rms > 0 && rms < 40
-            ? 'mic too quiet — move closer and say: Hey Jarvis'
-            : 'speak clearly: Hey Jarvis / Hi Jarvis'
-        summonWarn(`heard speech but no wake phrase — ${hint}`, payload)
+        const heard = String(payload.transcript || '').trim()
+        const listenHint = wakeListenHint(effectiveWakePhrases())
+        let hint: string
+        if (reason === 'utterance_too_short') {
+          hint = `clip too short — say the full wake phrase slowly (${listenHint})`
+        } else if (reason === 'quiet_utterance') {
+          hint = `mic too quiet (rms ${Math.round(rms)}) — move closer; ${listenHint}`
+        } else if (heard) {
+          hint = `heard "${heard}" — not a wake phrase; ${listenHint}`
+        } else {
+          hint = listenHint
+        }
+        summonVerbose('wake_miss', { reason, heard, hint })
         return
       }
       summonVerbose('event', type, payload)
@@ -537,7 +606,11 @@ export function useVoiceWake() {
       }
       if (type === 'transcript') {
         lastTranscript.value = String(payload.text || '')
-        wakeLog('transcript', lastTranscript.value)
+        if (isSummonEngaged()) {
+          wakeLog('transcript', lastTranscript.value)
+        } else {
+          summonVerbose('transcript ignored — sleep', lastTranscript.value)
+        }
         return
       }
       if (type === 'command_result') {
@@ -605,8 +678,15 @@ export function useVoiceWake() {
 
       const above = vad > 0 && rms >= vad
       const now = Date.now()
+      const wakeHint = wakeListenHint(effectiveWakePhrases())
+      if (above) lastMicAboveVadAt = now
       if (above && !micWasAboveVad) {
-        summonMic('mic receive (VAD only — say Hey Jarvis)', { rms, vad, mode: modeLabel })
+        summonMic(`mic receive (VAD only — ${wakeHint})`, {
+          rms,
+          vad,
+          mode: modeLabel,
+          wakePhrases: phrases,
+        })
         lastMicLogAt = now
       } else if (above && now - lastMicLogAt >= 1500) {
         summonMic('mic receive', { rms, vad, mode: modeLabel })
@@ -641,31 +721,55 @@ export function useVoiceWake() {
       clearInterval(listenerResyncTimer)
       listenerResyncTimer = null
     }
-    eventSource?.close()
-    eventSource = null
+    closeSummonEventSource()
     connected.value = false
   }
 
   async function repairStaleListenerFlags() {
     if (wakeFlowInProgress) return
+    const now = Date.now()
     try {
       const res = await api.get<{
         health?: { data?: { state?: { mode?: string } } }
-        config?: { realtimeSessionActive?: boolean }
+        config?: { realtimeSessionActive?: boolean; summonSessionEngaged?: boolean }
       }>('/api/voice/listener/status', { timeoutMs: 3000 })
       const listenerMode = res.health?.data?.state?.mode
-      const staleRealtime = res.config?.realtimeSessionActive === true
+      const staleSummon = res.config?.summonSessionEngaged === true
+      const staleRealtime = res.config?.realtimeSessionActive === true && !realtime.isActive.value
       const clientEngaged = summonSessionActive.value || isSummonEngaged()
 
-      if (!clientEngaged && staleRealtime) {
-        summonWarn('clearing stale realtimeSessionActive on listener (was blocking wake in sleep)')
+      if (!clientEngaged && (staleSummon || staleRealtime) && now - lastStaleRealtimeRepairAt >= 15_000) {
+        lastStaleRealtimeRepairAt = now
+        summonWarn('clearing stale listener session flags (was blocking sleep wake)')
         await setListenerSummonSession(false)
-        await syncListenerConfig()
+      }
+      if (
+        summonSessionActive.value &&
+        mode.value === 'sleep' &&
+        !realtime.isActive.value &&
+        !wakeFlowInProgress
+      ) {
+        summonWarn('repair: stale summonSessionActive while sleep — clearing')
+        clearSummonSession()
+        await setListenerSummonSession(false)
+        await setMode('sleep')
+        return
       }
       if (!clientEngaged && (listenerMode === 'active' || listenerMode === 'speaking')) {
-        await forceListenerSleep('client sleep / listener active mismatch')
+        const orphanSince = listenerOrphanActiveSince || (listenerOrphanActiveSince = now)
+        const speakingNow = now - lastMicAboveVadAt < 2500
+        if (speakingNow) {
+          summonVerbose('listener orphan-active during speech — deferring sleep repair')
+        } else if (now - orphanSince >= 4000) {
+          listenerOrphanActiveSince = 0
+          await forceListenerSleep('client sleep / listener active mismatch')
+        }
+      } else {
+        listenerOrphanActiveSince = 0
       }
-      if (clientEngaged && listenerMode === 'sleep' && !realtime.isActive.value) {
+      const clientWantsListenerActive =
+        mode.value === 'active' || mode.value === 'speaking' || realtime.isActive.value
+      if (clientWantsListenerActive && listenerMode === 'sleep' && !realtime.isActive.value) {
         summonVerbose('client engaged but listener sleep — resync listener mode (no greeting)')
         await setMode(mode.value === 'speaking' ? 'speaking' : 'active')
         await setListenerSummonSession(true)
@@ -700,14 +804,10 @@ export function useVoiceWake() {
       return
     }
     summonInfo('bootstrap start', {
-      wakeEngine: settings.value.summon.wakeEngine,
+      wakeEngine: 'openwakeword',
       wakePhrases: effectiveWakePhrases(),
       clipPhrases: Object.keys(settings.value.summon.wakePhraseClips || {}),
     })
-    if (!dedupeWakePhrases(settings.value.summon.wakePhrases).length) {
-      updateSummon({ wakePhrases: [...DEFAULT_SUMMON_WAKE_PHRASES] })
-      summonLog('seeded default wake phrases', DEFAULT_SUMMON_WAKE_PHRASES)
-    }
     if (!isSummonEngaged()) {
       await setListenerSummonSession(false)
       await setMode('sleep')
@@ -734,32 +834,46 @@ export function useVoiceWake() {
     })
     if (isElectronApp()) {
       const status = await window.antlerDesktop?.voiceWakeGetStatus?.()
-      if (status?.state?.mode === 'active' || status?.state?.mode === 'speaking') {
+      if (
+        summonSessionActive.value &&
+        (status?.state?.mode === 'active' || status?.state?.mode === 'speaking')
+      ) {
         mode.value = status.state.mode
       }
       window.antlerDesktop?.onVoiceWakeState?.((state) => {
         summonLog('desktop state', state)
+        if (!summonSessionActive.value) return
         if (state.mode === 'active' || state.mode === 'speaking') mode.value = state.mode
         else mode.value = 'sleep'
       })
     }
   }
 
-  watch(
-    () => settings.value.summon,
-    () => {
-      scheduleSyncListenerConfig()
-    },
-    { deep: true },
-  )
+  if (!summonSettingsWatchInstalled) {
+    summonSettingsWatchInstalled = true
+    watch(
+      () => settings.value.summon,
+      () => {
+        scheduleSyncListenerConfig()
+      },
+      { deep: true },
+    )
 
-  watch(
-    () => [settings.value.persona, settings.value.voice.replyLanguage, honorific.value, boss.chatOwnerKey],
-    () => {
-      scheduleSyncListenerConfig()
-    },
-    { deep: true },
-  )
+    watch(
+      () => [settings.value.persona, settings.value.voice.replyLanguage, honorific.value, boss.chatOwnerKey],
+      () => {
+        scheduleSyncListenerConfig()
+      },
+      { deep: true },
+    )
+
+    watch(
+      () => realtime.isActive.value,
+      () => {
+        if (summonSessionActive.value) scheduleSyncListenerConfig()
+      },
+    )
+  }
 
   return {
     mode,
@@ -770,8 +884,6 @@ export function useVoiceWake() {
     syncListenerConfig,
     setMode,
     notifySpeaking,
-    testWakeGreeting,
-    simulateWake,
     bootstrap,
     disconnectEvents,
     endSummonSession,

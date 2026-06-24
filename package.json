@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "node --watch --env-file=.env server/index.js",
-    "dev:server:clean": "node scripts/kill-antleroffice-dev-ports.cjs && node scripts/kill-port.cjs 8766 8767 8931 && node --watch --env-file=.env server/index.js",
+    "dev:server:clean": "node scripts/kill-port.cjs 3020 8766 8767 8931 && node --watch --env-file=.env server/index.js",
     "dev:all": "concurrently -n \"frontend,backend\" -c \"blue,green\" \"vite\" \"node --watch --env-file=.env server/index.js\"",
     "dev:chrome": "node scripts/kill-antleroffice-dev-ports.cjs && concurrently -n \"frontend,backend\" -c \"blue,green\" \"vite\" \"node --watch --env-file=.env server/index.js\"",
     "dev:electron": "node scripts/kill-antleroffice-dev-ports.cjs && concurrently -n \"frontend,backend,electron\" -c \"blue,green,magenta\" \"vite\" \"node --watch --env-file=.env server/index.js\" \"node scripts/wait-for-dev.cjs && cross-env ELECTRON_DEV=1 electron .\"",

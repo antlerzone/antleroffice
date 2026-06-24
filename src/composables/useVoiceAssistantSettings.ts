@@ -4,7 +4,6 @@ import { useBossStore } from '@/stores/boss'
 import {
   DEFAULT_JARVIS_PERSONA_PROMPT,
   DEFAULT_JARVIS_PERSONA_PROMPT_ZH,
-  DEFAULT_SUMMON_WAKE_PHRASES,
   buildDefaultSampleReply,
   defaultHonorific,
   defaultTtsVoiceForLanguage,
@@ -33,15 +32,18 @@ export interface VoiceAssistantSettings {
   summon: {
     globalListenEnabled: boolean
     wakeEngine: WakeEngine
+    /** When false, acoustic engines (openWakeWord) wake by sound without STT text confirmation. */
+    wakeRequireStt?: boolean
     wakePhrases: string[]
     idleTimeoutSec: number
     porcupineAccessKey: string
     sensitivity: number
     wakePhraseClips?: Record<string, string>
-    clapWake: boolean
-    clapWakeCount: number
     /** null = system default / auto-scan */
     inputDeviceIndex: number | null
+    /** Spoken on wake (summon greeting); cached for instant playback. */
+    sampleReply: string
+    replyVoice: PersonaReplyVoice
   }
   voice: {
     enabled: boolean
@@ -64,9 +66,6 @@ export interface VoiceAssistantSettings {
     enabled: boolean
     honorific: string
     systemPrompt: string
-    /** Spoken on wake (summon) and used as preview text; AI replies use replyVoice. */
-    sampleReply: string
-    replyVoice: PersonaReplyVoice
   }
   realtime: {
     enabled: boolean
@@ -123,14 +122,15 @@ function buildDefaults(locale: string): VoiceAssistantSettings {
     summon: {
       globalListenEnabled: true,
       wakeEngine: 'openwakeword',
-      wakePhrases: [...DEFAULT_SUMMON_WAKE_PHRASES],
+      wakeRequireStt: false,
+      wakePhrases: [],
       idleTimeoutSec: 300,
       porcupineAccessKey: '',
       sensitivity: 0.5,
       wakePhraseClips: {},
-      clapWake: false,
-      clapWakeCount: 2,
       inputDeviceIndex: null,
+      sampleReply: '',
+      replyVoice: 'default',
     },
     voice: {
       enabled: envBool('VITE_TTS_ENABLED', true),
@@ -152,8 +152,6 @@ function buildDefaults(locale: string): VoiceAssistantSettings {
       enabled: true,
       honorific: defaultHonorific(locale),
       systemPrompt: DEFAULT_JARVIS_PERSONA_PROMPT,
-      sampleReply: '',
-      replyVoice: 'default',
     },
     realtime: {
       enabled: false,
@@ -184,9 +182,11 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
   const out = { ...defaults, ...stored }
   out.summon = { ...defaults.summon, ...(stored.summon || {}) }
   if (!out.summon.wakePhraseClips) out.summon.wakePhraseClips = {}
-  if (out.summon.clapWake === undefined) out.summon.clapWake = false
-  if (!out.summon.clapWakeCount) out.summon.clapWakeCount = 2
   if (out.summon.inputDeviceIndex === undefined) out.summon.inputDeviceIndex = null
+  out.summon.wakeEngine = 'openwakeword'
+  // Acoustic wake: openWakeWord matches "Hey Jarvis" by sound, so never gate it
+  // behind STT text matching (which mis-hears Jarvis as guys/Jason/Bryan).
+  out.summon.wakeRequireStt = false
   out.voice = { ...defaults.voice, ...(stored.voice || {}) }
   if (out.voice.ttsEngine === 'cosyvoice') {
     out.voice.ttsEngine = 'edgetts'
@@ -227,14 +227,6 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
   if (out.voice.elevenLabsVoiceId) out.realtime.elevenLabsVoiceId = out.voice.elevenLabsVoiceId
   if (out.voice.fishAudioApiKey) out.realtime.fishAudioApiKey = out.voice.fishAudioApiKey
   if (out.voice.fishAudioVoiceId) out.realtime.fishAudioVoiceId = out.voice.fishAudioVoiceId
-  if (
-    out.persona.replyVoice === 'default' &&
-    out.realtime.voiceOutput === 'elevenlabs' &&
-    out.voice.elevenLabsApiKey?.trim() &&
-    out.voice.elevenLabsVoiceId?.trim()
-  ) {
-    out.persona.replyVoice = 'elevenlabs'
-  }
   out.persona = { ...defaults.persona, ...(stored.persona || {}) }
   out.realtime = { ...defaults.realtime, ...(stored.realtime || {}) }
   out.voiceApi = { ...defaults.voiceApi, ...(stored.voiceApi || {}) }
@@ -285,8 +277,25 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
   if (!String(out.persona.systemPrompt || '').trim()) {
     out.persona.systemPrompt = DEFAULT_JARVIS_PERSONA_PROMPT
   }
-  if (out.persona.sampleReply === undefined) out.persona.sampleReply = ''
-  if (!out.persona.replyVoice) out.persona.replyVoice = 'default'
+  const legacyPersonaFields = stored.persona as
+    | { sampleReply?: string; replyVoice?: PersonaReplyVoice }
+    | undefined
+  if (!out.summon.sampleReply && legacyPersonaFields?.sampleReply) {
+    out.summon.sampleReply = legacyPersonaFields.sampleReply
+  }
+  if (!out.summon.replyVoice && legacyPersonaFields?.replyVoice) {
+    out.summon.replyVoice = legacyPersonaFields.replyVoice
+  }
+  if (out.summon.sampleReply === undefined) out.summon.sampleReply = ''
+  if (!out.summon.replyVoice) out.summon.replyVoice = 'default'
+  if (
+    out.summon.replyVoice === 'default' &&
+    out.realtime.voiceOutput === 'elevenlabs' &&
+    out.voice.elevenLabsApiKey?.trim() &&
+    out.voice.elevenLabsVoiceId?.trim()
+  ) {
+    out.summon.replyVoice = 'elevenlabs'
+  }
 
   try {
     const legacyTts = localStorage.getItem('tts-settings')
@@ -315,15 +324,11 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
     out.summon.wakePhrases,
     out.summon.wakePhraseClips || {},
   )
-  if (out.summon.wakeEngine === 'openwakeword' && out.summon.wakePhrases.length === 0) {
-    out.summon.wakeEngine = 'whisper'
-  }
-
   const resolvedLang = resolveReplyLanguage(out.voice.replyLanguage, locale)
   if (out.voice.replyLanguage !== 'auto') {
-    const sample = out.persona.sampleReply?.trim()
+    const sample = out.summon.sampleReply?.trim()
     if (sample && detectTextLanguage(sample) !== resolvedLang) {
-      out.persona.sampleReply = buildDefaultSampleReply(
+      out.summon.sampleReply = buildDefaultSampleReply(
         out.persona.honorific,
         resolvedLang === 'zh' ? 'zh' : 'en',
       )
@@ -443,7 +448,9 @@ export function useVoiceAssistantSettings() {
     })
 
     const persona = settings.value.persona
+    const summon = settings.value.summon
     const personaPatch: Partial<VoiceAssistantSettings['persona']> = {}
+    const summonPatch: Partial<VoiceAssistantSettings['summon']> = {}
     const h = persona.honorific?.trim()
     if (resolved === 'zh' && (!h || h === 'sir' || h === 'boss')) {
       personaPatch.honorific = '老板'
@@ -454,14 +461,14 @@ export function useVoiceAssistantSettings() {
     const honorificForDefault = personaPatch.honorific || h || defaultHonorific(locale.value)
     const zhDefault = buildDefaultSampleReply(honorificForDefault, 'zh')
     const enDefault = buildDefaultSampleReply(honorificForDefault, 'en')
-    const saved = persona.sampleReply?.trim()
+    const saved = summon.sampleReply?.trim()
     const enPrompt = DEFAULT_JARVIS_PERSONA_PROMPT.trim()
     const zhPrompt = DEFAULT_JARVIS_PERSONA_PROMPT_ZH.trim()
     const prompt = persona.systemPrompt?.trim()
 
     if (lang !== 'auto') {
       if (!saved || saved === zhDefault || saved === enDefault || detectTextLanguage(saved) !== resolved) {
-        personaPatch.sampleReply = resolved === 'zh' ? zhDefault : enDefault
+        summonPatch.sampleReply = resolved === 'zh' ? zhDefault : enDefault
         clearPersonaGreetingCache()
       }
       if (!prompt || prompt === enPrompt || prompt === zhPrompt) {
@@ -472,10 +479,13 @@ export function useVoiceAssistantSettings() {
     if (Object.keys(personaPatch).length) {
       updatePersona(personaPatch)
     }
+    if (Object.keys(summonPatch).length) {
+      updateSummon(summonPatch)
+    }
     summonInfo('reply language changed', {
       setting: lang,
       resolved,
-      sampleReply: personaPatch.sampleReply || persona.sampleReply,
+      sampleReply: summonPatch.sampleReply || summon.sampleReply,
       honorific: personaPatch.honorific || persona.honorific,
     })
   }

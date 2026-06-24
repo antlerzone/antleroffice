@@ -5,13 +5,12 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   NModal, NCard, NSpace, NButton, NText, NIcon,
-  NTag, NAlert, NSteps, NStep, NSwitch,
+  NTag, NAlert, NSteps, NStep,
 } from 'naive-ui'
 import {
   FlashOutline,
   MicOutline,
   CheckmarkCircleOutline,
-  HandLeftOutline,
 } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
@@ -20,17 +19,13 @@ import { isElectronApp } from '@/lib/desktop-shell'
 const WIZARD_KEY = 'antler:voice-setup-wizard-v3-dismissed'
 
 const { t } = useI18n()
-const { settings, updateSummon } = useVoiceAssistantSettings()
+const { settings } = useVoiceAssistantSettings()
 
 const show = ref(false)
 const step = ref(0)
 
 const hasWakePhrase = computed(() => settings.value.summon.wakePhrases.length > 0)
-const summonReady = computed(
-  () => hasWakePhrase.value || settings.value.summon.clapWake,
-)
-
-const alreadyConfigured = computed(() => summonReady.value)
+const summonReady = computed(() => hasWakePhrase.value)
 
 function dismiss() {
   show.value = false
@@ -38,9 +33,6 @@ function dismiss() {
 }
 
 function next() {
-  if (step.value === 2 && draftClap.value) {
-    updateSummon({ clapWake: true, clapWakeCount: 2 })
-  }
   step.value++
 }
 
@@ -48,16 +40,13 @@ function back() {
   if (step.value > 0) step.value--
 }
 
-const draftClap = ref(false)
-
 onMounted(() => {
   try {
     if (localStorage.getItem(WIZARD_KEY)) return
     if (localStorage.getItem('antler:voice-setup-wizard-v2-dismissed')) return
   } catch { /* ignore */ }
   if (!isElectronApp()) return
-  draftClap.value = settings.value.summon.clapWake
-  if (alreadyConfigured.value) return
+  if (summonReady.value) return
   show.value = true
 })
 </script>
@@ -82,7 +71,6 @@ onMounted(() => {
       <NSteps :current="step + 1" style="margin-bottom: 24px" size="small">
         <NStep :title="t('pages.settings.voiceAssistant.wizard.stepWelcome')" />
         <NStep :title="t('pages.settings.voiceAssistant.wizard.stepWake')" />
-        <NStep :title="t('pages.settings.voiceAssistant.wizard.stepClap')" />
         <NStep :title="t('pages.settings.voiceAssistant.wizard.stepDone')" />
       </NSteps>
 
@@ -124,20 +112,6 @@ onMounted(() => {
         </NSpace>
       </div>
 
-      <div v-else-if="step === 2">
-        <NSpace vertical :size="16">
-          <NSpace align="center">
-            <NIcon :component="HandLeftOutline" size="22" color="var(--primary-color)" />
-            <NText strong style="font-size: 15px">{{ t('pages.settings.voiceAssistant.wizard.clapTitle') }}</NText>
-          </NSpace>
-          <NText style="line-height: 1.6">{{ t('pages.settings.voiceAssistant.wizard.clapBody') }}</NText>
-          <div>
-            <NSwitch v-model:value="draftClap" />
-            <NText style="margin-left: 8px">{{ t('pages.settings.voiceAssistant.wizard.clapEnable') }}</NText>
-          </div>
-        </NSpace>
-      </div>
-
       <div v-else>
         <NSpace vertical :size="16" align="center" style="text-align: center; padding: 16px 0">
           <NIcon :component="CheckmarkCircleOutline" size="48" color="#18a058" />
@@ -153,10 +127,10 @@ onMounted(() => {
 
       <template #footer>
         <NSpace justify="end">
-          <NButton v-if="step > 0 && step < 3" @click="back">
+          <NButton v-if="step > 0 && step < 2" @click="back">
             {{ t('pages.settings.voiceAssistant.wizard.back') }}
           </NButton>
-          <NButton v-if="step < 3" type="primary" @click="next">
+          <NButton v-if="step < 2" type="primary" @click="next">
             {{ t('pages.settings.voiceAssistant.wizard.next') }}
           </NButton>
           <NButton v-else type="primary" @click="dismiss">

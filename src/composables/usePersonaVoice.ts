@@ -17,7 +17,7 @@ export function usePersonaVoice() {
 
   const resolvedSampleReply = computed(() =>
     resolvePersonaSampleReply(
-      settings.value.persona.sampleReply,
+      settings.value.summon.sampleReply,
       honorific.value,
       settings.value.voice.replyLanguage,
       locale.value,
@@ -25,7 +25,7 @@ export function usePersonaVoice() {
   )
 
   function personaSpeakOptions(): SpeakOptions | undefined {
-    const rv = settings.value.persona.replyVoice || 'default'
+    const rv = settings.value.summon.replyVoice || 'default'
     const v = settings.value.voice
     const rt = settings.value.realtime
     if (rv === 'elevenlabs') {

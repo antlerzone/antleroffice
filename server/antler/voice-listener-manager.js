@@ -50,9 +50,10 @@ const HEALTH_CACHE_MS = 1200;
 
 const listenerConfig = {
   globalListenEnabled: true,
-  wakePhrases: ['Hey Jarvis', 'Hi Jarvis'],
+  wakePhrases: [],
   idleTimeoutSec: 300,
   wakeEngine: 'openwakeword',
+  wakeRequireStt: false,
   sensitivity: 0.5,
   porcupineAccessKey: '',
   personaEnabled: true,
@@ -63,8 +64,8 @@ const listenerConfig = {
   ownerName: 'Boss',
   autoDispatch: true,
   inputDeviceIndex: null,
-  replyLanguage: 'auto',
   realtimeSessionActive: false,
+  summonSessionEngaged: false,
 };
 
 const eventSubscribers = new Set();
@@ -166,18 +167,8 @@ function startListenerProcess(py) {
   });
 }
 
-const DEFAULT_LISTENER_WAKE_PHRASES = ['Hey Jarvis', 'Hi Jarvis'];
-
 function mergeDefaultWakePhrases(phrases) {
-  const merged = [...(phrases || [])];
-  const seen = new Set(merged.map((p) => normalizeWakePhraseText(p)).filter(Boolean));
-  for (const phrase of DEFAULT_LISTENER_WAKE_PHRASES) {
-    const key = normalizeWakePhraseText(phrase);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    merged.push(phrase);
-  }
-  return merged;
+  return [...(phrases || [])].filter((p) => String(p || '').trim())
 }
 
 /** True when STT text is only wake phrases (echo / prompt bleed) — not a command. */
@@ -217,6 +208,7 @@ async function pushConfigToListener() {
     ...listenerConfig,
     wakePhrases: mergeDefaultWakePhrases(mergeWakePhrasesFromClips(listenerConfig.wakePhrases || [])),
     realtimeSessionActive: listenerConfig.realtimeSessionActive === true,
+    summonSessionEngaged: listenerConfig.summonSessionEngaged === true,
   };
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
@@ -307,6 +299,9 @@ function ensureListenerSidecarAsync() {
 
 function updateListenerConfig(patch) {
   const next = { ...(patch || {}) };
+  next.wakeEngine = 'openwakeword';
+  next.wakeRequireStt = false;
+  next.clapWake = false;
   if (Array.isArray(next.wakePhrases) || wakeClipsStore.listClips().length) {
     next.wakePhrases = mergeWakePhrasesFromClips(next.wakePhrases || listenerConfig.wakePhrases || []);
   }

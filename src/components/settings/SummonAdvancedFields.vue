@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NSpace, NAlert, NText, NSelect, NInput, NInputNumber, NSlider } from 'naive-ui'
+import { NSpace, NText, NSelect, NInputNumber, NSlider } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
 import { useAntlerApi } from '@/composables/useAntlerApi'
@@ -39,12 +39,6 @@ onMounted(() => {
   void loadMicDevices()
 })
 
-const wakeEngineOptions = computed(() => [
-  { label: t('pages.settings.voiceAssistant.summon.engineOpenWakeWord'), value: 'openwakeword' },
-  { label: t('pages.settings.voiceAssistant.summon.enginePorcupine'), value: 'porcupine' },
-  { label: t('pages.settings.voiceAssistant.summon.engineWhisper'), value: 'whisper' },
-])
-
 const idleMinutes = computed({
   get: () => Math.round(settings.value.summon.idleTimeoutSec / 60),
   set: (m: number) => updateSummon({ idleTimeoutSec: Math.max(1, m) * 60 }),
@@ -53,53 +47,6 @@ const idleMinutes = computed({
 
 <template>
   <NSpace vertical :size="16">
-    <div>
-      <NText strong>{{ t('pages.settings.voiceAssistant.summon.wakeEngine') }}</NText>
-      <NSelect
-        :value="settings.summon.wakeEngine"
-        :options="wakeEngineOptions"
-        :disabled="!summonHost"
-        style="margin-top: 8px; max-width: 360px"
-        @update:value="(v) => updateSummon({ wakeEngine: v })"
-      />
-      <NAlert
-        v-if="settings.summon.wakeEngine === 'openwakeword'"
-        type="info"
-        :show-icon="false"
-        style="margin-top: 8px; max-width: 640px"
-      >
-        {{ t('pages.settings.voiceAssistant.summon.engineOpenWakeWordHint') }}
-      </NAlert>
-      <NAlert
-        v-else-if="settings.summon.wakeEngine === 'porcupine'"
-        type="info"
-        :show-icon="false"
-        style="margin-top: 8px; max-width: 640px"
-      >
-        {{ t('pages.settings.voiceAssistant.summon.enginePorcupineHint') }}
-      </NAlert>
-      <NAlert
-        v-else-if="settings.summon.wakeEngine === 'whisper'"
-        type="info"
-        :show-icon="false"
-        style="margin-top: 8px; max-width: 640px"
-      >
-        {{ t('pages.settings.voiceAssistant.summon.engineWhisperHint') }}
-      </NAlert>
-    </div>
-
-    <div v-if="settings.summon.wakeEngine === 'porcupine'">
-      <NText strong>{{ t('pages.settings.voiceAssistant.summon.porcupineKey') }}</NText>
-      <NInput
-        :value="settings.summon.porcupineAccessKey"
-        type="password"
-        show-password-on="click"
-        :placeholder="t('pages.settings.voiceAssistant.summon.porcupineKeyPlaceholder')"
-        style="margin-top: 8px; max-width: 480px"
-        @update:value="(v) => updateSummon({ porcupineAccessKey: v })"
-      />
-    </div>
-
     <div>
       <NText strong>{{ t('pages.settings.voiceAssistant.summon.idleTimeout') }}</NText>
       <NInputNumber

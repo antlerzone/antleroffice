@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
+
+# Lightweight debug log written into the repo so it can be inspected directly.
+WAKE_DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wake-debug.log')
+
+
+def wlog(msg: str) -> None:
+    """Append a timestamped line to wake-debug.log (best effort, never raises)."""
+    try:
+        with open(WAKE_DEBUG_LOG, 'a', encoding='utf-8') as f:
+            f.write(f'{time.strftime("%H:%M:%S")} {msg}\n')
+    except Exception:
+        pass
 
 # Built-in phrase → openWakeWord model names (English models only).
 OPENWAKEWORD_PHRASE_MODELS: dict[str, str] = {
@@ -32,6 +45,20 @@ PORCUPINE_PHRASE_KEYWORDS: dict[str, str] = {
 }
 
 OWW_CHUNK_SAMPLES = 1280
+
+# Whisper often mis-hears "Jarvis" — accept close greetings when phrases include Jarvis.
+_JARVIS_GREETING_PREFIXES = frozenset({
+    'hey', 'hi', 'hay', 'hei', 'hej', 'hello', 'hallo', 'hiya', 'heya',
+})
+_JARVIS_SOUNDALIKES = frozenset({
+    'jarvis', 'alice', 'service', 'travis', 'chargers', 'charvis', 'jarvus',
+    'gervais', 'harvis', 'janice', 'harris', 'jarvish', 'jarves', 'jarvas',
+    'jarvice', 'garvis', 'carvis', 'marvis', 'charice', 'charis', 'cherise',
+    'cherish', 'charice', 'chalice', 'jarvis', 'jervis', 'jarvies',
+    # Common Whisper mis-hears of "Jarvis" on quiet / accented speech.
+    'guys', 'jason', 'jarvais', 'jaris', 'javis', 'jayvis', 'jervais',
+    'jarviss', 'darvis', 'jarvi', 'jarv',
+})
 
 
 def _oww_model_file(stem: str) -> str:
@@ -135,6 +162,38 @@ def _normalize_phrase(text: str) -> str:
     return re.sub(r'\s+', ' ', t).strip()
 
 
+def _sounds_like_jarvis(word: str) -> bool:
+    w = str(word or '').strip('.,!?').lower()
+    if len(w) < 4 or len(w) > 12:
+        return False
+    if 'jarv' in w or w.endswith('vis') or 'alic' in w:
+        return True
+    # Simple edit distance to "jarvis" (allow 2 edits for short names).
+    target = 'jarvis'
+    if abs(len(w) - len(target)) > 2:
+        return False
+    edits = 0
+    i = j = 0
+    while i < len(w) and j < len(target):
+        if w[i] == target[j]:
+            i += 1
+            j += 1
+        elif edits >= 2:
+            return False
+        elif len(w) - i > len(target) - j:
+            edits += 1
+            i += 1
+        elif len(w) - i < len(target) - j:
+            edits += 1
+            j += 1
+        else:
+            edits += 1
+            i += 1
+            j += 1
+    edits += (len(w) - i) + (len(target) - j)
+    return edits <= 2
+
+
 def _phrase_needs_whisper_fallback(phrases: list[str], engine: str) -> bool:
     """Chinese / unmapped phrases still need STT text matching in sleep mode."""
     for phrase in phrases or []:
@@ -198,6 +257,7 @@ class OpenWakeWordDetector(FrameWakeDetector):
         self._peak_rms = 0.0
         self._near_miss = 0
         print(f'[listener/oww] models={models} threshold={self._threshold}', flush=True)
+        wlog(f'oww MODEL LOADED models={models} threshold={self._threshold:.3f}')
 
     def set_quiet_context(self, peak_rms: float) -> None:
         """Mic loop passes recent peak RMS so quiet USB mics can use a lower score gate."""
@@ -240,41 +300,54 @@ class OpenWakeWordDetector(FrameWakeDetector):
                     best_phrase = phrase
 
         threshold = self._effective_threshold()
+        # Ignore OWW on near-silent frames (room noise) but allow quiet USB mics.
+        min_peak = 22.0
+        if self._peak_rms < min_peak:
+            self._near_miss = 0
+            now_lp = time.time()
+            if now_lp - self._debug_at >= 1.0:
+                self._debug_at = now_lp
+                wlog(f'oww SKIP peak_rms={self._peak_rms:.0f} < min_peak={min_peak:.0f} (frame ignored)')
+            return None
+
         if best_phrase and best_score >= threshold:
-            self._cooldown_until = time.time() + 3.0
+            self._cooldown_until = time.time() + 2.0
             self._near_miss = 0
             print(
                 f'[listener/oww] detected {best_phrase} score={best_score:.3f} '
                 f'threshold={threshold:.3f} peak_rms={self._peak_rms:.0f}',
                 flush=True,
             )
+            wlog(f'oww *** DETECTED {best_phrase} score={best_score:.3f} thr={threshold:.3f} peak={self._peak_rms:.0f} ***')
             return best_phrase
 
-        # Quiet mics: require 2 consecutive frames above a softer floor.
+        # Quiet mics: two frames above a softer floor.
         soft_floor = min(threshold, 0.032)
         if best_phrase and best_score >= soft_floor:
             self._near_miss += 1
             if self._near_miss >= 2:
-                self._cooldown_until = time.time() + 3.0
+                self._cooldown_until = time.time() + 2.0
                 self._near_miss = 0
                 print(
                     f'[listener/oww] detected {best_phrase} score={best_score:.3f} '
                     f'(soft streak) peak_rms={self._peak_rms:.0f}',
                     flush=True,
                 )
+                wlog(f'oww *** DETECTED {best_phrase} score={best_score:.3f} (soft streak) peak={self._peak_rms:.0f} ***')
                 return best_phrase
         else:
             self._near_miss = 0
 
         now = time.time()
-        if now - self._debug_at >= 4.0 and best_score >= 0.03:
+        if now - self._debug_at >= 1.0:
             self._debug_at = now
-            print(
-                f'[listener/oww] top_score={best_score:.3f} threshold={threshold:.3f} '
-                f'peak_rms={self._peak_rms:.0f} '
-                f'scores={{{", ".join(f"{k}={float(v or 0):.3f}" for k, v in (scores or {}).items())}}}',
-                flush=True,
+            score_str = ", ".join(f"{k}={float(v or 0):.3f}" for k, v in (scores or {}).items())
+            line = (
+                f'top_score={best_score:.3f} threshold={threshold:.3f} '
+                f'peak_rms={self._peak_rms:.0f} scores={{{score_str}}}'
             )
+            print(f'[listener/oww] {line}', flush=True)
+            wlog(f'oww {line}')
         return None
 
 
@@ -387,12 +460,39 @@ class WhisperPhraseDetector:
             for phrase in self._phrases:
                 if 'jarvis' in phrase.lower():
                     return phrase
+        fuzzy = self._match_jarvis_fuzzy(norm)
+        if fuzzy:
+            return fuzzy
         # Chinese homophones / partial transcripts for 贾维斯.
         zh_aliases = ('贾维斯', '加维斯', '杰维斯', '伽维斯', '假维斯', 'jarvis', 'jar vis', 'jarvus')
         if any(alias in norm for alias in zh_aliases) or any(alias in text for alias in zh_aliases):
             for phrase in self._phrases:
                 if '贾维斯' in phrase or 'jarvis' in phrase.lower():
                     return phrase
+        return None
+
+    def _match_jarvis_fuzzy(self, norm: str) -> str | None:
+        jarvis_phrases = [p for p in self._phrases if 'jarvis' in p]
+        if not jarvis_phrases:
+            return None
+        words = [w.strip('.,!?') for w in norm.split() if w.strip('.,!?')]
+        if len(words) < 2:
+            return None
+        for i in range(min(4, len(words) - 1)):
+            greet = words[i].lower()
+            if greet not in _JARVIS_GREETING_PREFIXES:
+                continue
+            name = words[i + 1].lower()
+            if name not in _JARVIS_SOUNDALIKES and not _sounds_like_jarvis(name):
+                continue
+            for phrase in jarvis_phrases:
+                if phrase.startswith(greet) or (
+                    phrase.startswith('hey') and greet in ('hej', 'hello', 'hallo', 'hiya', 'heya')
+                ):
+                    return phrase
+                if phrase.startswith('hi') and greet == 'hi':
+                    return phrase
+            return jarvis_phrases[0]
         return None
 
 
@@ -406,9 +506,12 @@ def build_frame_detector(config: dict[str, Any]) -> FrameWakeDetector | None:
 
     if engine == 'openwakeword':
         try:
-            return OpenWakeWordDetector(phrases, sensitivity=sensitivity)
+            det = OpenWakeWordDetector(phrases, sensitivity=sensitivity)
+            wlog(f'build_frame_detector OK engine=openwakeword phrases={phrases}')
+            return det
         except Exception as exc:
             print(f'[listener] openWakeWord init failed: {exc}', flush=True)
+            wlog(f'build_frame_detector FAILED engine=openwakeword err={exc!r} phrases={phrases}')
             return None
 
     if engine == 'porcupine':
@@ -427,11 +530,12 @@ def build_frame_detector(config: dict[str, Any]) -> FrameWakeDetector | None:
 
 
 def needs_whisper_fallback(config: dict[str, Any]) -> bool:
+    if bool(config.get('wakeRequireStt', True)):
+        return True
     engine = str(config.get('wakeEngine') or 'openwakeword').lower()
     phrases = list(config.get('wakePhrases') or [])
     if engine == 'whisper':
         return True
     if not phrases:
         return False
-    # Always STT-match captured utterances — OWW/Porcupine miss quiet USB mics often.
-    return True
+    return _phrase_needs_whisper_fallback(phrases, engine)
