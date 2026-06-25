@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, NTabs, NTabPane, NSwitch, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpin, NSelect, NTag, NSpace, NTabs, NTabPane, NSwitch, useMessage, useThemeVars } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useOfficeProfile } from '@/composables/useOfficeProfile'
 import { useLocalGateway } from '@/composables/useLocalGateway'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 import { useBossStore } from '@/stores/boss'
-import VoiceAssistantSettingsTab from '@/components/settings/VoiceAssistantSettingsTab.vue'
+import Voice2SettingsTab from '@/components/settings/Voice2SettingsTab.vue'
 import CompanyFrameworkSettingsCard from '@/components/settings/CompanyFrameworkSettingsCard.vue'
 import DevToolsSettingsTab from '@/components/settings/DevToolsSettingsTab.vue'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
@@ -18,6 +18,7 @@ const PENDING_UNBIND_KEY = 'antleroffice-pending-unbind'
 
 const { t } = useI18n()
 const message = useMessage()
+const themeVars = useThemeVars()
 const router = useRouter()
 const themeStore = useThemeStore()
 const boss = useBossStore()
@@ -213,7 +214,13 @@ async function onSave() {
     </p>
 
     <NSpin :show="loading">
-      <NTabs v-model:value="settingsTab" type="line" animated class="settings-tabs">
+      <NTabs
+        v-model:value="settingsTab"
+        type="line"
+        animated
+        class="settings-tabs"
+        :style="{ '--tabs-sticky-bg': themeVars.bodyColor }"
+      >
         <NTabPane name="general" :tab="t('pages.settings.voiceAssistant.tabs.general')">
           <NCard :title="t('pages.settings.voiceAssistant.general.openclawTitle')" class="office-settings-card">
         <NSpace align="center" style="margin-bottom: 12px">
@@ -336,7 +343,7 @@ async function onSave() {
         </NTabPane>
 
         <NTabPane name="voiceAssistant" :tab="t('pages.settings.voiceAssistant.tabs.voiceAssistant')">
-          <VoiceAssistantSettingsTab card-class="office-settings-card" />
+          <Voice2SettingsTab card-class="office-settings-card" />
         </NTabPane>
 
         <NTabPane v-if="hasITAgent" name="devtools" :tab="t('pages.settings.voiceAssistant.tabs.devtools')">
@@ -375,11 +382,4 @@ async function onSave() {
 .office-settings-actions {
   margin-top: 20px;
 }
-.office-settings-actions :deep(.n-form-item-blank) {
-  min-height: 0;
-}
-.hint.sm {
-  margin: 16px 0 0;
-  font-size: 12px;
-}
-</style>
+.office-set

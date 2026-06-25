@@ -18,6 +18,7 @@ import { useBossStore } from "@/stores/boss";
 import { useEcsSessionStore } from "@/stores/ecsSession";
 import { isElectronApp, isSummonHost } from "@/lib/desktop-shell";
 import { installAudioUnlockOnGesture } from "@/lib/audio-unlock";
+import { useVoice2 } from "@/composables/useVoice2";
 import { summonInfo } from "@/lib/summon-debug";
 import { useVoiceWake } from "@/composables/useVoiceWake";
 import { useVoiceSetupProgress } from "@/composables/useVoiceSetupProgress";
@@ -75,10 +76,9 @@ onMounted(async () => {
   removeAudioUnlock = installAudioUnlockOnGesture();
   await bootstrapSession();
   if (boss.token) startHeartbeat();
-  if (isSummonHost()) {
-    summonInfo('bootstrapping voice wake (localhost/Electron)')
-    void bootstrapVoiceWake()
-  }
+  // v2 语音：默认模式什么都不做；只有用户在设置里开了“一直听”才自动连接。
+  try { useVoice2().init(); } catch { /* 非语音宿主忽略 */ }
+  // v1 语音唤醒已停用（改用 v2）。原 bootstrapVoiceWake() 不再调用。
   if (isElectronApp()) {
     window.antlerDesktop?.onVoiceWakeOpenSettings?.(openSettingsRoute)
   }
@@ -100,10 +100,7 @@ watch(
   (next, prev) => {
     if (next) {
       startHeartbeat();
-      if (isSummonHost() && !prev) {
-        summonInfo('session restored — reconnecting voice wake')
-        void bootstrapVoiceWake();
-      }
+      // v1 语音唤醒已停用（改用 v2）。
     } else {
       stopHeartbeat();
       disconnectVoiceWake();
@@ -148,8 +145,4 @@ watch(
           <RouterView />
           <DownloadToastManager />
           <SummonWakeNotifier />
-        </NDialogProvider>
-      </NMessageProvider>
-    </NNotificationProvider>
-  </NConfigProvider>
-</template>
+        </ND

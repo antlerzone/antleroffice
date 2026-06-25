@@ -2082,6 +2082,21 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
   });
 
+  // Required accounts for currently hired NPCs only (gates the Accounts page UI).
+  app.get('/api/catalog/hired-required-accounts', (_req, res) => {
+    try {
+      const hiredTemplateIds = registry
+        .listAgents()
+        .filter((a) => registry.isOnTeamAgent(a))
+        .map((a) => a.templateId)
+        .filter(Boolean);
+      const data = bundleRequiredAccounts.listRequiredAccountsForTemplates(hiredTemplateIds);
+      res.json({ ok: true, ...data });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   app.get('/api/catalog/agents/:id', (req, res) => {
     try {
       const entry = bundleRequiredAccounts.loadAgentCatalogEntry(req.params.id);
@@ -2836,6 +2851,10 @@ function registerAntlerRoutes(app, hooks = {}) {
   // Realtime voice session (OpenAI Realtime API ephemeral token)
   const voiceRealtimeService = require('./voice-realtime-service');
   voiceRealtimeService.registerRealtimeRoutes(app);
+
+  // Voice v2 — 干净的 Realtime + 本地 COO 中转，随主程序启动。/api/voice2/*
+  const voice2 = require('./voice2');
+  voice2.registerVoice2Routes(app, { resolveBossOwner });
 }
 
 function attachAntlerOffice(httpServer) {
@@ -3051,29 +3070,4 @@ function resolveBossDisplayName(session) {
 
 function resolveDesktopDisplayName() {
   const custom = String(store.readSettings().office?.desktopDisplayName || '').trim();
-  if (custom) return custom;
-  return require('node:os').hostname();
-}
-
-async function syncDesktopDisplayNameToEcs(req, displayName) {
-  const token = req.headers['x-boss-token'] || req.body?.bossToken;
-  const s = auth.session(token);
-  if (!s?.ecsAccessToken || !displayName) return;
-  const base = auth.ecsBaseUrl();
-  if (!base) return;
-  const desktopId = ecssync.desktopId();
-  try {
-    await fetch(`${base}/api/desktops/${encodeURIComponent(desktopId)}`, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${s.ecsAccessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ displayName }),
-      signal: AbortSignal.timeout(12000),
-    });
-  } catch {
-    /* ECS sync best-effort */
-  }
-}
-
+  if (cu

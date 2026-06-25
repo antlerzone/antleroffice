@@ -147,6 +147,8 @@ function startListenerProcess(py) {
       VOICE_LISTENER_HOST: LISTENER_HOST,
       VOICE_LISTENER_CALLBACK: SERVER_CALLBACK,
       PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
       VOICE_MIC_GAIN: process.env.VOICE_MIC_GAIN || '8',
       VOICE_MAX_TOTAL_GAIN: process.env.VOICE_MAX_TOTAL_GAIN || '64',
     },
@@ -416,7 +418,4 @@ module.exports = {
   setListenerMode,
   setListenerSpeaking,
   getStandupPlaybackState,
-  setStandupPlaybackState,
-  clearStandupPlaybackState,
-  isWakeOnlyPhrase,
-};
+  setStandupPlaybackSta

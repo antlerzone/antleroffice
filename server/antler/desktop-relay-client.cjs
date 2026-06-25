@@ -128,6 +128,7 @@ function connect(ecsToken) {
   started = true;
   relayConnected = false;
 
+  let fatal = false;
   const ws = new WebSocket(url, {
     headers: { Authorization: `Bearer ${ecsToken}` },
   });
@@ -146,31 +147,14 @@ function connect(ecsToken) {
       try { openclawWs.close(); } catch { /* */ }
       openclawWs = null;
     }
-    if (started) scheduleReconnect(ecsToken);
+    // 404/401/403 这类「端点不存在/没权限」的错误，重连也没用，停掉别刷屏（不影响本地语音）。
+    if (started && !fatal) scheduleReconnect(ecsToken);
+    if (fatal) started = false;
   });
 
   ws.on('error', (err) => {
-    console.log('[Relay] Connection error:', err.message);
-    relayConnected = false;
-  });
-
-  return { ok: true };
-}
-
-function startFromBossSession(session) {
-  const token = session?.ecsAccessToken;
-  if (!token || !auth.ecsBaseUrl()) return;
-  connect(token);
-}
-
-function stop() {
-  disconnect();
-}
-
-module.exports = {
-  connect,
-  startFromBossSession,
-  stop,
-  getPublicGatewayUrl,
-  isRelayConnected: () => relayConnected,
-};
+    const msg = String((err && err.message) || '');
+    if (/Unexpected server response: 4\d\d/.test(msg)) {
+      fatal = true;
+      console.log(`[Relay] 远程中转端点不可用(${msg})，已停止重连。本地语音/COO 不受影响。`);
+    } el

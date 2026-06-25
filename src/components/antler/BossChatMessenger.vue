@@ -34,6 +34,7 @@ import VoiceMicButton from '@/components/voice/VoiceMicButton.vue'
 import { useTTSSettings } from '@/composables/useTTSSettings'
 import { useVoiceOutput } from '@/composables/useVoiceOutput'
 import { useVoiceWake } from '@/composables/useVoiceWake'
+import { useVoice2 } from '@/composables/useVoice2'
 import { useStreamingVoiceOutput } from '@/composables/useStreamingVoiceOutput'
 interface PendingAttachment {
   path: string
@@ -318,6 +319,9 @@ function openClawAgentIdFor(agent: OfficeAgent | null | undefined): string | nul
 const selectedOpenClawAgentId = computed(() => openClawAgentIdFor(selectedAgent.value))
 
 const useOpenClawBossChat = computed(() => {
+  // 语音线程的消息存在 boss-chat-store（不是 OpenClaw 会话）→ 必须用 legacy 渲染器才看得到。
+  const vt = threads.value.find((t) => t.id === selectedThreadId.value)
+  if (vt && typeof vt.title === 'string' && vt.title.startsWith('语音')) return false
   const id = selectedOpenClawAgentId.value
   if (!id) return false
   if (chatMode.value === 'agent') return true
@@ -424,8 +428,11 @@ function ensureDefaultThread() {
 }
 
 const agentThreads = computed(() => {
-  if (!selectedAgentId.value) return threads.value
-  return threads.value.filter((t) => threadMatchesAgent(t, selectedAgentId.value))
+  const list = !selectedAgentId.value
+    ? threads.value
+    : threads.value.filter((t) => threadMatchesAgent(t, selectedAgentId.value))
+  // 用固定的 createdAt 稳定排序（新→旧）；不按 updatedAt，避免 COO working 时列表一直跳。
+  return [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 })
 
 function threadAgentLabel(thread: ChatThread) {
@@ -433,6 +440,19 @@ function threadAgentLabel(thread: ChatThread) {
     agents.value.find((a) => a.id === thread.agentId || a.role === thread.agentId) ||
     agentForId(thread.agentId)
   return agent?.label || thread.agentId
+}
+
+function formatThreadTime(thread: ChatThread) {
+  const ts = thread.updatedAt || thread.createdAt
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (d.toDateString() === now.toDateString()) return time
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const date = `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
+  return `${date} ${time}`
 }
 
 function threadMetaLabel(thread: ChatThread) {
@@ -652,7 +672,8 @@ async function loadOpenClawSession() {
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Could not load OpenClaw session'
-    if (!/no OpenClaw runtime/i.test(msg)) {
+    // 语音线程没有 OpenClaw 会话 → 404 是正常的，别弹红色错误提示。
+    if (!/no OpenClaw runtime|404|not found/i.test(msg)) {
       message.error(msg)
     }
   } finally {
@@ -776,6 +797,32 @@ function confirmDeleteThread(thread: ChatThread) {
         message.success('Chat deleted')
       } catch (e) {
         message.error(e instanceof Error ? e.message : 'Could not delete chat')
+      }
+    },
+  })
+}
+
+function clearVoiceThreads() {
+  const voiceThreads = threads.value.filter((t) => typeof t.title === 'string' && t.title.startsWith('语音'))
+  if (!voiceThreads.length) { message.info('没有语音对话可清空'); return }
+  dialog.warning({
+    title: '清空语音对话',
+    content: `确定删除全部 ${voiceThreads.length} 条「语音」对话吗？不可撤销。`,
+    positiveText: '清空',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await api.send<{ ok: boolean; removed?: number }>('POST', '/api/voice2/clear-threads', {})
+        threads.value = threads.value.filter((t) => !(typeof t.title === 'string' && t.title.startsWith('语音')))
+        if (selectedThreadId.value && !threads.value.some((t) => t.id === selectedThreadId.value)) {
+          selectedThreadId.value = threads.value[0]?.id || ''
+          chat.value = []
+          lastChatLen.value = 0
+        }
+        await poll()
+        message.success(`已清空 ${res?.removed ?? voiceThreads.length} 条语音对话`)
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : '清空失败')
       }
     },
   })
@@ -1081,6 +1128,24 @@ watch(
   },
 )
 
+// 语音召唤新建对话时，自动打开 Boss Chat 并跳到那条线程，实时看对话冒出来。
+const { activeVoiceThreadId } = useVoice2()
+const isVoiceThread = computed(() => {
+  const t = threads.value.find((x) => x.id === selectedThreadId.value)
+  return !!(t && typeof t.title === 'string' && t.title.startsWith('语音'))
+})
+watch(activeVoiceThreadId, async (id) => {
+  // 不主动弹开 Boss Chat；只有窗口已经开着时，才自动跳到这条新语音对话。
+  if (!id || !open.value) return
+  await poll() // 先刷新线程列表，确保新线程已加载
+  selectThread(id)
+  void nextTick(() => scrollChatIfNeeded(true))
+})
+// 语音对话：来新消息就自动滚到底部（免手动下拉）
+watch(() => chat.value.length, () => {
+  if (isVoiceThread.value) void nextTick(() => scrollChatIfNeeded(true))
+})
+
 onMounted(() => {
   scopeKey.value = boss.chatOwnerKey
   reloadScopePrefs()
@@ -1179,15 +1244,25 @@ onUnmounted(stopPoll)
             <!-- Threads section -->
             <div class="bcm-section-head">
               <span>Chats</span>
-              <button
-                type="button"
-                class="bcm-add-btn"
-                title="New chat"
-                :disabled="!selectedAgentId"
-                @click="newChat"
-              >
-                <NIcon :component="AddOutline" :size="14" />
-              </button>
+              <span style="display:flex; gap:4px;">
+                <button
+                  type="button"
+                  class="bcm-add-btn"
+                  title="清空所有语音对话"
+                  @click="clearVoiceThreads"
+                >
+                  <NIcon :component="TrashOutline" :size="14" />
+                </button>
+                <button
+                  type="button"
+                  class="bcm-add-btn"
+                  title="New chat"
+                  :disabled="!selectedAgentId"
+                  @click="newChat"
+                >
+                  <NIcon :component="AddOutline" :size="14" />
+                </button>
+              </span>
             </div>
             <ul class="bcm-thread-list">
               <li
@@ -1199,6 +1274,7 @@ onUnmounted(stopPoll)
                 <button type="button" class="bcm-thread-btn" @click="selectThread(t.id)">
                   <span class="bcm-thread-title">{{ t.title }}</span>
                   <span class="bcm-thread-meta">{{ threadMetaLabel(t) }}</span>
+                  <span v-if="formatThreadTime(t)" class="bcm-thread-time">{{ formatThreadTime(t) }}</span>
                 </button>
                 <div class="bcm-thread-actions">
                   <button
@@ -1312,12 +1388,15 @@ onUnmounted(stopPoll)
                   class="bcm-msg"
                   :class="m.from"
                 >
-                  <span class="bcm-msg-who">{{ displayName(m) }}</span>
-                  <div class="bcm-msg-bubble">
-                    {{ m.text }}
-                    <div v-if="m.pendingAttachmentId && !m.attachmentResolved" class="bcm-attach-btns inline">
-                      <button type="button" class="bcm-attach-btn archive" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')">存档</button>
-                      <button type="button" class="bcm-attach-btn reference" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')">参考</button>
+                  <div v-if="m.from === 'system'" class="bcm-msg-bubble">{{ m.text }}</div>
+                  <div v-else class="bcm-msg-row">
+                    <span class="bcm-msg-avatar" :class="m.from" :title="displayName(m)">{{ displayName(m).slice(0, 1).toUpperCase() }}</span>
+                    <div class="bcm-msg-bubble">
+                      {{ m.text }}
+                      <div v-if="m.pendingAttachmentId && !m.attachmentResolved" class="bcm-attach-btns inline">
+                        <button type="button" class="bcm-attach-btn archive" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'archive')">存档</button>
+                        <button type="button" class="bcm-attach-btn reference" :disabled="!!resolvingAttachmentId" @click="resolveAttachmentChoice(m.pendingAttachmentId!, 'reference')">参考</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1746,6 +1825,12 @@ onUnmounted(stopPoll)
   text-overflow: ellipsis;
 }
 
+.bcm-thread-time {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .bcm-empty-hint {
   padding: 6px 12px 10px;
   font-size: 11px;
@@ -1919,8 +2004,9 @@ onUnmounted(stopPoll)
   padding: 16px 16px 8px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   min-height: 0;
+  background: #ededed; /* 微信聊天背景浅灰 */
 }
 
 .bcm-log-empty {
@@ -1946,50 +2032,76 @@ onUnmounted(stopPoll)
 
 .bcm-msg {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-width: 78%;
+  max-width: 100%;
 }
-.bcm-msg.boss { align-self: flex-end; align-items: flex-end; }
-.bcm-msg.system { align-self: center; max-width: 100%; align-items: center; }
+.bcm-msg.boss { justify-content: flex-end; }
+.bcm-msg.system { justify-content: center; max-width: 100%; }
 
-.bcm-msg-who {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0 4px;
+/* 微信式：头像 + 气泡一行；自己的整行靠右、头像在右 */
+.bcm-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 82%;
 }
+.bcm-msg.boss .bcm-msg-row { flex-direction: row-reverse; }
+
+.bcm-msg-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: #8a93a6;
+}
+.bcm-msg-avatar.boss { background: #4f9cf9; }
+.bcm-msg-avatar.coo,
+.bcm-msg-avatar.secretary { background: #07c160; }
+.bcm-msg-avatar.it { background: #7c3aed; }
 
 .bcm-msg-bubble {
-  padding: 9px 13px;
-  border-radius: 12px;
-  font-size: 13px;
-  line-height: 1.5;
+  position: relative;
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text);
-  background: var(--surface);
+  color: #111;
+  background: #fff;
+  border: 1px solid #e6e6e6;
 }
 
+/* 对方气泡（左）：白底 + 指向左头像的小三角 */
+.bcm-msg.coo .bcm-msg-bubble::before,
+.bcm-msg.secretary .bcm-msg-bubble::before,
+.bcm-msg.it .bcm-msg-bubble::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 12px;
+  border: 5px solid transparent;
+  border-right-color: #fff;
+}
+
+/* 自己气泡（右）：微信绿 + 指向右头像的小三角 */
 .bcm-msg.boss .bcm-msg-bubble {
-  background: #1d4ed8;
-  color: #dbeafe;
-  border-radius: 12px 12px 2px 12px;
+  background: #95ec69;
+  color: #111;
+  border-color: #86dd5d;
 }
-
-.bcm-msg.coo .bcm-msg-bubble,
-.bcm-msg.secretary .bcm-msg-bubble {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px 12px 12px 2px;
-}
-
-.bcm-msg.it .bcm-msg-bubble {
-  background: rgba(124,58,237,0.18);
-  border: 1px solid rgba(124,58,237,0.25);
-  border-radius: 12px 12px 12px 2px;
+.bcm-msg.boss .bcm-msg-bubble::before {
+  content: '';
+  position: absolute;
+  right: -5px;
+  top: 12px;
+  border: 5px solid transparent;
+  border-left-color: #95ec69;
 }
 
 .bcm-msg.system .bcm-msg-bubble {
@@ -2016,190 +2128,4 @@ onUnmounted(stopPoll)
 }
 
 .bcm-dots {
-  display: inline-flex;
-  gap: 3px;
-  align-items: center;
-}
-.bcm-dots span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--muted);
-  animation: bcm-bounce 1.4s infinite ease-in-out;
-}
-.bcm-dots span:nth-child(2) { animation-delay: 0.16s; }
-.bcm-dots span:nth-child(3) { animation-delay: 0.32s; }
-
-@keyframes bcm-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
-  40% { transform: translateY(-4px); opacity: 1; }
-}
-
-/* ─── Composer ─── */
-.bcm-composer {
-  flex-shrink: 0;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--border);
-  background: var(--bg2);
-}
-
-.bcm-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 8px;
-}
-.bcm-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 99px;
-  background: var(--accent-dim);
-  border: 1px solid rgba(59,130,246,0.3);
-  font-size: 11px;
-  color: var(--text);
-}
-.bcm-chip button {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0;
-}
-
-.bcm-composer-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
-  transition: border-color 0.15s;
-}
-.bcm-composer-inner:focus-within {
-  border-color: var(--accent);
-}
-
-.bcm-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  resize: none;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text);
-  -webkit-text-fill-color: var(--text);
-  caret-color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  min-height: 44px;
-  max-height: 160px;
-}
-.bcm-textarea::placeholder {
-  color: var(--muted);
-  opacity: 1;
-}
-
-.bcm-composer-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.bcm-tool-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.bcm-tool-btn:hover:not(:disabled) {
-  background: rgba(255,255,255,0.07);
-  color: var(--text);
-}
-.bcm-tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.bcm-send-btn {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 14px;
-  border-radius: 8px;
-  border: none;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-  transition: opacity 0.12s, filter 0.12s;
-  flex-shrink: 0;
-}
-.bcm-send-btn:hover:not(:disabled) { filter: brightness(1.1); }
-.bcm-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* ─── Transition ─── */
-.bcm-slide-enter-active,
-.bcm-slide-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-.bcm-slide-enter-from,
-.bcm-slide-leave-to {
-  opacity: 0;
-  transform: translateY(10px) scale(0.98);
-}
-
-/* ─── Light theme overrides ─── */
-.bcm-panel--light {
-  --bg: #ffffff;
-  --bg2: #f4f5f7;
-  --surface: #eaecf0;
-  --border: rgba(0,0,0,0.1);
-  --text: #111827;
-  --muted: rgba(0,0,0,0.4);
-  --accent: #2563eb;
-  --accent-dim: rgba(37,99,235,0.1);
-  --green: #16a34a;
-  --green-dim: rgba(22,163,74,0.12);
-  color-scheme: light;
-  box-shadow: 0 24px 64px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
-}
-
-.bcm-panel--light .bcm-msg.boss .bcm-msg-bubble {
-  background: #2563eb;
-  color: #dbeafe;
-}
-
-.bcm-panel--light .bcm-oc-badge {
-  background: rgba(37,99,235,0.15);
-  color: #1d4ed8;
-}
-
-/* ─── Responsive ─── */
-@media (max-width: 680px) {
-  .bcm-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-  }
-  .bcm-sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    flex-direction: row;
-    max-height: 100px;
-    overflow-x: auto;
-  }
-  .bcm-agent-list { max-height: unset; display: flex; }
-  .bcm-thread-list { display: flex; }
-}
-</style>
+  dis

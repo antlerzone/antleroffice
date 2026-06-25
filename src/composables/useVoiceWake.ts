@@ -5,16 +5,28 @@ import { useVoiceOutput } from '@/composables/useVoiceOutput'
 import { useStandupPlayback } from '@/composables/useStandupPlayback'
 import { useVoiceRealtime } from '@/composables/useVoiceRealtime'
 import { usePersonaVoice } from '@/composables/usePersonaVoice'
+import { useHoldingPattern } from '@/composables/useHoldingPattern'
 import { useBossStore } from '@/stores/boss'
 import { isElectronApp, isSummonHost, showItemInFolder } from '@/lib/desktop-shell'
 import { unlockAudioPlayback } from '@/lib/audio-unlock'
 import { getCachedGreetingBlob } from '@/lib/persona-greeting-cache'
+import { ttsBegin, ttsEnd } from '@/lib/tts-gate'
+import { getCachedWaitingPhraseBlob } from '@/lib/waiting-phrase-cache'
 import {
   dedupeWakePhrases,
   wakeListenHint,
 } from '@/constants/voiceAssistant'
 import { summonBanner, summonError, summonInfo, summonLog, summonMark, summonMic, summonVerbose, summonWarn, resetSummonTimer } from '@/lib/summon-debug'
 import { clearSummonSession, markSummonSessionActive, startSummonIdleWatch, summonSessionActive } from '@/lib/summon-session'
+
+// Bump this whenever voice code changes so we can confirm the live build in console.
+const VOICE_BUILD = 'voice-build v14 · 2026-06-25 · one-turn-lock + dedupe-results'
+
+// Master kill-switch for the browser realtime / Voice-OS conversation mode.
+// OFF — final decision: the assistant uses the simple, reliable listener command flow:
+// wake → greeting → listener STT → COO → waiting phrases → TTS (all in the boss's voice).
+// No OpenAI realtime. The realtime code stays in the tree but is never started.
+const ENABLE_BROWSER_REALTIME = false
 
 export type VoiceWakeMode = 'sleep' | 'active' | 'speaking'
 
@@ -25,6 +37,25 @@ const connected = ref(false)
 
 let eventSource: EventSource | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+// One conversation TURN at a time. The COO is slow (15–30s) and, worse, its spoken
+// answer ("Hello sir…") leaks back into the mic and is re-heard as a new command — an
+// echo loop. So from the moment a command is dispatched until its answer has finished
+// playing (plus a short grace), we ignore BOTH new transcripts AND duplicate results.
+let turnActive = false
+let turnAnswered = false
+let turnTimer: ReturnType<typeof setTimeout> | null = null
+function beginTurn() {
+  turnActive = true
+  turnAnswered = false
+  if (turnTimer) clearTimeout(turnTimer)
+  turnTimer = setTimeout(() => { turnActive = false; turnAnswered = false }, 90_000) // safety release
+}
+function endTurnAfterGrace() {
+  if (turnTimer) clearTimeout(turnTimer)
+  // Keep ignoring input briefly so the tail of our own answer isn't re-heard.
+  turnTimer = setTimeout(() => { turnActive = false; turnAnswered = false }, 2500)
+}
 
 function clearReconnectTimer() {
   if (reconnectTimer) {
@@ -110,6 +141,15 @@ export function useVoiceWake() {
   const { handlePlaybackCommand, isActive: standupPlaybackActive } = useStandupPlayback()
   const realtime = useVoiceRealtime()
   const { resolvedSampleReply, personaSpeakOptions } = usePersonaVoice()
+  // Progressive "holding pattern" — keeps talking while the COO works (no dead silence).
+  // Phrases follow the boss's Reply language and are spoken in the configured output voice.
+  const holding = useHoldingPattern(
+    (text) => {
+      summonLog('💬 waiting phrase →', text)
+      void speakSummonLine(text, { noFallback: true })
+    },
+    () => (settings.value.voice.replyLanguage === 'zh' ? 'zh' : 'en'),
+  )
 
   function isWakeFlowBusy() {
     return wakeFlowInProgress || Date.now() < wakeHandshakeUntil
@@ -130,7 +170,7 @@ export function useVoiceWake() {
     }
   }
 
-  async function speakSummonLine(text: string) {
+  async function speakSummonLine(text: string, opts?: { noFallback?: boolean }) {
     const line = text.trim()
     if (!line) {
       wakeWarn('speak skipped — empty text')
@@ -141,17 +181,47 @@ export function useVoiceWake() {
       return
     }
     lastReply.value = line
+    // Pre-rendered waiting phrase? Play the cached clip instantly (boss's voice, no delay).
+    const cachedWait = getCachedWaitingPhraseBlob(line, personaSpeakOptions())
+    if (cachedWait) {
+      await notifySpeaking(true)
+      try {
+        await playBlob(cachedWait)
+      } catch (e) {
+        wakeWarn('cached waiting phrase play failed', e)
+      } finally {
+        await notifySpeaking(false)
+      }
+      return
+    }
     await notifySpeaking(true)
     try {
       await speak(line, personaSpeakOptions())
     } catch (e) {
-      wakeError('speak failed', e)
-      throw e
+      // Disposable waiting phrases must NOT fall back to the browser voice — a fresh
+      // phrase interrupting the previous one throws "Audio playback failed", and we don't
+      // want a robotic webspeech voice cutting in. Just skip it.
+      if (opts?.noFallback) {
+        wakeWarn('waiting phrase skipped (interrupted/failed)', e)
+        return
+      }
+      // The real answer: fall back to offline browser speech so it's still spoken.
+      wakeWarn('speak failed — falling back to offline browser speech', e)
+      try {
+        const zhText = /[一-鿿]/.test(line)
+        await speak(line, { forceWebSpeech: true, ttsVoice: zhText ? 'zh-CN' : undefined })
+      } catch (e2) {
+        wakeError('speak failed (offline fallback also failed)', e2)
+      }
     } finally {
       await notifySpeaking(false)
     }
   }
 
+  // Summon flow: on wake, speak ONE greeting reply using the configured Summon reply
+  // voice (Default/EdgeTTS, ElevenLabs clone, or Fish Audio clone), then stay awake and
+  // wait — the backend auto-returns to sleep after the idle timeout (default 5 min).
+  // If the configured voice fails, it falls back to the browser's offline speech below.
   async function onWakeGreeting(wakeGen: number) {
     if (wakeGen !== wakeGeneration) return
     if (greetingInFlight) {
@@ -226,6 +296,9 @@ export function useVoiceWake() {
   }
 
   async function handleSummonWake(source: string, payload: Record<string, unknown> = {}) {
+    // v1 已停用：唤醒一律交给 v2(useVoice2) 处理，避免两套系统抢同一次召唤（v1 会用 TTS/监听器STT 抢着说话）。
+    return
+    // eslint-disable-next-line no-unreachable
     if (source === 'listener-resync') {
       summonVerbose('listener-resync wake ignored (use sleep sync only)')
       return
@@ -299,7 +372,11 @@ export function useVoiceWake() {
         await rollbackAbortedWake(wakeGen, 'after greeting', source)
         return
       }
-      if (settings.value.realtime.enabled && !realtime.isActive.value) {
+      // HARD-DISABLED: the browser realtime / Voice-OS mode double-speaks (a second
+      // "good morning") and grabs the mic so the listener drops the session. Until the
+      // proper low-latency WebRTC path is built, we never auto-start it after a wake —
+      // the listener command flow + holding pattern handles the conversation.
+      if (ENABLE_BROWSER_REALTIME && settings.value.realtime.enabled && !realtime.isActive.value) {
         summonLog('starting realtime after greeting')
         try {
           await realtime.start({ afterWake: true })
@@ -363,7 +440,7 @@ export function useVoiceWake() {
     mode.value = 'active'
     markSummonSessionActive()
     await setListenerSummonSession(true)
-    if (settings.value.realtime.enabled && !realtime.isActive.value) {
+    if (ENABLE_BROWSER_REALTIME && settings.value.realtime.enabled && !realtime.isActive.value) {
       try {
         await realtime.start({ afterWake: true })
       } catch (err) {
@@ -393,6 +470,8 @@ export function useVoiceWake() {
   }
 
   async function syncListenerConfig() {
+    // v2 接管：v1 不再往监听器推配置，避免覆盖 v2 设的自定义唤醒词（如「邓紫棋」）。
+    return
     const summon = settings.value.summon
     const body = {
       globalListenEnabled: summon.globalListenEnabled,
@@ -446,6 +525,10 @@ export function useVoiceWake() {
   }
 
   async function notifySpeaking(speaking: boolean) {
+    // Close/open the local TTS gate so the realtime mic ignores the summon greeting
+    // (which plays via playBlob and bypasses useVoiceOutput's own gate).
+    if (speaking) ttsBegin()
+    else ttsEnd()
     try {
       await api.send('POST', '/api/voice/listener/speaking', { speaking })
     } catch (e) {
@@ -496,7 +579,20 @@ export function useVoiceWake() {
       sectionIndex?: number
     }
   }) {
+    // Only the FIRST result of the current turn is spoken; duplicates (the COO ran the
+    // echoed "hello" several times) are dropped.
+    if (turnAnswered) {
+      summonVerbose('command_result ignored — turn already answered (duplicate)', payload.text)
+      return
+    }
+    if (!turnActive) {
+      summonVerbose('command_result ignored — no active turn (stale/echo)', payload.text)
+      return
+    }
+    turnAnswered = true
+    holding.stop() // result is in — stop the progressive waiting phrases
     if (!isSummonEngaged()) {
+      endTurnAfterGrace()
       summonVerbose('command_result ignored — session sleep', payload.text)
       return
     }
@@ -511,6 +607,7 @@ export function useVoiceWake() {
     const result = payload.result
     if (!result?.ok) {
       wakeWarn('command failed', result)
+      endTurnAfterGrace()
       return
     }
     if (standupPlaybackActive.value && (await handlePlaybackCommand(result))) {
@@ -528,8 +625,13 @@ export function useVoiceWake() {
       return
     }
     const reply = String(result.text || '').trim()
-    if (!reply) return
+    if (!reply) { endTurnAfterGrace(); return }
+    summonBanner('🔊 [STEP 4] Speaking answer', {
+      voice: personaSpeakOptions()?.engine || settings.value.voice.ttsEngine,
+      text: reply.slice(0, 80),
+    })
     await speakSummonLine(reply)
+    endTurnAfterGrace() // answer fully spoken — re-open for the next command after a short grace
   }
 
   function connectEvents() {
@@ -606,15 +708,33 @@ export function useVoiceWake() {
       }
       if (type === 'transcript') {
         lastTranscript.value = String(payload.text || '')
-        if (isSummonEngaged()) {
-          wakeLog('transcript', lastTranscript.value)
-        } else {
+        if (!isSummonEngaged()) {
           summonVerbose('transcript ignored — sleep', lastTranscript.value)
+          return
+        }
+        if (turnActive) {
+          summonVerbose('transcript ignored — a turn is already in progress (echo/duplicate)', lastTranscript.value)
+          return
+        }
+        summonBanner('🎤 [STEP 1] Voice-in (STT)', { text: lastTranscript.value })
+        // Command captured → start talking while the COO works (no dead silence).
+        if (lastTranscript.value.trim() && settings.value.voice.enabled && !realtime.isActive.value) {
+          beginTurn()
+          summonBanner('⏳ [STEP 2] Passed to COO — waiting phrases starting', {
+            voice: personaSpeakOptions()?.engine || settings.value.voice.ttsEngine,
+            replyLanguage: settings.value.voice.replyLanguage,
+          })
+          holding.start()
         }
         return
       }
       if (type === 'command_result') {
-        wakeLog('command_result', payload.result)
+        const cr = payload as { text?: string; result?: { ok?: boolean; text?: string; provider?: string } }
+        summonBanner('🧠 [STEP 3] COO result', {
+          ok: cr.result?.ok,
+          provider: cr.result?.provider,
+          text: cr.result?.text || cr.text,
+        })
         void handleCommandResult(payload as { text?: string; result?: { ok?: boolean; local?: boolean; action?: string; text?: string } })
         return
       }
@@ -728,166 +848,4 @@ export function useVoiceWake() {
   async function repairStaleListenerFlags() {
     if (wakeFlowInProgress) return
     const now = Date.now()
-    try {
-      const res = await api.get<{
-        health?: { data?: { state?: { mode?: string } } }
-        config?: { realtimeSessionActive?: boolean; summonSessionEngaged?: boolean }
-      }>('/api/voice/listener/status', { timeoutMs: 3000 })
-      const listenerMode = res.health?.data?.state?.mode
-      const staleSummon = res.config?.summonSessionEngaged === true
-      const staleRealtime = res.config?.realtimeSessionActive === true && !realtime.isActive.value
-      const clientEngaged = summonSessionActive.value || isSummonEngaged()
-
-      if (!clientEngaged && (staleSummon || staleRealtime) && now - lastStaleRealtimeRepairAt >= 15_000) {
-        lastStaleRealtimeRepairAt = now
-        summonWarn('clearing stale listener session flags (was blocking sleep wake)')
-        await setListenerSummonSession(false)
-      }
-      if (
-        summonSessionActive.value &&
-        mode.value === 'sleep' &&
-        !realtime.isActive.value &&
-        !wakeFlowInProgress
-      ) {
-        summonWarn('repair: stale summonSessionActive while sleep — clearing')
-        clearSummonSession()
-        await setListenerSummonSession(false)
-        await setMode('sleep')
-        return
-      }
-      if (!clientEngaged && (listenerMode === 'active' || listenerMode === 'speaking')) {
-        const orphanSince = listenerOrphanActiveSince || (listenerOrphanActiveSince = now)
-        const speakingNow = now - lastMicAboveVadAt < 2500
-        if (speakingNow) {
-          summonVerbose('listener orphan-active during speech — deferring sleep repair')
-        } else if (now - orphanSince >= 4000) {
-          listenerOrphanActiveSince = 0
-          await forceListenerSleep('client sleep / listener active mismatch')
-        }
-      } else {
-        listenerOrphanActiveSince = 0
-      }
-      const clientWantsListenerActive =
-        mode.value === 'active' || mode.value === 'speaking' || realtime.isActive.value
-      if (clientWantsListenerActive && listenerMode === 'sleep' && !realtime.isActive.value) {
-        summonVerbose('client engaged but listener sleep — resync listener mode (no greeting)')
-        await setMode(mode.value === 'speaking' ? 'speaking' : 'active')
-        await setListenerSummonSession(true)
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function startListenerResync() {
-    if (listenerResyncTimer) return
-    listenerResyncTimer = setInterval(() => {
-      void repairStaleListenerFlags()
-    }, 5000)
-  }
-
-  async function bootstrap() {
-    if (bootstrapPromise) return bootstrapPromise
-    bootstrapPromise = bootstrapInner().finally(() => {
-      bootstrapPromise = null
-    })
-    return bootstrapPromise
-  }
-
-  async function bootstrapInner() {
-    if (!isSummonHost()) {
-      summonInfo('bootstrap skipped — summon only runs in Electron or localhost dev')
-      return
-    }
-    if (!settings.value.summon.globalListenEnabled) {
-      summonInfo('bootstrap skipped — global listen disabled (Summon settings)')
-      return
-    }
-    summonInfo('bootstrap start', {
-      wakeEngine: 'openwakeword',
-      wakePhrases: effectiveWakePhrases(),
-      clipPhrases: Object.keys(settings.value.summon.wakePhraseClips || {}),
-    })
-    if (!isSummonEngaged()) {
-      await setListenerSummonSession(false)
-      await setMode('sleep')
-    } else {
-      summonLog('bootstrap — keeping engaged summon session')
-    }
-    await syncListenerConfig()
-    await repairStaleListenerFlags()
-    connectEvents()
-    startListenerResync()
-    startMicMonitor()
-    if (!summonIdleHookInstalled && typeof window !== 'undefined') {
-      summonIdleHookInstalled = true
-      window.addEventListener('antler:summon-idle', () => {
-        void endSummonSession('client-idle-timeout')
-      })
-    }
-    summonBanner('ready — filter DevTools console by [summon]', {
-      wakePhrases: effectiveWakePhrases(),
-      replyLanguage: settings.value.voice.replyLanguage,
-      greeting: resolvedSampleReply.value.slice(0, 80),
-      sse: '/api/voice/listener/events',
-      verbose: "localStorage.setItem('antleroffice-summon-debug','1')",
-    })
-    if (isElectronApp()) {
-      const status = await window.antlerDesktop?.voiceWakeGetStatus?.()
-      if (
-        summonSessionActive.value &&
-        (status?.state?.mode === 'active' || status?.state?.mode === 'speaking')
-      ) {
-        mode.value = status.state.mode
-      }
-      window.antlerDesktop?.onVoiceWakeState?.((state) => {
-        summonLog('desktop state', state)
-        if (!summonSessionActive.value) return
-        if (state.mode === 'active' || state.mode === 'speaking') mode.value = state.mode
-        else mode.value = 'sleep'
-      })
-    }
-  }
-
-  if (!summonSettingsWatchInstalled) {
-    summonSettingsWatchInstalled = true
-    watch(
-      () => settings.value.summon,
-      () => {
-        scheduleSyncListenerConfig()
-      },
-      { deep: true },
-    )
-
-    watch(
-      () => [settings.value.persona, settings.value.voice.replyLanguage, honorific.value, boss.chatOwnerKey],
-      () => {
-        scheduleSyncListenerConfig()
-      },
-      { deep: true },
-    )
-
-    watch(
-      () => realtime.isActive.value,
-      () => {
-        if (summonSessionActive.value) scheduleSyncListenerConfig()
-      },
-    )
-  }
-
-  return {
-    mode,
-    connected,
-    lastTranscript,
-    lastReply,
-    realtime,
-    syncListenerConfig,
-    setMode,
-    notifySpeaking,
-    bootstrap,
-    disconnectEvents,
-    endSummonSession,
-    toggleSummonSession,
-    isSummonEngaged,
-  }
-}
+    t

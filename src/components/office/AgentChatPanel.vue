@@ -1966,7 +1966,8 @@ function roleLabel(role: string): string {
 function isNearBottom(scrollbar: InstanceType<typeof NScrollbar> | null): boolean {
   if (!scrollbar) return true
   const el = scrollbar.$el as HTMLElement | undefined
-  if (!el) return true
+  // $el 偶尔不是真正的 DOM 元素（注释节点等），没有 querySelector → 直接当作在底部，避免崩溃。
+  if (!el || typeof el.querySelector !== 'function') return true
   const containerEl = el.querySelector('.n-scrollbar-container') as HTMLElement | null
   if (!containerEl) return true
   const distance = containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight
@@ -4020,14 +4021,4 @@ watch(
 .image-preview-container {
   display: flex;
   justify-content: center;
-  align-items: center;
-  min-height: 200px;
-}
-
-.image-preview-full {
-  max-width: 100%;
-  max-height: 80vh;
-  object-fit: contain;
-  border-radius: 8px;
-}
-</style>
+  

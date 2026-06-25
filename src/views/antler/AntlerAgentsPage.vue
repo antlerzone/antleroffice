@@ -729,6 +729,7 @@ async function saveReview() {
 }
 
 function openRename(agent: UserAgent) {
+  renameBuiltinId.value = null
   renameModalAgent.value = agent
   renameName.value = agent.name
   renameError.value = ''
@@ -763,12 +764,30 @@ async function saveScope() {
 }
 
 async function saveRename() {
-  if (!renameModalAgent.value) return
   const trimmed = renameName.value.trim()
   if (!trimmed) {
     renameError.value = 'Enter a name.'
     return
   }
+  // 内置 COO 改名：走 voice2 的专用接口（同时改语音助手名字）
+  if (renameBuiltinId.value) {
+    renameBusy.value = true
+    renameError.value = ''
+    try {
+      await api.send('POST', '/api/voice2/coo-name', { name: trimmed })
+      const b = builtins.value.find((n) => n.id === renameBuiltinId.value)
+      if (b) b.label = trimmed
+      message.success('Renamed')
+      renameModalOpen.value = false
+      renameBuiltinId.value = null
+    } catch (e) {
+      renameError.value = e instanceof Error ? e.message : 'Could not rename'
+    } finally {
+      renameBusy.value = false
+    }
+    return
+  }
+  if (!renameModalAgent.value) return
   if (trimmed === renameModalAgent.value.name) {
     renameModalOpen.value = false
     return
@@ -790,8 +809,13 @@ async function saveRename() {
   }
 }
 
-function builtinMenuOptions(): DropdownOption[] {
-  return [{ label: 'View overview', key: 'view' }]
+function builtinMenuOptions(npc?: BuiltinNpc): DropdownOption[] {
+  const opts: DropdownOption[] = [{ label: 'View overview', key: 'view' }]
+  // 内置 COO 可以改名（也就是语音助手 Jarvis 的名字）
+  if (npc && (npc.role === 'coo' || npc.role === 'ceo')) {
+    opts.unshift({ label: 'Rename', key: 'rename' })
+  }
+  return opts
 }
 
 function openOverview(agent: UserAgent) {
@@ -817,6 +841,16 @@ function openBuiltinOverview(npc: BuiltinNpc) {
 
 function onBuiltinMenu(key: string, npc: BuiltinNpc) {
   if (key === 'view') openBuiltinOverview(npc)
+  else if (key === 'rename') openRenameBuiltin(npc)
+}
+
+const renameBuiltinId = ref<string | null>(null)
+function openRenameBuiltin(npc: BuiltinNpc) {
+  renameModalAgent.value = null
+  renameBuiltinId.value = npc.id || 'coo'
+  renameName.value = npc.label
+  renameError.value = ''
+  renameModalOpen.value = true
 }
 
 function resumeSkinMeta() {
@@ -986,7 +1020,7 @@ onUnmounted(() => stopSkinPreviews())
                   <div class="agent-td-actions-inner">
                     <NDropdown
                       trigger="click"
-                      :options="builtinMenuOptions()"
+                      :options="builtinMenuOptions(b)"
                       @select="(key) => onBuiltinMenu(String(key), b)"
                     >
                       <button type="button" class="btn ghost sm agent-actions-btn">Actions ▾</button>
@@ -1614,65 +1648,4 @@ onUnmounted(() => stopSkinPreviews())
 }
 .hire-billing-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 8px;
-}
-.hire-billing-tab {
-  position: relative;
-  overflow: visible;
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 14px;
-  font-family: inherit;
-  cursor: pointer;
-}
-.hire-billing-tab.active {
-  background: #5eead4;
-  color: #101418;
-}
-.hire-billing-tab--yearly {
-  margin-top: 2px;
-}
-.hire-billing-ribbon {
-  position: absolute;
-  top: -10px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 3px 8px;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #101418;
-  background: linear-gradient(135deg, #ffd76a 0%, #f0b429 100%);
-  border-radius: 999px;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.hire-price-was {
-  margin-right: 8px;
-  opacity: 0.45;
-  text-decoration: line-through;
-}
-.hire-price-adjust {
-  margin-left: 6px;
-  font-weight: 600;
-  color: #5eead4;
-}
-.agent-browse-detail-list {
-  margin: 12px 0 0;
-}
-.agent-browse-detail-row {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 8px;
-  font-size: 14px;
-}
-.agent-browse-detail-row dt {
-  min-width: 110px;
-  color: var(--muted);
-}
-</style>
+  

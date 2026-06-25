@@ -4187,11 +4187,22 @@ function onServerListening() {
     console.error('[Backup] Failed to cleanup interrupted tasks:', err.message)
   }
 
-  try {
-    const voiceSidecarManager = require('./antler/voice-sidecar-manager')
-    voiceSidecarManager.bootVoiceSidecars()
-  } catch (err) {
-    console.warn('[voice] sidecar boot:', err.message)
+  // 混合方案：只启动“本地唤醒器”（openWakeWord，跑 CPU、不上云、省 token），
+  // 用来喊“Jarvis”触发 v2 连接。不启动 CosyVoice/旧 TTS。
+  // 需要完整老语音（CosyVoice 等）时，启动前设 ENABLE_OLD_VOICE=1。
+  if (process.env.ENABLE_OLD_VOICE === '1') {
+    try {
+      require('./antler/voice-sidecar-manager').bootVoiceSidecars()
+    } catch (err) {
+      console.warn('[voice] full v1 boot:', err.message)
+    }
+  } else {
+    try {
+      require('./antler/voice-listener-manager').bootListenerSidecar()
+      console.log('[voice] 本地唤醒器已启动（喊 Jarvis 触发 v2）；CosyVoice/旧 TTS 未启动。')
+    } catch (err) {
+      console.warn('[voice] listener boot:', err.message)
+    }
   }
 }
 
@@ -4233,23 +4244,4 @@ function startHttpServer() {
 
 startHttpServer()
 
-function shutdownServer(signal) {
-  console.log(`\nShutting down (${signal})...`)
-  cleanupAllTerminalSessions()
-  gateway.disconnect()
-  if (typeof server.closeAllConnections === 'function') {
-    server.closeAllConnections()
-  }
-  const forceExit = setTimeout(() => {
-    console.warn('[server] Force exit after shutdown timeout')
-    process.exit(0)
-  }, 2000)
-  server.close(() => {
-    clearTimeout(forceExit)
-    console.log('Server closed')
-    process.exit(0)
-  })
-}
-
-process.on('SIGINT', () => shutdownServer('SIGINT'))
-process.on('SIGTERM', () => shutdownServer('SIGTERM'))
+function shutdownSe

@@ -22,6 +22,48 @@ def wlog(msg: str) -> None:
     except Exception:
         pass
 
+
+# ── 中文拼音模糊匹配：whisper 常把中文唤醒词转成同音别字（邓紫棋→彈子齊），按发音比对 ──
+from difflib import SequenceMatcher  # noqa: E402
+
+try:
+    from pypinyin import lazy_pinyin as _lazy_pinyin  # type: ignore
+except Exception:
+    _lazy_pinyin = None
+
+
+def _pinyin_syls(text: str) -> list[str]:
+    if not _lazy_pinyin:
+        return []
+    try:
+        return [s for s in _lazy_pinyin(text) if s and s.strip()]
+    except Exception:
+        return []
+
+
+def _syl_close(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
+def pinyin_fuzzy_match(wake_text: str, trans_text: str) -> bool:
+    """发音够近就算命中：逐音节比对，≥60% 音节相近即匹配（支持转写里有多余字）。"""
+    w = _pinyin_syls(wake_text)
+    t = _pinyin_syls(trans_text)
+    n = len(w)
+    if n == 0 or not t:
+        return False
+    if len(t) < n:
+        m = sum(1 for a, b in zip(w, t) if _syl_close(a, b))
+        return (m / n) >= 0.6
+    best = 0.0
+    for i in range(0, len(t) - n + 1):
+        window = t[i:i + n]
+        m = sum(1 for a, b in zip(w, window) if _syl_close(a, b))
+        best = max(best, m / n)
+    return best >= 0.6
+
 # Built-in phrase → openWakeWord model names (English models only).
 OPENWAKEWORD_PHRASE_MODELS: dict[str, str] = {
     'hey jarvis': 'hey_jarvis',
@@ -469,6 +511,24 @@ class WhisperPhraseDetector:
             for phrase in self._phrases:
                 if '贾维斯' in phrase or 'jarvis' in phrase.lower():
                     return phrase
+        # 中文唤醒词：按拼音模糊匹配（whisper 常转成同音别字，如 邓紫棋→彈子齊/断子齊）
+        for phrase in self._phrases:
+            if re.search(r'[一-鿿]', phrase) and pinyin_fuzzy_match(phrase, text):
+                return phrase
+        # 英文/拉丁唤醒词：转写常听成近音（Jaslyn→Jaslene/Jasline），按拼写相似度模糊匹配
+        words = [w.strip('.,!?;:') for w in norm.split() if w.strip('.,!?;:')]
+        for phrase in self._phrases:
+            if re.search(r'[一-鿿]', phrase):
+                continue
+            p = phrase.replace(' ', '')
+            if len(p) < 3:
+                continue
+            # 整句去空格后整体比；或逐词比（应对“hi/hey + 名字”）
+            if SequenceMatcher(None, norm.replace(' ', ''), p).ratio() >= 0.82:
+                return phrase
+            for w in words:
+                if len(w) >= 3 and SequenceMatcher(None, w, p).ratio() >= 0.72:
+                    return phrase
         return None
 
     def _match_jarvis_fuzzy(self, norm: str) -> str | None:
@@ -479,63 +539,4 @@ class WhisperPhraseDetector:
         if len(words) < 2:
             return None
         for i in range(min(4, len(words) - 1)):
-            greet = words[i].lower()
-            if greet not in _JARVIS_GREETING_PREFIXES:
-                continue
-            name = words[i + 1].lower()
-            if name not in _JARVIS_SOUNDALIKES and not _sounds_like_jarvis(name):
-                continue
-            for phrase in jarvis_phrases:
-                if phrase.startswith(greet) or (
-                    phrase.startswith('hey') and greet in ('hej', 'hello', 'hallo', 'hiya', 'heya')
-                ):
-                    return phrase
-                if phrase.startswith('hi') and greet == 'hi':
-                    return phrase
-            return jarvis_phrases[0]
-        return None
-
-
-def build_frame_detector(config: dict[str, Any]) -> FrameWakeDetector | None:
-    engine = str(config.get('wakeEngine') or 'openwakeword').lower()
-    phrases = list(config.get('wakePhrases') or [])
-    sensitivity = float(config.get('sensitivity') or 0.5)
-
-    if engine == 'whisper':
-        return None
-
-    if engine == 'openwakeword':
-        try:
-            det = OpenWakeWordDetector(phrases, sensitivity=sensitivity)
-            wlog(f'build_frame_detector OK engine=openwakeword phrases={phrases}')
-            return det
-        except Exception as exc:
-            print(f'[listener] openWakeWord init failed: {exc}', flush=True)
-            wlog(f'build_frame_detector FAILED engine=openwakeword err={exc!r} phrases={phrases}')
-            return None
-
-    if engine == 'porcupine':
-        try:
-            return PorcupineDetector(
-                phrases,
-                access_key=str(config.get('porcupineAccessKey') or ''),
-                sensitivity=sensitivity,
-                keyword_paths=list(config.get('porcupineKeywordPaths') or []),
-            )
-        except Exception as exc:
-            print(f'[listener] Porcupine init failed: {exc}', flush=True)
-            return None
-
-    return None
-
-
-def needs_whisper_fallback(config: dict[str, Any]) -> bool:
-    if bool(config.get('wakeRequireStt', True)):
-        return True
-    engine = str(config.get('wakeEngine') or 'openwakeword').lower()
-    phrases = list(config.get('wakePhrases') or [])
-    if engine == 'whisper':
-        return True
-    if not phrases:
-        return False
-    return _phrase_needs_whisper_fallback(phrases, engine)
+        

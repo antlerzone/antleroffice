@@ -379,6 +379,118 @@ def _wake_stt_language() -> str | None:
     return order[0] if order else None
 
 
+# ── 本地 wake 转写（faster-whisper，CPU，免费、不上云）——summon 不烧 token ──
+_LOCAL_WAKE_WHISPER = os.environ.get('VOICE_WAKE_LOCAL', '1') != '0'
+_LOCAL_WHISPER_MODEL = os.environ.get('VOICE_WAKE_WHISPER_MODEL', 'base')
+_local_whisper = None
+
+
+def _get_local_whisper():
+    global _local_whisper
+    if _local_whisper is None:
+        from faster_whisper import WhisperModel
+        print(f'[wake/stt] loading local whisper model={_LOCAL_WHISPER_MODEL} (cpu, int8)…', flush=True)
+        _local_whisper = WhisperModel(_LOCAL_WHISPER_MODEL, device='cpu', compute_type='int8')
+        print('[wake/stt] local whisper ready', flush=True)
+    return _local_whisper
+
+
+def _transcribe_local_whisper(wav_bytes: bytes, language: str | None) -> str:
+    import io as _io
+    model = _get_local_whisper()
+    segments, _info = model.transcribe(
+        _io.BytesIO(wav_bytes),
+        language=language or None,
+        beam_size=1,
+        vad_filter=False,
+        condition_on_previous_text=False,
+    )
+    return ' '.join(s.text for s in segments).strip()
+
+
+# ── 本地 SenseVoice（sherpa-onnx，CPU，比 Whisper 快很多、中文更准）──
+_WAKE_ASR = os.environ.get('VOICE_WAKE_ASR', 'sensevoice').lower()  # sensevoice | whisper
+_sensevoice = None
+_sensevoice_failed = False
+_SENSEVOICE_NAME = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17'
+
+
+def _ensure_sensevoice_model():
+    """确保 SenseVoice 模型已下载，返回 (model.int8.onnx, tokens.txt)。首次约 230MB。"""
+    d = os.path.join(os.path.expanduser('~'), '.antleroffice2', 'voice-runtime', 'sensevoice')
+    sub = os.path.join(d, _SENSEVOICE_NAME)
+    model = os.path.join(sub, 'model.int8.onnx')
+    tokens = os.path.join(sub, 'tokens.txt')
+    if os.path.exists(model) and os.path.exists(tokens):
+        return model, tokens
+    os.makedirs(d, exist_ok=True)
+    url = f'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{_SENSEVOICE_NAME}.tar.bz2'
+    tar_path = os.path.join(d, 'sensevoice.tar.bz2')
+    print('[wake/stt] 下载 SenseVoice 模型（首次，约 230MB）…', flush=True)
+    urlrequest.urlretrieve(url, tar_path)
+    import tarfile
+    with tarfile.open(tar_path, 'r:bz2') as tf:
+        tf.extractall(d)
+    try:
+        os.remove(tar_path)
+    except Exception:
+        pass
+    print('[wake/stt] SenseVoice 模型就绪', flush=True)
+    return model, tokens
+
+
+def _get_sensevoice():
+    global _sensevoice
+    if _sensevoice is None:
+        import sherpa_onnx
+        model, tokens = _ensure_sensevoice_model()
+        print('[wake/stt] loading SenseVoice (sherpa-onnx, cpu)…', flush=True)
+        _sensevoice = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+            model=model, tokens=tokens, num_threads=2, use_itn=True, debug=False,
+        )
+        print('[wake/stt] SenseVoice ready', flush=True)
+    return _sensevoice
+
+
+def _wav_to_float32(wav_bytes: bytes):
+    import io as _io
+    import wave as _wave
+    import numpy as _np
+    with _wave.open(_io.BytesIO(wav_bytes), 'rb') as wf:
+        sr = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+    samples = _np.frombuffer(raw, dtype=_np.int16).astype(_np.float32) / 32768.0
+    return samples, sr
+
+
+def _transcribe_sensevoice(wav_bytes: bytes) -> str:
+    rec = _get_sensevoice()
+    samples, sr = _wav_to_float32(wav_bytes)
+    s = rec.create_stream()
+    s.accept_waveform(sr, samples)
+    rec.decode_stream(s)
+    return (s.result.text or '').strip()
+
+
+def _transcribe_for_wake(wav_bytes: bytes, language: str | None) -> str:
+    """唤醒匹配的本地转写：优先 SenseVoice（快），失败退回 whisper，绝不上云、不烧 token。"""
+    global _sensevoice_failed
+    # 只在 SenseVoice 已经预热好（_sensevoice 非 None）时才用，避免在 mic 线程里触发下载/加载卡住；
+    # 预热未完成时先用 whisper 顶着（whisper 模型上次已缓存）。
+    if _WAKE_ASR == 'sensevoice' and not _sensevoice_failed and _sensevoice is not None:
+        try:
+            return _transcribe_sensevoice(wav_bytes)
+        except Exception as exc:
+            _sensevoice_failed = True
+            print(f'[wake/stt] SenseVoice 失败，本次起退回 whisper: {exc}', flush=True)
+    if _LOCAL_WAKE_WHISPER:
+        try:
+            return _transcribe_local_whisper(wav_bytes, language)
+        except Exception as exc:
+            print(f'[wake/stt] local whisper failed: {exc}', flush=True)
+    return ''
+
+
 def _transcribe_wav_with_language(
     wav_bytes: bytes,
     language: str | None,
@@ -387,6 +499,9 @@ def _transcribe_wav_with_language(
     prompt: str | None = None,
     stt_model: str | None = None,
 ) -> str:
+    # 唤醒匹配只用本地 ASR（SenseVoice 优先，失败退回 whisper），绝不走云端、不烧 token。
+    if for_wake:
+        return _transcribe_for_wake(wav_bytes, language)
     boundary = f'----antler{int(time.time() * 1000)}'
     owner_key = str(_config.get('ownerKey') or 'local:boss')
     owner_name = str(_config.get('ownerName') or 'Boss')
@@ -963,12 +1078,17 @@ def _process_sleep_whisper_utterance(utterance: bytes, speech_ms: int = 0) -> bo
         if key and key not in seen:
             seen.add(key)
             raw_candidates.append((text, tag))
+        # 先看是否命中唤醒词——命中就别当噪音丢（whisper 在短句上常把词重复，如“邓紫棋邓紫棋”，仍含唤醒词）
+        if whisper.matches(text):
+            transcripts.append((text, tag))
+            print(f'[wake/whisper] MATCH ({tag}): "{text}"', flush=True)
+            return True
         if _should_discard_wake_transcript(text, whisper):
             print(f'[wake/whisper] SKIP discarded transcript="{text}" ({tag})', flush=True)
             return False
         transcripts.append((text, tag))
         print(f'[wake/whisper] accepted ({tag}): "{text}"', flush=True)
-        return bool(whisper.matches(text))
+        return False
 
     for lang in lang_order:
         try:
@@ -1379,7 +1499,8 @@ def _mic_loop() -> None:
         )
 
         if mode == 'sleep' and not bool(_config.get('realtimeSessionActive')):
-            if _wake_requires_stt():
+            # 用本地 whisper 处理唤醒句：engine==whisper，或有中文/自定义词触发了 whisper 回退。
+            if _wake_requires_stt() or _use_whisper_fallback:
                 _process_sleep_whisper_utterance(utterance, captured_speech_ms)
             continue
 
@@ -1394,6 +1515,25 @@ def _mic_loop() -> None:
             _process_active_utterance(utterance, captured_speech_ms)
 
 
+_sensevoice_warmed = False
+
+
+def _warmup_sensevoice() -> None:
+    """后台预热 SenseVoice（首次下载 230MB + 加载），这样第一次喊唤醒词不会被卡住。"""
+    global _sensevoice_warmed
+    if _sensevoice_warmed or _WAKE_ASR != 'sensevoice':
+        return
+    _sensevoice_warmed = True
+
+    def _run():
+        try:
+            _get_sensevoice()
+        except Exception as exc:
+            print(f'[wake/stt] SenseVoice 预热失败（将退回 whisper）: {exc}', flush=True)
+
+    threading.Thread(target=_run, name='sensevoice-warmup', daemon=True).start()
+
+
 def _ensure_mic_thread() -> None:
     global _mic_thread
     if _mic_thread and _mic_thread.is_alive():
@@ -1401,6 +1541,7 @@ def _ensure_mic_thread() -> None:
     _stop_event.clear()
     _mic_thread = threading.Thread(target=_mic_loop, name='voice-listener-mic', daemon=True)
     _mic_thread.start()
+    _warmup_sensevoice()  # 后台把 SenseVoice 下好/加载好，喊词时就绪
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1413,137 +1554,4 @@ class Handler(BaseHTTPRequestHandler):
             with _state_lock:
                 state_copy = dict(_state)
             with _detector_lock:
-                clap_active = _clap_detector is not None
-                clap_threshold = _clap_detector._threshold if _clap_detector else 2500.0
-            sens = float(_config.get('sensitivity') or 0.5)
-            vad_thr = _vad_threshold(sens)
-            peak = 0 if _peak_rms != _peak_rms else round(_peak_rms)
-            current = 0 if _current_rms != _current_rms else round(_current_rms)
-            raw = 0 if _raw_rms != _raw_rms else round(_raw_rms)
-            _json(self, 200, {
-                'ready': True,
-                'state': state_copy,
-                'clapDetectorActive': clap_active,
-                'clapThreshold': clap_threshold,
-                'peakRms': peak,
-                'currentRms': current,
-                'rawRms': raw,
-                'vadThreshold': round(vad_thr),
-                'micGain': MIC_GAIN,
-                'maxTotalGain': MAX_TOTAL_GAIN,
-                'inputDevice': _input_device,
-            })
-            return
-        if path == '/devices':
-            try:
-                import sounddevice as sd  # type: ignore
-
-                _json(self, 200, {'ok': True, 'devices': _list_input_devices(sd), 'active': _input_device})
-            except Exception as exc:
-                _json(self, 500, {'ok': False, 'error': str(exc)})
-            return
-        if path == '/status':
-            with _state_lock:
-                _json(self, 200, {'ok': True, **dict(_state), 'config': dict(_config)})
-            return
-        self.send_error(404)
-
-    def do_POST(self) -> None:
-        path = self.path.split('?')[0]
-        length = int(self.headers.get('Content-Length', '0'))
-        raw = self.rfile.read(length) if length else b'{}'
-        try:
-            body = json.loads(raw.decode('utf-8') or '{}')
-        except json.JSONDecodeError:
-            _json(self, 400, {'ok': False, 'error': 'Invalid JSON'})
-            return
-
-        if path == '/config':
-            body = body or {}
-            _config.update(body)
-            if 'realtimeSessionActive' in body:
-                _config['realtimeSessionActive'] = bool(body['realtimeSessionActive'])
-            if 'summonSessionEngaged' in body:
-                _config['summonSessionEngaged'] = bool(body['summonSessionEngaged'])
-            elif str(_state.get('mode') or 'sleep') == 'sleep':
-                _config['summonSessionEngaged'] = False
-            if 'realtimeSessionActive' not in body and 'summonSessionEngaged' not in body:
-                if str(_state.get('mode') or 'sleep') == 'sleep':
-                    _config['realtimeSessionActive'] = False
-            if _config_fingerprint(_config) != _config_token:
-                _rebuild_detectors()
-            with _state_lock:
-                _state['global_listen'] = bool(_config.get('globalListenEnabled', True))
-            if _config.get('globalListenEnabled', True):
-                _ensure_mic_thread()
-            with _state_lock:
-                _json(self, 200, {'ok': True, 'config': dict(_config), 'state': dict(_state)})
-            return
-
-        if path == '/mode':
-            mode = str(body.get('mode') or 'sleep').lower()
-            if mode in ('sleep', 'active', 'speaking'):
-                with _state_lock:
-                    _state['mode'] = mode
-                    if mode == 'active':
-                        _state['last_wake_at'] = time.time()
-                    if mode == 'sleep':
-                        _state['last_wake_at'] = None
-                        _state['speaking'] = False
-                        _state['barge_in'] = False
-                        _config['realtimeSessionActive'] = False
-                        _config['summonSessionEngaged'] = False
-                if mode == 'sleep':
-                    with _detector_lock:
-                        if _frame_detector:
-                            _frame_detector.reset()
-            with _state_lock:
-                _json(self, 200, {'ok': True, 'state': dict(_state)})
-            return
-
-        if path == '/speaking':
-            global _last_speaking_end_at
-            with _state_lock:
-                was_speaking = bool(_state.get('speaking'))
-                _state['speaking'] = bool(body.get('speaking'))
-                _state['barge_in'] = bool(body.get('bargeIn')) if _state['speaking'] else False
-                if _state['speaking']:
-                    if _state['barge_in']:
-                        _state['mode'] = 'active'
-                        _state['last_wake_at'] = time.time()
-                    else:
-                        _state['mode'] = 'speaking'
-                    # TTS / greeting playback counts as summon activity.
-                    if _state.get('last_wake_at'):
-                        _state['last_wake_at'] = time.time()
-                else:
-                    if was_speaking:
-                        _last_speaking_end_at = time.time()
-                    if _state['mode'] == 'speaking':
-                        _state['mode'] = 'active' if _state.get('last_wake_at') else 'sleep'
-                _json(self, 200, {'ok': True, 'state': dict(_state)})
-            if not body.get('speaking'):
-                _block_wake_for(WAKE_BLOCK_AFTER_SPEAKING_SEC)
-                with _detector_lock:
-                    if _frame_detector:
-                        _frame_detector.reset()
-            return
-
-        if path == '/wake':
-            _emit_wake()
-            with _state_lock:
-                _json(self, 200, {'ok': True, 'state': dict(_state)})
-            return
-
-        self.send_error(404)
-
-
-def main() -> None:
-    print(f'[listener] on http://{HOST}:{PORT} callback={CALLBACK_URL}', flush=True)
-    _ensure_mic_thread()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    server.serve_forever()
-
-
-if __name__ == '__main__':
-    main()
+        

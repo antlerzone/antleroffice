@@ -133,11 +133,16 @@ onUnmounted(() => {
 })
 
 function openOAuth(provider: 'google' | 'facebook') {
-  openExternalUrl(buildDesktopOAuthUrl(provider))
+  const url = buildDesktopOAuthUrl(provider)
+  // 浏览器(dev)里直接本标签跳转，避免 window.open 被弹窗拦截导致“点了没反应”；登录完会自动跳回 3300。
+  if (!isElectronApp() && isLocalDevHost()) window.location.assign(url)
+  else openExternalUrl(url)
 }
 
 function openSignUp() {
-  openExternalUrl(buildDesktopSignUpUrl())
+  const url = buildDesktopSignUpUrl()
+  if (!isElectronApp() && isLocalDevHost()) window.location.assign(url)
+  else openExternalUrl(url)
 }
 </script>
 
@@ -404,29 +409,4 @@ function openSignUp() {
 }
 
 .login-btn--secondary {
-  margin-top: 0;
-}
-
-.login-hint {
-  margin-top: 20px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  text-align: center;
-  line-height: 1.5;
-}
-
-@media (max-width: 900px) {
-  .login-left {
-    display: none;
-  }
-
-  .login-right {
-    padding: 24px;
-  }
-
-  .login-mobile-brand {
-    display: flex;
-  }
-}
-</style>
-
+  marg
