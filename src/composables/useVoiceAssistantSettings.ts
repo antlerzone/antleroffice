@@ -25,7 +25,7 @@ const STORAGE_KEY = 'voice-assistant-settings'
 
 export type RealtimeProvider = 'openai' | 'doubao'
 /** OpenClaw voice pipeline (local VAD + Whisper STT + OpenClaw + TTS). Wake word stays on Python sidecar. */
-export type RealtimeVoiceOutput = 'openai' | 'elevenlabs' | 'fishaudio'
+export type RealtimeVoiceOutput = 'openai' | 'elevenlabs' | 'fishaudio' | 'browser' | 'edgetts'
 export type OpenAIRealtimeVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer' | 'verse' | 'ballad'
 
 export interface VoiceAssistantSettings {
@@ -96,6 +96,8 @@ export interface VoiceAssistantSettings {
     hasSttKey?: boolean
     openclawOpenAiKeyConfigured?: boolean
     sttKeyAvailable?: boolean
+    /** Last 4 chars of the configured OpenAI key — masked UI hint only. */
+    openaiKeyLast4?: string
   }
 }
 
@@ -154,7 +156,7 @@ function buildDefaults(locale: string): VoiceAssistantSettings {
       systemPrompt: DEFAULT_JARVIS_PERSONA_PROMPT,
     },
     realtime: {
-      enabled: false,
+      enabled: true,
       provider: 'openai',
       openaiApiKey: '',
       doubaoApiKey: '',
@@ -187,6 +189,9 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
   // Acoustic wake: openWakeWord matches "Hey Jarvis" by sound, so never gate it
   // behind STT text matching (which mis-hears Jarvis as guys/Jason/Bryan).
   out.summon.wakeRequireStt = false
+  out.realtime = { ...defaults.realtime, ...(stored.realtime || {}) }
+  // Final decision: no OpenAI realtime. The assistant uses the listener command flow.
+  out.realtime.enabled = false
   out.voice = { ...defaults.voice, ...(stored.voice || {}) }
   if (out.voice.ttsEngine === 'cosyvoice') {
     out.voice.ttsEngine = 'edgetts'
@@ -385,9 +390,26 @@ function saveSettings(settings: VoiceAssistantSettings) {
   } catch {
     /* ignore */
   }
+  // Mirror to backend, but only after hydration so the initial default-load
+  // can't clobber a backend that another origin already seeded.
+  if (hydrationDone) postSettingsToServer(settings)
 }
 
 const settings = ref<VoiceAssistantSettings>(buildDefaults('en'))
+let serverHydrateStarted = false
+let hydrationDone = false
+
+function postSettingsToServer(value: VoiceAssistantSettings) {
+  try {
+    void fetch('/api/voice/assistant-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: value }),
+    }).catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
 
 export function useVoiceAssistantSettings() {
   const { locale } = useI18n()
@@ -397,6 +419,11 @@ export function useVoiceAssistantSettings() {
     settings.value = loadSettings(locale.value)
   } else if (settings.value.summon.idleTimeoutSec === 300 && !localStorage.getItem(STORAGE_KEY)) {
     settings.value = loadSettings(locale.value)
+  }
+
+  if (!serverHydrateStarted) {
+    serverHydrateStarted = true
+    void hydrateFromServer()
   }
 
   const honorific = computed(() =>
@@ -556,6 +583,7 @@ export function useVoiceAssistantSettings() {
     openaiSttModel?: string
     openclawOpenAiKeyConfigured?: boolean
     sttKeyAvailable?: boolean
+    openaiKeyLast4?: string
   }) {
     const localKey = settings.value.voiceApi.sttApiKey?.trim()
     settings.value.voiceApi = {
@@ -564,6 +592,7 @@ export function useVoiceAssistantSettings() {
       openaiSttModel: prefs.openaiSttModel || settings.value.voiceApi.openaiSttModel,
       openclawOpenAiKeyConfigured: !!prefs.openclawOpenAiKeyConfigured,
       sttKeyAvailable: !!prefs.sttKeyAvailable,
+      openaiKeyLast4: prefs.openaiKeyLast4 || '',
       sttApiKey: localKey || settings.value.voiceApi.sttApiKey,
     }
   }
@@ -600,6 +629,45 @@ export function useVoiceAssistantSettings() {
     } catch {
       /* local-only fallback */
     }
+  }
+
+  // Backend is the shared source of truth. On first use: if the backend has a
+  // saved blob, adopt it; otherwise, if THIS origin already has settings, push
+  // them up once to seed the backend so other origins inherit the keys.
+  async function hydrateFromServer() {
+    let applied = false
+    try {
+      const res = await fetch('/api/voice/assistant-settings')
+      const data = (await res.json()) as {
+        ok?: boolean
+        settings?: Partial<VoiceAssistantSettings> | null
+      }
+      if (
+        data?.ok &&
+        data.settings &&
+        typeof data.settings === 'object' &&
+        Object.keys(data.settings).length
+      ) {
+        settings.value = migrateLegacy(data.settings, buildDefaults(locale.value), locale.value)
+        applied = true
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!applied) {
+      // Backend empty: seed it from THIS origin's saved settings (the browser
+      // where keys were first entered) so other origins inherit them.
+      try {
+        if (localStorage.getItem(STORAGE_KEY)) {
+          const local = loadSettings(locale.value)
+          settings.value = local
+          postSettingsToServer(local)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    hydrationDone = true
   }
 
   async function loadVoiceApiFromServer() {

@@ -536,6 +536,8 @@ async function handleListenerEvent(body = {}) {
 
 function registerVoiceRoutes(app, upload, opts = {}) {
   const voicePersona = require('./voice-persona');
+  const voiceAssistantStore = require('./voice-assistant-store');
+  const uiSettingsStore = require('./ui-settings-store');
   const resolveBossOwner = typeof opts.resolveBossOwner === 'function' ? opts.resolveBossOwner : null;
 
   function ownerFromReq(req) {
@@ -565,6 +567,51 @@ function registerVoiceRoutes(app, upload, opts = {}) {
   app.get('/api/voice/status', async (_req, res) => {
     try {
       res.json(await getVoiceStatus());
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Shared (backend-persisted) voice-assistant settings blob, so TTS/realtime
+  // keys survive across localhost/127.0.0.1/packaged origins.
+  app.get('/api/voice/assistant-settings', (_req, res) => {
+    try {
+      res.json({ ok: true, settings: voiceAssistantStore.read() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/voice/assistant-settings', (req, res) => {
+    try {
+      const settings = req.body && req.body.settings;
+      if (!settings || typeof settings !== 'object') {
+        return res.status(400).json({ ok: false, error: 'settings object required' });
+      }
+      voiceAssistantStore.write(settings);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Generic shared store for any front-end UI settings blob (keyed by name).
+  app.get('/api/voice/ui-settings/:key', (req, res) => {
+    try {
+      res.json({ ok: true, settings: uiSettingsStore.read(req.params.key) });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/voice/ui-settings/:key', (req, res) => {
+    try {
+      const settings = req.body && req.body.settings;
+      if (!settings || typeof settings !== 'object') {
+        return res.status(400).json({ ok: false, error: 'settings object required' });
+      }
+      uiSettingsStore.write(req.params.key, settings);
+      res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
