@@ -310,7 +310,7 @@ async function saveCredentials() {
       ? step.credentialWebsiteUrl.replace('{username}', username)
       : ''
 
-    await api.send('POST', '/api/accounts', {
+    const acctRes = await api.send<{ account?: { alias?: string } }>('POST', '/api/accounts', {
       displayName,
       username,
       password,
@@ -335,6 +335,19 @@ async function saveCredentials() {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify(applyBody),
+      })
+    }
+
+    // 候选 MCP：只装用户选中的那一个，并绑定到本 NPC（token 在后端解密、不经过 AI）
+    if (step.installsMcp) {
+      await fetch('/api/onboard/mcp/install', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          templateId: props.templateId,
+          slug: step.installsMcp,
+          accountAlias: acctRes?.account?.alias || step.credentialWebsite || '',
+        }),
       })
     }
 

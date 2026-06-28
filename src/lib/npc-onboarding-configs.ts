@@ -77,6 +77,8 @@ export interface OnboardingStep {
    * e.g. { password: 'glifApiKey', enableGraphicDesign: 'true' }
    */
   mcpApplyParams?: Record<string, string>
+  /** 候选 MCP：存完账号后只安装这一个 slug（没选的不装） */
+  installsMcp?: string
 }
 
 export interface NpcOnboardingConfig {
@@ -112,12 +114,12 @@ export const COMMON_PERSONALITY_POOL: PersonalityTrait[] = [
 
 const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
 
-  // ── CEO ───────────────────────────────────────────────────────────────────
+  // ── COO ───────────────────────────────────────────────────────────────────
   ceo: {
     templateId: 'ceo',
-    greeting: '您好老板！很荣幸担任公司的 CEO 顾问。我会帮您制定战略、规划任务、并带领团队执行。',
+    greeting: '您好老板！很荣幸担任公司的 COO。我会帮您制定战略、规划任务、并带领团队执行。',
     capabilities: ['制定公司战略', '规划季度目标', '协调各部门工作', '分析经营成果'],
-    completionHint: '跟 COO 说：「叫 CEO 帮我分析下这个季度的方向」',
+    completionHint: '跟 COO 说：「帮我分析下这个季度的方向」',
     extraPersonality: [
       { id: 'strategic', label: '战略眼光', emoji: '♟️' },
       { id: 'decisive',  label: '果断决策', emoji: '⚡' },
@@ -172,6 +174,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
         title: '连接您的 Bukku 账号',
         hint: '需要两样东西，在 Bukku → Control Panel → Integrations 里找到',
         credentialWebsite: 'bukku',
+        installsMcp: 'bukku',
         fields: [
           {
             key: 'username',

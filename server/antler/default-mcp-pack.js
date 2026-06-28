@@ -16,6 +16,22 @@ const PACK_VERSION = 1;
 
 const MCP_PORT = Number(process.env.ANTLEROFFICE_MCP_PORT) || 8931;
 
+// Instagram (ig-mcp) is a vendored Python MCP server. Paths/runtime are
+// overridable via env so packaged (Electron resources) builds can relocate it.
+const path = require('node:path');
+const IG_MCP_PYTHON = process.env.ANTLEROFFICE_PYTHON || 'python';
+const IG_MCP_ENTRY =
+  process.env.ANTLEROFFICE_IG_MCP_PATH ||
+  path.join(__dirname, '..', '..', 'vendor', 'ig-mcp', 'src', 'instagram_mcp_server.py');
+
+// Credential env vars expected by ig-mcp (filled later in Integrations → MCP).
+const IG_ENV_KEYS = [
+  'INSTAGRAM_ACCESS_TOKEN',
+  'FACEBOOK_APP_ID',
+  'FACEBOOK_APP_SECRET',
+  'INSTAGRAM_BUSINESS_ACCOUNT_ID',
+];
+
 const MCP_DEFS = {
   'antleroffice-tools': {
     slug: 'antleroffice-tools',
@@ -52,13 +68,36 @@ const MCP_DEFS = {
     suggestedAuthType: 'api_key',
     skipProbeOnHire: true,
   },
+  instagram: {
+    slug: 'instagram',
+    name: 'Instagram Business',
+    transport: 'stdio',
+    command: IG_MCP_PYTHON,
+    args: [IG_MCP_ENTRY],
+    suggestedAuthType: 'api_key',
+    skipProbeOnHire: true,
+  },
+  // Candidate MCP: only installed when the user picks Bukku during onboarding.
+  bukku: {
+    slug: 'bukku',
+    name: 'Bukku Accounting',
+    transport: 'stdio',
+    command: 'npx',
+    // TODO(verify): exact npm package name of the Bukku MCP.
+    args: ['-y', '@futureconnectd/bukku-mcp'],
+    suggestedAuthType: 'api_key',
+    skipProbeOnHire: true,
+    // Saved account (username = subdomain, password = access token) -> MCP env.
+    // TODO(verify): exact env var names expected by bukku-mcp.
+    accountEnv: { username: 'BUKKU_SUBDOMAIN', password: 'BUKKU_ACCESS_TOKEN' },
+  },
 };
 
 const ROLE_SLUGS = {
   secretary: ['antleroffice-tools'],
   ceo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
   coo: ['antleroffice-tools', 'perplexity', 'firecrawl'],
-  admin: ['antleroffice-tools', 'perplexity', 'firecrawl'],
+  admin: ['antleroffice-tools', 'perplexity', 'firecrawl', 'instagram'],
   it: ['playwright'],
 };
 
@@ -121,15 +160,22 @@ function resolveBuiltinMcpRuntimeSpec(role) {
   return resolveMcpRuntimeFromBindings(bindings);
 }
 
-async function ensurePackMcp(slug, { apiKey, envKey } = {}) {
+async function ensurePackMcp(slug, { apiKey, envKey, env } = {}) {
   const def = { ...MCP_DEFS[slug] };
   if (!def.slug) return null;
-  if (apiKey && envKey) {
-    def.env = { [envKey]: apiKey };
+  // Build the credential env: single apiKey/envKey (perplexity/firecrawl) or a
+  // full env object (instagram needs token + app id/secret + business account).
+  const credEnv = {
+    ...(env && typeof env === 'object' ? env : {}),
+    ...(apiKey && envKey ? { [envKey]: apiKey } : {}),
+  };
+  const hasCreds = Object.keys(credEnv).length > 0;
+  if (hasCreds) {
+    def.env = credEnv;
   }
   const { mcp } = await ensureBundledMcpRef()(def);
-  if (mcp && apiKey && envKey) {
-    registry.updateMcp(mcp.id, { env: { ...(mcp.env || {}), [envKey]: apiKey } });
+  if (mcp && hasCreds) {
+    registry.updateMcp(mcp.id, { env: { ...(mcp.env || {}), ...credEnv } });
     return registry.getMcp(mcp.id);
   }
   return mcp;
@@ -170,6 +216,7 @@ async function applyDefaultMcpPack({
   enableIt = true,
   perplexityApiKey = '',
   firecrawlApiKey = '',
+  instagramCreds = null,
   installPlaywright = true,
 } = {}) {
   const slugToMcpId = { ...(readPackSettings().slugToMcpId || {}) };
@@ -222,6 +269,23 @@ async function applyDefaultMcpPack({
   }
 
   if (enableAdmin) {
+    const igEnv = {};
+    if (instagramCreds && typeof instagramCreds === 'object') {
+      for (const key of IG_ENV_KEYS) {
+        const val = typeof instagramCreds[key] === 'string' ? instagramCreds[key].trim() : '';
+        if (val) igEnv[key] = val;
+      }
+    }
+    const mIg = await ensurePackMcp(
+      'instagram',
+      Object.keys(igEnv).length ? { env: igEnv } : {},
+    );
+    if (mIg) slugToMcpId.instagram = mIg.id;
+    else warnings.push('Could not register Instagram MCP.');
+    if (!igEnv.INSTAGRAM_ACCESS_TOKEN) {
+      warnings.push('Instagram access token not set — add later in Integrations → MCP.');
+    }
+
     const ids = ROLE_SLUGS.admin.map((s) => slugToMcpId[s]).filter(Boolean);
     setBuiltinRoleBindings('admin', ids.map((mcpId) => ({ mcpId, accountIds: [] })));
     for (const agent of registry.listAgents()) {
@@ -270,6 +334,33 @@ function applyRoleDefaultsToAgent(agent) {
   return registry.updateAgent(agent.id, { mcpBindings: merged }) || agent;
 }
 
+// Install ONE candidate MCP chosen by the user during onboarding, and bind it to
+// that template's hired agent(s). The account token is resolved server-side and
+// passed only into the MCP env — it never reaches the AI. Same proven plumbing as
+// applyRoleDefaultsToAgent (registry mcpBindings; resolved at run time).
+async function installMcpForTemplate({ templateId, slug, account } = {}) {
+  const def = MCP_DEFS[slug];
+  if (!def) throw new Error(`Unknown MCP slug: ${slug}`);
+  const env = {};
+  if (account && def.accountEnv) {
+    for (const [field, envKey] of Object.entries(def.accountEnv)) {
+      const v = account[field];
+      if (v) env[envKey] = String(v);
+    }
+  }
+  const mcp = await ensurePackMcp(slug, { env });
+  if (!mcp) throw new Error(`Could not register MCP: ${slug}`);
+  const slugToMcpId = { ...(readPackSettings().slugToMcpId || {}), [slug]: mcp.id };
+  writePackSettings({ slugToMcpId });
+  let boundAgents = 0;
+  for (const agent of registry.listAgents()) {
+    if (agent.templateId !== templateId) continue;
+    registry.updateAgent(agent.id, { mcpBindings: mergeBindings(agent.mcpBindings, [mcp.id]) });
+    boundAgents += 1;
+  }
+  return { ok: true, slug, mcpId: mcp.id, boundAgents };
+}
+
 async function getStatus() {
   const pack = readPackSettings();
   const mcps = {};
@@ -295,6 +386,7 @@ module.exports = {
   ensureAntlerofficeToolsBinding,
   applyDefaultMcpPack,
   applyRoleDefaultsToAgent,
+  installMcpForTemplate,
   getStatus,
   resolveBuiltinMcpRuntimeSpec,
   getBuiltinRoleBindings,

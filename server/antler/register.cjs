@@ -217,7 +217,8 @@ function registerAntlerRoutes(app, hooks = {}) {
     res.json({ ok: true });
   });
 
-  // Seed Secretary (free front door) + CEO station (vacant until hired from Browse).
+  // Boot NPCs: roster.defaults() is now empty — new users start with an empty
+  // office and hire a COO from Browse. (Loop kept in case defaults() is repopulated.)
   for (const d of roster.defaults()) {
     const a = office.ensureRole(d.role, d.label, d.charSprite);
     const saved = registry.getBuiltinAgentSettings(d.role);
@@ -228,6 +229,27 @@ function registerAntlerRoutes(app, hooks = {}) {
     if (d.role === 'secretary') bootPatch.openclawAgentId = 'main';
     if (Object.keys(bootPatch).length) office.setAgent(a.id, bootPatch);
   }
+
+  // Grandfather: existing users (used the app before the "empty office" change)
+  // keep their free COO; brand-new users stay empty. Decided once, then persisted.
+  const officeFlags = require('./office-flags');
+  let _officeFlags = officeFlags.read();
+  if (!_officeFlags.cooDecisionMade) {
+    _officeFlags = officeFlags.write({
+      cooDecisionMade: true,
+      keepGrandfatheredCoo: officeFlags.looksLikeExistingInstall(),
+    });
+  }
+  if (_officeFlags.keepGrandfatheredCoo && !office.getAgent('coo')) {
+    const cooStation = office.ensureRole('coo', 'COO', 5);
+    office.setAgent(cooStation.id, {
+      label: 'COO',
+      npcState: 'resting',
+      bubbleText: '',
+      openclawAgentId: 'main',
+    });
+  }
+
   orgRoles.migrateOfficeAgents();
   // Hydrate user-created agents persisted from previous sessions.
   office.loadUserAgents(registry.listAgents());
@@ -819,6 +841,17 @@ function registerAntlerRoutes(app, hooks = {}) {
         hirePassword.redactCatalogTemplate(t),
       );
       res.json({ templates, source: ecsCatalog.ecsBaseUrl() ? 'ecs' : 'local' });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Category tabs for Browse — server-driven (pulled from ECS, with a built-in
+  // fallback). Edit data/categories.json on ECS and all desktops sync.
+  app.get('/api/config/agents/categories', async (_req, res) => {
+    try {
+      const categories = await ecsCatalog.categoriesMerged();
+      res.json({ ok: true, categories });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
@@ -1580,6 +1613,80 @@ function registerAntlerRoutes(app, hooks = {}) {
       res.json({ ok: true, skin });
     } catch (e) {
       res.status(400).json({ ok: false, error: e.message || 'Could not update skin' });
+    }
+  });
+
+  // ── Paid skins store (proxies ECS; falls back to local builtins offline) ───
+  // Browse: preview is visible to all; `owned` flags what can be Applied.
+  app.get('/api/skins/store', async (req, res) => {
+    const bossToken = req.headers['x-boss-token'] || req.query?.token;
+    try {
+      if (ecsSubscriptions.isEcsBillingEnabled(bossToken)) {
+        const result = await ecsSubscriptions.skinCatalog({ bossToken });
+        if (result.ok) return res.json({ ok: true, source: 'ecs', skins: result.skins || [] });
+        // ECS reachable but errored — surface it (don't silently fake ownership)
+        return res.status(result.status || 502).json({ ok: false, error: result.error, code: result.code });
+      }
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message || 'ECS unavailable' });
+    }
+    // Offline / ECS not wired: show local builtins as free + owned so the page still works.
+    const skins = registry.listSkins().map((s) => ({
+      id: s.id,
+      name: s.name,
+      priceCredits: 0,
+      isDefault: true,
+      previewUrl: s.previewUrl || null,
+      owned: true,
+      assetUrl: s.assetUrl || null,
+    }));
+    res.json({ ok: true, source: 'local', skins });
+  });
+
+  // Purchase: server-authoritative on ECS (deducts credit, binds to gateway).
+  app.post('/api/skins/:id/purchase', async (req, res) => {
+    const bossToken = req.headers['x-boss-token'] || req.body?.token;
+    if (!ecsSubscriptions.isEcsBillingEnabled(bossToken)) {
+      return res.status(400).json({ ok: false, error: 'ECS login required to purchase.', code: 'ECS_REQUIRED' });
+    }
+    try {
+      const result = await ecsSubscriptions.purchaseSkin({ bossToken, skinId: req.params.id });
+      if (!result.ok) {
+        return res.status(result.status || 400).json({
+          ok: false,
+          error: result.error,
+          code: result.code,
+          balance: result.balance,
+          required: result.required,
+        });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(502).json({ ok: false, error: e.message || 'Purchase failed' });
+    }
+  });
+
+  // Create a paid skin in the ECS catalog (used by the HR create-skin flow after
+  // the boss confirms name + price). Server-authoritative.
+  app.post('/api/skins/create', async (req, res) => {
+    const bossToken = req.headers['x-boss-token'] || req.body?.token;
+    if (!ecsSubscriptions.isEcsBillingEnabled(bossToken)) {
+      return res.status(400).json({ ok: false, error: 'ECS login required to publish skins.', code: 'ECS_REQUIRED' });
+    }
+    try {
+      const result = await ecsSubscriptions.createSkin({
+        bossToken,
+        name: req.body?.name,
+        priceCredits: req.body?.priceCredits,
+        previewUrl: req.body?.previewUrl,
+        assetUrl: req.body?.assetUrl,
+      });
+      if (!result.ok) {
+        return res.status(result.status || 400).json({ ok: false, error: result.error, code: result.code });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(502).json({ ok: false, error: e.message || 'Publish failed' });
     }
   });
 
@@ -2660,6 +2767,26 @@ function registerAntlerRoutes(app, hooks = {}) {
     }
   });
 
+  // Install ONE candidate MCP the user picked in onboarding, and bind it to the
+  // hired agent of this template. Only the chosen one is installed; the account
+  // token is resolved + decrypted server-side and only fed into the MCP env.
+  app.post('/api/onboard/mcp/install', requireBossOnly, async (req, res) => {
+    const body = req.body || {};
+    try {
+      const templateId = String(body.templateId || '').trim();
+      const slug = String(body.slug || '').trim();
+      const accountAlias = String(body.accountAlias || '').trim();
+      if (!templateId || !slug) {
+        return res.status(400).json({ ok: false, error: 'templateId and slug required' });
+      }
+      const account = accountAlias ? webAccounts.resolveInternalAccount(accountAlias) : null;
+      const result = await defaultMcpPack.installMcpForTemplate({ templateId, slug, account });
+      res.json(result);
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e.message || String(e) });
+    }
+  });
+
   // ── OpenClaw runtime status (drives onboarding + office "connected" badge) ─
   app.get('/api/openclaw/status', async (_req, res) => {
     const available = await openclaw.isAvailable();
@@ -3070,4 +3197,29 @@ function resolveBossDisplayName(session) {
 
 function resolveDesktopDisplayName() {
   const custom = String(store.readSettings().office?.desktopDisplayName || '').trim();
-  if (cu
+  if (custom) return custom;
+  return require('node:os').hostname();
+}
+
+async function syncDesktopDisplayNameToEcs(req, displayName) {
+  const token = req.headers['x-boss-token'] || req.body?.bossToken;
+  const s = auth.session(token);
+  if (!s?.ecsAccessToken || !displayName) return;
+  const base = auth.ecsBaseUrl();
+  if (!base) return;
+  const desktopId = ecssync.desktopId();
+  try {
+    await fetch(`${base}/api/desktops/${encodeURIComponent(desktopId)}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${s.ecsAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ displayName }),
+      signal: AbortSignal.timeout(12000),
+    });
+  } catch {
+    /* ECS sync best-effort */
+  }
+}
+
