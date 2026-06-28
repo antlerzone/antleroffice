@@ -182,7 +182,7 @@ defineExpose({ refresh, runProbe })
         </NText>
 
         <NSpace :size="8" wrap>
-          <NButton size="small" :loading="loading" @click="refresh">
+          <NButton size="small" :loading="loading" @click="() => refresh()">
             {{ t('pages.settings.voiceClone.debugRefresh') }}
           </NButton>
           <NButton size="small" type="primary" :loading="probing" @click="runProbe">

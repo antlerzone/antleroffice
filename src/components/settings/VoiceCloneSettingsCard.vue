@@ -115,7 +115,11 @@ const synthesizingHintText = computed(() =>
     : t('pages.settings.voiceClone.synthesizingHint'),
 )
 const ttsAvailable = computed(() => status.value?.tts?.available === true)
-const altTtsRunning = computed(() => status.value?.altTts?.available === true || ttsAvailable.value)
+const altTtsRunning = computed(
+  () =>
+    (status.value as { altTts?: { available?: boolean } } | undefined)?.altTts?.available === true ||
+    ttsAvailable.value,
+)
 const sttAvailable = computed(() => {
   if (status.value?.stt?.available === true) return true
   const va = assistantSettings.value.voiceApi
@@ -419,7 +423,7 @@ async function playProfileClone(profileId: string) {
   try {
     message.info(t('pages.settings.voiceClone.synthStarting', { text: previewText.value.slice(0, 40) }))
     await speak(previewText.value, { profileId })
-    lastPlayedEngine.value = engine.value
+    lastPlayedEngine.value = engine.value as typeof lastPlayedEngine.value
     if (engine.value === 'edgetts' || engine.value === 'kokoro') {
       message.success(t('pages.settings.voiceClone.previewCloneDone'))
     } else {

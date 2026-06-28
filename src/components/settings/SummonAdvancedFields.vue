@@ -74,7 +74,7 @@ const idleMinutes = computed({
       <NText strong>{{ t('pages.settings.voiceAssistant.summon.micDevice') }}</NText>
       <NSelect
         :value="settings.summon.inputDeviceIndex"
-        :options="micDeviceOptions"
+        :options="(micDeviceOptions as unknown as { label: string; value: string | number }[])"
         clearable
         style="margin-top: 8px; max-width: 480px"
         @update:value="(v) => updateSummon({ inputDeviceIndex: v ?? null })"

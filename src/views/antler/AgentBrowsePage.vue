@@ -913,9 +913,9 @@ async function confirmHire() {
       creditBalance?: number
       error?: string
       postInstall?: { mcps?: { mcpId: string; name: string; hint?: string }[] } | null
-      codexInstall?: DevCliInstallBundle['codex']
-      cursorInstall?: DevCliInstallBundle['cursor']
-      claudeInstall?: DevCliInstallBundle['claude']
+      codexInstall?: NonNullable<DevCliInstallBundle>['codex']
+      cursorInstall?: NonNullable<DevCliInstallBundle>['cursor']
+      claudeInstall?: NonNullable<DevCliInstallBundle>['claude']
       devCliInstall?: DevCliInstallBundle
       devEngine?: string
     }>(

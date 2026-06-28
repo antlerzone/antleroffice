@@ -60,7 +60,7 @@ export function primaryMaskedKeyForProvider(keys: ProviderKeyRecord[], provider:
   const rows = indexProviderKeys(keys).get(provider) || []
   if (!rows.length) return ''
   const preferred = rows.find((r) => (r.profileId || '').endsWith(':default')) || rows[0]
-  return preferred.masked || maskedPreviewFromLabel(preferred.label || '')
+  return preferred?.masked || maskedPreviewFromLabel(preferred?.label || '')
 }
 
 export function profileCountForProvider(keys: ProviderKeyRecord[], provider: string): number {

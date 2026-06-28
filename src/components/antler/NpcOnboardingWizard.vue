@@ -149,7 +149,7 @@ function isStepVisible(step: OnboardingStep): boolean {
   if (!step.showWhen) return true
   const answer = answers.value[step.showWhen.stepId]
   const expected = step.showWhen.value
-  if (Array.isArray(expected)) return expected.includes(answer)
+  if (Array.isArray(expected)) return answer != null && expected.includes(answer)
   return answer === expected
 }
 
@@ -158,7 +158,10 @@ function isStepVisible(step: OnboardingStep): boolean {
 async function fetchRequiredAccounts() {
   if (!props.templateId) return
   try {
-    const res = await api.send('GET', `/api/catalog/agents/${props.templateId}`)
+    const res = await api.send<{ manifest?: { requiredAccounts?: typeof bundleRequiredAccounts.value } }>(
+      'GET',
+      `/api/catalog/agents/${props.templateId}`,
+    )
     bundleRequiredAccounts.value = res?.manifest?.requiredAccounts ?? []
   } catch {
     bundleRequiredAccounts.value = []

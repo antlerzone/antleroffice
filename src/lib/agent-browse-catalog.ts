@@ -28,6 +28,11 @@ export type BrowseTemplate = {
   requiresHirePassword?: boolean
   pricingModel?: string
   hireTier?: string
+  includesLabel?: string
+  currency?: string
+  ceoPricingNote?: string
+  hireCount?: number
+  reviewCount?: number
 }
 
 export const BROWSE_SECTIONS: { id: BrowseSection; label: string; hint: string }[] = [

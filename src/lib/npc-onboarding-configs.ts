@@ -31,7 +31,7 @@ export interface OnboardingField {
   /** 'username' and 'password' map directly to web-accounts-store fields */
   key: 'username' | 'password' | string
   label: string
-  placeholder: string
+  placeholder?: string
   type: 'text' | 'password'
   prefix?: string
   suffix?: string

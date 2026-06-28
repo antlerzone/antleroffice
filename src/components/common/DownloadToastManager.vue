@@ -83,7 +83,7 @@ function statusColor(status: string) {
               class="toast-item"
             >
               <div class="toast-item-icon">
-                <NSpin v-if="item.status === 'active'" size="tiny" />
+                <NSpin v-if="item.status === 'active'" :size="14" />
                 <NIcon
                   v-else-if="statusIcon(item.status)"
                   :component="statusIcon(item.status)!"

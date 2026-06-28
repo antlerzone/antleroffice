@@ -8,11 +8,11 @@ let lastPick = ''
 
 export function pickThinkingAck(lang: 'zh' | 'en'): string {
   const list = lang === 'zh' ? ACKS_ZH : ACKS_EN
-  if (list.length === 1) return list[0]
-  let pick = list[Math.floor(Math.random() * list.length)]
+  if (list.length === 1) return list[0] ?? ''
+  let pick = list[Math.floor(Math.random() * list.length)] ?? ''
   let guard = 0
   while (pick === lastPick && guard < 6) {
-    pick = list[Math.floor(Math.random() * list.length)]
+    pick = list[Math.floor(Math.random() * list.length)] ?? ''
     guard += 1
   }
   lastPick = pick

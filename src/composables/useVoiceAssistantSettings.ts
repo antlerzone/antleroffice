@@ -193,7 +193,8 @@ function migrateLegacy(stored: Partial<VoiceAssistantSettings>, defaults: VoiceA
   // Final decision: no OpenAI realtime. The assistant uses the listener command flow.
   out.realtime.enabled = false
   out.voice = { ...defaults.voice, ...(stored.voice || {}) }
-  if (out.voice.ttsEngine === 'cosyvoice') {
+  // Migrate the retired 'cosyvoice' engine from older stored settings.
+  if ((out.voice.ttsEngine as string) === 'cosyvoice') {
     out.voice.ttsEngine = 'edgetts'
     out.voice.useCloneVoice = false
   }

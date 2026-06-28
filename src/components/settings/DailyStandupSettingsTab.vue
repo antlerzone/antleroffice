@@ -78,8 +78,8 @@ function moveParticipant(agentId: string, delta: number) {
   if (index < 0) return
   const target = index + delta
   if (target < 0 || target >= list.length) return
-  const tmp = list[index]
-  list[index] = list[target]
+  const tmp = list[index]!
+  list[index] = list[target]!
   list[target] = tmp
   void patchParticipants(list)
 }

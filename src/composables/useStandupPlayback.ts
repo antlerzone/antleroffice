@@ -100,8 +100,10 @@ export function useStandupPlayback() {
     phase.value = 'playing'
 
     for (let i = startIndex; i < sections.value.length; i++) {
-      if (token !== cancelToken || phase.value === 'idle') return
-      if (phase.value === 'interrupted') {
+      // phase is reactive and mutated by interrupt handlers; cast avoids a false
+      // "no-overlap" narrowing (TS thinks it's still 'playing' from line 100).
+      if (token !== cancelToken || (phase.value as string) === 'idle') return
+      if ((phase.value as string) === 'interrupted') {
         await syncPlaybackState({
           active: true,
           deliverableId: deliverableId.value,
@@ -115,7 +117,7 @@ export function useStandupPlayback() {
       } catch {
         break
       }
-      if (phase.value === 'interrupted') return
+      if ((phase.value as string) === 'interrupted') return
     }
 
     await endPlayback()

@@ -95,14 +95,7 @@ export const useEcsSessionStore = defineStore('ecsSession', () => {
       )
     }
     if (!res.ok || !data.ok) throw new Error(String(data.error || 'Sign-in failed'))
-    return applySession({
-      accessToken: data.accessToken,
-      bossToken: data.bossToken,
-      user: data.user,
-      offices: data.offices,
-      selectedOfficeId: data.selectedOfficeId,
-      isSaasAdmin: data.isSaasAdmin,
-    })
+    return applySession(data as unknown as Parameters<typeof applySession>[0])
   }
 
   async function refreshSession() {

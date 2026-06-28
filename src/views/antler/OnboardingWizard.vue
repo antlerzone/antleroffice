@@ -40,7 +40,7 @@ const STEPS = [
 ] as const
 type Step = typeof STEPS[number]
 const stepIndex = ref(0)
-const currentStep = computed<Step>(() => STEPS[stepIndex.value])
+const currentStep = computed<Step>(() => STEPS[stepIndex.value] ?? STEPS[0]!)
 
 // ── Profile ───────────────────────────────────────────────────────────────────
 const desktopName = ref('')
@@ -93,7 +93,7 @@ async function loadModels() {
       model.value =
         modelOptions.value.find((m) => m.value === preset?.defaultModel)?.value ||
         modelOptions.value.find((m) => m.value.startsWith(`${provider.value}/`))?.value ||
-        modelOptions.value[0].value
+        modelOptions.value[0]!.value
     }
   } catch {
     models.value = []

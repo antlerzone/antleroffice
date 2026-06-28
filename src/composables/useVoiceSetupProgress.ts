@@ -110,6 +110,7 @@ export function useVoiceSetupProgress() {
         const activeIdx = ALL_ITEMS.findIndex((i) => i.id === active.id)
         for (let i = 0; i < activeIdx; i++) {
           const prev = ALL_ITEMS[i]
+          if (!prev) continue
           const prevItem = dm.items.value.find((x) => x.id === prev.id)
           if (prevItem && prevItem.status !== 'done') {
             dm.updateItem(prev.id, { status: 'done', detail: undefined })

@@ -740,7 +740,7 @@ async function newChat() {
           res.thread.openclawSessionKey = key
           res.thread.gatewayBacked = true
           threads.value = threads.value.map((t) =>
-            t.id === res.thread.id ? { ...t, openclawSessionKey: key, gatewayBacked: true } : t,
+            t.id === res.thread?.id ? { ...t, openclawSessionKey: key, gatewayBacked: true } : t,
           )
         } catch {
           /* ensure endpoint assigns a deterministic key on first open */

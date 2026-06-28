@@ -125,7 +125,8 @@ export function useWebAccounts() {
   }
 
   function passwordDisplay(row: BossWebAccount) {
-    if (revealed.value[row.alias]?.password) return revealed.value[row.alias].password
+    const r = revealed.value[row.alias]
+    if (r?.password) return r.password
     if (!row.secretSet || !row.passwordHash) return '—'
     return row.passwordHash
   }

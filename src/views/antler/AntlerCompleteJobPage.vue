@@ -245,7 +245,7 @@ const detailSections = computed(() => {
       {
         title: d.summary,
         body: d.planSteps.map((s) => `${s.done ? '✓' : '○'} ${s.label}`).join('\n'),
-        followUps: [] as { text: string; at?: number }[],
+        followUps: [] as { text: string; answer?: string; at?: number }[],
       },
     ]
   }
@@ -253,7 +253,7 @@ const detailSections = computed(() => {
     {
       title: kindMeta(d.kind).label,
       body: d.content || d.task || d.summary,
-      followUps: [] as { text: string; at?: number }[],
+      followUps: [] as { text: string; answer?: string; at?: number }[],
     },
   ]
 })

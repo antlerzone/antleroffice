@@ -225,7 +225,7 @@ function armUserTurn() {
   if (resolveUserText) resolveUserText() // 上一轮没用上就放掉
   userTextReady = new Promise<void>((res) => { resolveUserText = res })
   const mine = resolveUserText
-  setTimeout(() => { if (resolveUserText === mine) { resolveUserText(); resolveUserText = null } }, 3000)
+  setTimeout(() => { if (resolveUserText && resolveUserText === mine) { resolveUserText(); resolveUserText = null } }, 3000)
 }
 function finishUserTurn() {
   if (resolveUserText) { resolveUserText(); resolveUserText = null }
@@ -312,7 +312,7 @@ async function start(engageNow = false) {
   pc.ontrack = (e) => {
     const el = ensureAudioEl()
     el.removeAttribute('src')
-    el.srcObject = e.streams[0]
+    el.srcObject = e.streams[0] ?? null
     // 选了外部 TTS（Fish/ElevenLabs）就把 OpenAI 的声音静音，改用外部音色播放
     el.muted = settings.ttsProvider !== 'openai'
     void el.play().catch(() => { /* 被拦就等用户点一下页面解锁 */ })

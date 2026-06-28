@@ -584,11 +584,11 @@ async function saveMcpBindings() {
     message.success('MCP accounts updated')
     if (res.entitlementWarnings?.length) {
       const w = res.entitlementWarnings[0]
-      entitlementWarnings.value = res.entitlementWarnings
+      entitlementWarnings.value = res.entitlementWarnings as typeof entitlementWarnings.value
       entitlementCompare.value = {
-        otPerTask: w.otCreditsPerTask ?? 15,
+        otPerTask: w?.otCreditsPerTask ?? 15,
         monthlySalary: hit?.salaryCreditsPerMonth ?? 199,
-        workerName: w.otWorkerId || 'specialist',
+        workerName: w?.otWorkerId || 'specialist',
       }
       entitlementModalOpen.value = true
     }

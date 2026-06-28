@@ -40,8 +40,9 @@ export function useDownloadManager() {
 
   function updateItem(id: string, patch: Partial<Omit<DownloadItem, 'id'>>) {
     const idx = items.value.findIndex((i) => i.id === id)
-    if (idx >= 0) {
-      items.value[idx] = { ...items.value[idx], ...patch }
+    const cur = items.value[idx]
+    if (idx >= 0 && cur) {
+      items.value[idx] = { ...cur, ...patch }
     }
   }
 

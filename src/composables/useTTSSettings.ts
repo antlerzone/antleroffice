@@ -8,6 +8,7 @@ export interface TTSSettings {
   rate: number
   volume: number
   pitch: number
+  streamingTts?: boolean
 }
 
 export function useTTSSettings() {

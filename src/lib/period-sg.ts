@@ -13,7 +13,7 @@ export function formatPeriod(ms = Date.now()): string {
 }
 
 export function previousCalendarMonth(ms = Date.now()): string {
-  const [y, m] = formatPeriod(ms).split('-').map(Number)
+  const [y = 0, m = 0] = formatPeriod(ms).split('-').map(Number)
   let year = y
   let month = m - 1
   if (month < 1) {
@@ -24,7 +24,7 @@ export function previousCalendarMonth(ms = Date.now()): string {
 }
 
 export function shiftPeriod(period: string, delta: number): string {
-  const [y, m] = period.split('-').map(Number)
+  const [y = 0, m = 0] = period.split('-').map(Number)
   let year = y
   let month = m + delta
   while (month < 1) {
@@ -39,7 +39,7 @@ export function shiftPeriod(period: string, delta: number): string {
 }
 
 export function formatPeriodLabel(period: string): string {
-  const [y, m] = period.split('-').map(Number)
+  const [y = 0, m = 0] = period.split('-').map(Number)
   const d = new Date(Date.UTC(y, m - 1, 1))
   return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' })
 }

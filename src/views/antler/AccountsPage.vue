@@ -317,7 +317,7 @@ const form = ref({
 })
 
 const selectedPlatform = computed(
-  () => PLATFORMS.find((p) => p.key === form.value.platformKey) ?? PLATFORMS[0],
+  () => PLATFORMS.find((p) => p.key === form.value.platformKey) ?? PLATFORMS[0]!,
 )
 
 const resolvedUrl = computed(() => {

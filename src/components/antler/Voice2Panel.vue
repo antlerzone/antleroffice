@@ -52,7 +52,7 @@ async function start() {
   pc = new RTCPeerConnection()
   pc.ontrack = (e) => {
     const el = document.getElementById('voice2-audio') as HTMLAudioElement | null
-    if (el) el.srcObject = e.streams[0]
+    if (el) el.srcObject = e.streams[0] ?? null
   }
 
   try {

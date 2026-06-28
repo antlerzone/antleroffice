@@ -40,7 +40,7 @@ const period = ref(previousCalendarMonth())
 const page = ref(1)
 const pageSize = ref(20)
 const pageSizes = [10, 20, 50, 100, 200]
-const sortState = ref<DataTableSortState | null>({ columnKey: 'at', order: 'descend' })
+const sortState = ref<DataTableSortState | null>({ columnKey: 'at', order: 'descend', sorter: true })
 const data = ref<PayslipResponse | null>(null)
 
 const detailOpen = ref(false)
@@ -227,7 +227,7 @@ function onPageSizeChange(size: number) {
 function handleSorterChange(sorter: DataTableSortState | DataTableSortState[] | null) {
   const s = Array.isArray(sorter) ? sorter[0] ?? null : sorter
   if (!s?.order) {
-    sortState.value = { columnKey: 'at', order: 'descend' }
+    sortState.value = { columnKey: 'at', order: 'descend', sorter: true }
   } else {
     sortState.value = s
   }

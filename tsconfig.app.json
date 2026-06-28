@@ -8,6 +8,10 @@
       "@/*": ["src/*"]
     },
 
+    // Opt into ES2021 lib built-ins (String.prototype.replaceAll,
+    // Intl fractionalSecondDigits). Safe for our modern Chromium/Electron target.
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": false,
