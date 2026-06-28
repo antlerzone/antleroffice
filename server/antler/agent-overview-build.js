@@ -58,11 +58,17 @@ function mapSkillDetails(ids, { agent, allSkills, agentCatalog }) {
   return ids.map((sid) => {
     const s = allSkills.find((x) => x.id === sid);
     const bundled = agent.templateId ? agentCatalog.bundledSkillDef(sid, agent.templateId) : null;
-    const system = s?.system || bundled?.system || '';
+    const def = s || bundled || {};
+    const system = def.system || '';
+    const version = Number.isFinite(Number(def.version)) && Number(def.version) >= 1
+      ? Math.floor(Number(def.version))
+      : 1;
     return {
       id: sid,
-      name: s?.name || bundled?.name || String(sid).replace(/_/g, ' '),
+      name: def.name || String(sid).replace(/_/g, ' '),
       systemPreview: system ? String(system).slice(0, 280) : '',
+      version,
+      description: typeof def.description === 'string' ? def.description : '',
     };
   });
 }
@@ -104,6 +110,30 @@ function buildHiredAgentOverview(agent, { catalog, allSkills, mcpsList, agentCat
   const additionalSkills = mapSkillDetails(skillSplit.additional, { agent, allSkills, agentCatalog });
   const baseMcps = mapMcpDetails(mcpSplit.base, mcpsList);
   const additionalMcps = mapMcpDetails(mcpSplit.additional, mcpsList);
+
+  // Built-in skills this role *could* have at its latest version, that the
+  // hired agent has NOT learned yet. Compare against the role's current catalog
+  // skill set (not the baseline frozen at hire time) so newly-added built-in
+  // capabilities surface here as "lockable" learn targets.
+  const latestRoleSkillIds =
+    catalog && Array.isArray(catalog.skillIds) && catalog.skillIds.length
+      ? catalog.skillIds
+      : baseline.skillIds || [];
+  const learnedSet = new Set(currentSkillIds);
+  const lockedSkillIds = latestRoleSkillIds.filter((id) => !learnedSet.has(id));
+  const lockedSkills = mapSkillDetails(lockedSkillIds, { agent, allSkills, agentCatalog });
+
+  // Learned skills that have since been upgraded — the worker's recorded version
+  // is older than the skill's current version. Surfaced so the detail page can
+  // offer a one-click "Update to vN".
+  const learnedVersions =
+    agent.skillVersions && typeof agent.skillVersions === 'object' ? agent.skillVersions : {};
+  const outdatedSkills = mapSkillDetails(currentSkillIds, { agent, allSkills, agentCatalog })
+    .filter((s) => {
+      const learnedV = learnedVersions[s.id];
+      return learnedV != null && Number(learnedV) < Number(s.version);
+    })
+    .map((s) => ({ ...s, learnedVersion: Number(learnedVersions[s.id]) }));
 
   const roleLabel = String(agent.role || 'worker').replace(/_/g, ' ');
   const jobScope = [
@@ -149,6 +179,8 @@ function buildHiredAgentOverview(agent, { catalog, allSkills, mcpsList, agentCat
     mcps: [...baseMcps, ...additionalMcps.map((m) => ({ ...m, additional: true }))],
     baseSkills,
     additionalSkills,
+    lockedSkills,
+    outdatedSkills,
     baseMcps,
     additionalMcps,
     additionalOpenclawSkills: openclawSplit.additional,

@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { getDataDir } = require('./store');
+const { normalizeSkillDef } = require('./skill-meta');
 
 function registryPath() {
   return path.join(__dirname, '..', '..', 'skills', 'registry.json');
@@ -8,7 +9,11 @@ function registryPath() {
 
 function loadRegistry() {
   try {
-    return JSON.parse(fs.readFileSync(registryPath(), 'utf8'));
+    const reg = JSON.parse(fs.readFileSync(registryPath(), 'utf8'));
+    if (reg && Array.isArray(reg.skills)) {
+      reg.skills = reg.skills.map(normalizeSkillDef);
+    }
+    return reg;
   } catch {
     return { skills: [] };
   }

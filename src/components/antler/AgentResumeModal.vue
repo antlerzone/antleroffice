@@ -68,6 +68,38 @@ function close() {
   emit('update:show', false)
 }
 
+// --- Learn (download) a built-in skill the agent hasn't learned yet ---
+const confirmSkillId = ref<string | null>(null)
+const learningId = ref<string | null>(null)
+const learnError = ref('')
+
+function askLearn(skillId: string) {
+  learnError.value = ''
+  confirmSkillId.value = skillId
+}
+
+function cancelLearn() {
+  confirmSkillId.value = null
+  learnError.value = ''
+}
+
+async function confirmLearn(skillId: string) {
+  if (!props.agent || props.builtinRole) return
+  learningId.value = skillId
+  learnError.value = ''
+  try {
+    await api.send('POST', `/api/config/agents/${props.agent.id}/learn-skill`, {
+      skillId,
+    })
+    confirmSkillId.value = null
+    await loadOverview()
+  } catch (e) {
+    learnError.value = e instanceof Error ? e.message : 'Could not learn this skill'
+  } finally {
+    learningId.value = null
+  }
+}
+
 function formatRole(role?: string) {
   if (!role) return 'Office worker'
   return role.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
@@ -329,8 +361,137 @@ onUnmounted(() => {
                           >
                             <span class="npc-hire-scope-icon gear" aria-hidden="true" />
                             <div class="npc-hire-scope-copy">
-                              <span class="npc-hire-scope-label">{{ skill.name }}</span>
+                              <span class="npc-hire-scope-label">
+                                {{ skill.name }}
+                                <span v-if="skill.version" class="npc-hire-skill-version">v{{ skill.version }}</span>
+                              </span>
+                              <p v-if="skill.description" class="npc-hire-scope-text npc-hire-skill-desc">{{ skill.description }}</p>
                               <p v-if="skill.systemPreview" class="npc-hire-scope-text">{{ skill.systemPreview }}</p>
+                            </div>
+                          </article>
+                        </div>
+                      </section>
+
+                      <section
+                        v-if="!props.builtinRole && overview.outdatedSkills?.length"
+                        class="npc-hire-section npc-hire-section--locked"
+                      >
+                        <h4 class="npc-hire-section-title">Updates Available</h4>
+                        <p class="hint npc-hire-refresh-hint">
+                          Skills this worker already has that got a newer version — free to update.
+                        </p>
+                        <div class="npc-hire-scope-list">
+                          <article
+                            v-for="skill in overview.outdatedSkills"
+                            :key="skill.id"
+                            class="npc-hire-scope-item npc-hire-scope-item--locked"
+                          >
+                            <span class="npc-hire-scope-icon gear" aria-hidden="true" />
+                            <div class="npc-hire-scope-copy">
+                              <span class="npc-hire-scope-label">
+                                {{ skill.name }}
+                                <span class="npc-hire-skill-version">v{{ skill.learnedVersion }} → v{{ skill.version }}</span>
+                              </span>
+                              <p v-if="skill.description" class="npc-hire-scope-text npc-hire-skill-desc">
+                                {{ skill.description }}
+                              </p>
+
+                              <template v-if="confirmSkillId === skill.id">
+                                <p class="npc-hire-learn-ask">
+                                  Update {{ skill.name }} to v{{ skill.version }}?
+                                </p>
+                                <p v-if="learnError" class="npc-hire-learn-error">{{ learnError }}</p>
+                                <div class="npc-hire-learn-actions">
+                                  <button
+                                    type="button"
+                                    class="npc-hire-learn-btn npc-hire-learn-btn--go"
+                                    :disabled="learningId === skill.id"
+                                    @click="confirmLearn(skill.id)"
+                                  >
+                                    {{ learningId === skill.id ? 'Updating…' : 'Update' }}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="npc-hire-learn-btn"
+                                    :disabled="learningId === skill.id"
+                                    @click="cancelLearn"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </template>
+                              <button
+                                v-else
+                                type="button"
+                                class="npc-hire-learn-btn npc-hire-learn-btn--unlock"
+                                @click="askLearn(skill.id)"
+                              >
+                                Update to v{{ skill.version }}
+                              </button>
+                            </div>
+                          </article>
+                        </div>
+                      </section>
+
+                      <section
+                        v-if="!props.builtinRole && overview.lockedSkills?.length"
+                        class="npc-hire-section npc-hire-section--locked"
+                      >
+                        <h4 class="npc-hire-section-title">Skills To Learn</h4>
+                        <p class="hint npc-hire-refresh-hint">
+                          Built-in skills this worker can still learn — free to download.
+                        </p>
+                        <div class="npc-hire-scope-list">
+                          <article
+                            v-for="skill in overview.lockedSkills"
+                            :key="skill.id"
+                            class="npc-hire-scope-item npc-hire-scope-item--locked"
+                          >
+                            <span class="npc-hire-scope-icon lock" aria-hidden="true">🔒</span>
+                            <div class="npc-hire-scope-copy">
+                              <span class="npc-hire-scope-label">
+                                {{ skill.name }}
+                                <span v-if="skill.version" class="npc-hire-skill-version">v{{ skill.version }}</span>
+                              </span>
+                              <p v-if="skill.description" class="npc-hire-scope-text npc-hire-skill-desc">
+                                {{ skill.description }}
+                              </p>
+                              <p v-if="skill.systemPreview" class="npc-hire-scope-text">
+                                {{ skill.systemPreview }}
+                              </p>
+
+                              <template v-if="confirmSkillId === skill.id">
+                                <p class="npc-hire-learn-ask">
+                                  Download &amp; learn this skill?
+                                </p>
+                                <p v-if="learnError" class="npc-hire-learn-error">{{ learnError }}</p>
+                                <div class="npc-hire-learn-actions">
+                                  <button
+                                    type="button"
+                                    class="npc-hire-learn-btn npc-hire-learn-btn--go"
+                                    :disabled="learningId === skill.id"
+                                    @click="confirmLearn(skill.id)"
+                                  >
+                                    {{ learningId === skill.id ? 'Learning…' : 'Learn' }}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="npc-hire-learn-btn"
+                                    :disabled="learningId === skill.id"
+                                    @click="cancelLearn"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </template>
+                              <button
+                                v-else
+                                type="button"
+                                class="npc-hire-learn-btn npc-hire-learn-btn--unlock"
+                                @click="askLearn(skill.id)"
+                              >
+                                Learn skill
+                              </button>
                             </div>
                           </article>
                         </div>

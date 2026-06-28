@@ -7,6 +7,7 @@ const heartbeatConfig = require('./coo-heartbeat-config-store');
 const departmentStandup = require('./department-standup-service');
 const companyFramework = require('./company-framework');
 const cooCeoFuturePlan = require('./coo-ceo-future-plan');
+const skillUpdateNotify = require('./coo-skill-update-notify');
 const { runAsCoo } = require('./agent-runtime');
 
 let activeRun = null;
@@ -232,6 +233,15 @@ async function runHeartbeat({ trigger = 'manual', wait = true } = {}) {
     const triageText = buildTriageReport(items);
     debugLog.logInfo('coo-heartbeat', 'discover', items.length, trigger);
 
+    // Built-in skill update notices — COO tells the boss when a worker has a new
+    // free skill it can learn. Best-effort: never let it break the heartbeat.
+    let skillUpdates = { ok: false, posted: 0 };
+    try {
+      skillUpdates = await skillUpdateNotify.runSkillUpdateNotifications({ trigger });
+    } catch (e) {
+      debugLog.logInfo('coo-heartbeat', 'skill-update-error', e?.message || 'failed');
+    }
+
     let autonomous = { ran: false, reason: 'skipped' };
     const loopTriggers = new Set(['loop', 'interval', 'after_coo', 'boot', 'manual']);
     const shouldAutonomous =
@@ -250,6 +260,7 @@ async function runHeartbeat({ trigger = 'manual', wait = true } = {}) {
       items,
       triageText,
       autonomous,
+      skillUpdates,
     };
   } finally {
     activeRun = null;

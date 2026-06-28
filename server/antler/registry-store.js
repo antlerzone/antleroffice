@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getDataDir } = require('./store');
 const { resolveMcpRuntimeFromBindings } = require('./mcp-runtime-helper');
+const { normalizeSkillDef, asVersion, nextVersion } = require('./skill-meta');
 
 function dataPath(...p) {
   return path.join(getDataDir(), ...p);
@@ -36,16 +37,18 @@ function newId(prefix) {
 // COO's temp-worker execution separately via server/skills.js (registry.json).
 function listSkills() {
   const skills = readJson('skills.json', null);
-  return Array.isArray(skills) ? skills : [];
+  return Array.isArray(skills) ? skills.map(normalizeSkillDef) : [];
 }
 
-function addSkill({ name, system, mcpIds } = {}) {
+function addSkill({ name, system, mcpIds, description } = {}) {
   const skills = listSkills();
   const item = {
     id: newId('skill'),
     name: name || 'New Skill',
     system: system || '',
     mcpIds: Array.isArray(mcpIds) ? mcpIds.filter(Boolean) : [],
+    version: 1,
+    description: typeof description === 'string' ? description : '',
   };
   skills.push(item);
   writeJson('skills.json', skills);
@@ -57,8 +60,19 @@ function updateSkill(id, patch = {}) {
   const s = skills.find((x) => x.id === id);
   if (!s) return null;
   if (typeof patch.name === 'string') s.name = patch.name;
-  if (typeof patch.system === 'string') s.system = patch.system;
+  // A change to the skill's behaviour (its system prompt) is a new version —
+  // bump the integer so the heartbeat can flag hired workers running an older
+  // one. Pure metadata edits (name/description) do not bump the version.
+  if (typeof patch.system === 'string' && patch.system !== s.system) {
+    s.system = patch.system;
+    s.version = nextVersion(s.version);
+  } else if (typeof patch.system === 'string') {
+    s.system = patch.system;
+  }
+  if (typeof patch.description === 'string') s.description = patch.description;
+  if (typeof patch.version === 'number') s.version = asVersion(patch.version);
   if (Array.isArray(patch.mcpIds)) s.mcpIds = patch.mcpIds.filter(Boolean);
+  s.version = asVersion(s.version);
   writeJson('skills.json', skills);
   return s;
 }
@@ -679,6 +693,9 @@ function addAgent(def = {}) {
       ? def.baselineOpenclawSkillNames
       : null,
     baselineMcpIds: Array.isArray(def.baselineMcpIds) ? def.baselineMcpIds : null,
+    // Per-skill learned version { skillId: version }. Lets the heartbeat tell
+    // when a learned skill has since been upgraded to a newer version.
+    skillVersions: def.skillVersions && typeof def.skillVersions === 'object' ? def.skillVersions : {},
     devEngine: def.devEngine || null,
     devScope: def.devScope || { canWrite: true, canReview: true },
     createdAt: Date.now(),
@@ -718,6 +735,7 @@ function updateAgent(id, patch = {}) {
     'baselineSkillIds',
     'baselineOpenclawSkillNames',
     'baselineMcpIds',
+    'skillVersions',
     'devEngine',
     'devScope',
   ]) {

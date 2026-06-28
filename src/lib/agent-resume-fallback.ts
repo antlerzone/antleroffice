@@ -29,14 +29,26 @@ export interface AdditionalCapability {
   detail?: string
 }
 
+export interface SkillDetail {
+  id: string
+  name: string
+  systemPreview?: string
+  version?: number
+  description?: string
+  additional?: boolean
+  learnedVersion?: number
+}
+
 export interface AgentOverview {
   ok?: boolean
   description?: string
   examples?: string[]
   jobScope?: JobScopeCard[]
-  skills?: { id: string; name: string; systemPreview?: string; additional?: boolean }[]
-  baseSkills?: { id: string; name: string; systemPreview?: string }[]
-  additionalSkills?: { id: string; name: string; systemPreview?: string }[]
+  skills?: SkillDetail[]
+  baseSkills?: SkillDetail[]
+  additionalSkills?: SkillDetail[]
+  lockedSkills?: SkillDetail[]
+  outdatedSkills?: SkillDetail[]
   mcps?: { id: string; name: string; additional?: boolean }[]
   baseMcps?: { id: string; name: string }[]
   additionalMcps?: { id: string; name: string }[]

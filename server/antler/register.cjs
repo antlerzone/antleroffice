@@ -1206,6 +1206,7 @@ function registerAntlerRoutes(app, hooks = {}) {
       baseSkills: built.baseSkills,
       additionalSkills: built.additionalSkills,
       lockedSkills: built.lockedSkills,
+      outdatedSkills: built.outdatedSkills,
       mcps: built.mcps,
       baseMcps: built.baseMcps,
       additionalMcps: built.additionalMcps,
@@ -1262,13 +1263,34 @@ function registerAntlerRoutes(app, hooks = {}) {
         .json({ ok: false, error: 'Not a built-in skill for this agent' });
     }
 
+    // Resolve the skill's latest version so we can record what this worker is
+    // now running. Learning a brand-new skill and updating an already-learned
+    // skill to its newest version are the same action here — both just set the
+    // recorded version to the latest.
+    const allSkillsNow = registry.listSkills();
+    const skillDefNow =
+      allSkillsNow.find((s) => s.id === skillId) ||
+      agentCatalog.bundledSkillDef(skillId, a.templateId) ||
+      {};
+    const latestVersion =
+      Number.isFinite(Number(skillDefNow.version)) && Number(skillDefNow.version) >= 1
+        ? Math.floor(Number(skillDefNow.version))
+        : 1;
+
     const current = a.skillIds || [];
-    if (current.includes(skillId)) {
+    const already = current.includes(skillId);
+    const skillVersions = { ...(a.skillVersions || {}) };
+    const wasVersion = skillVersions[skillId];
+    skillVersions[skillId] = latestVersion;
+
+    // Nothing to do if they already run the latest version of this skill.
+    if (already && wasVersion === latestVersion) {
       return res.json({ ok: true, agent: redactAgent(a), alreadyLearned: true });
     }
 
     const updated = registry.updateAgent(req.params.id, {
-      skillIds: [...current, skillId],
+      skillIds: already ? current : [...current, skillId],
+      skillVersions,
     });
 
     // Keep the live office adapter in sync (mirror of PUT /agents/:id).
@@ -1293,13 +1315,12 @@ function registerAntlerRoutes(app, hooks = {}) {
       devScope: updated.devScope,
     });
 
-    // Record the install for the admin dashboard (free built-in learn).
+    // Record the install for the admin dashboard (free built-in learn/upgrade).
     try {
-      const skillDef = registry.listSkills().find((s) => s.id === skillId);
       await skillInstallLog.recordInstall({
-        skillName: skillDef?.name || skillId,
+        skillName: skillDefNow.name || skillId,
         skillId,
-        source: 'builtin-learn',
+        source: already ? 'builtin-upgrade' : 'builtin-learn',
         npcTemplateId: a.templateId || a.role,
         npcName: a.name,
         triggeredBy: 'user',
@@ -1309,7 +1330,13 @@ function registerAntlerRoutes(app, hooks = {}) {
       /* non-fatal */
     }
 
-    res.json({ ok: true, agent: redactAgent(updated), learned: skillId });
+    res.json({
+      ok: true,
+      agent: redactAgent(updated),
+      learned: skillId,
+      version: latestVersion,
+      upgraded: already,
+    });
   });
   app.put('/api/config/agents/:id/model', async (req, res) => {
     const a = registry.getAgent(req.params.id);

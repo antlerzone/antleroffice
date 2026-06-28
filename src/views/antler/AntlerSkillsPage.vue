@@ -8,6 +8,8 @@ interface Skill {
   id: string
   name: string
   system?: string
+  description?: string
+  version?: number
   mcpIds?: string[]
 }
 
@@ -87,7 +89,7 @@ const loading = ref(false)
 
 const skillModalOpen = ref(false)
 const skillEditing = ref<Skill | null>(null)
-const skillForm = ref({ name: '', system: '', mcpIds: [] as string[] })
+const skillForm = ref({ name: '', system: '', description: '', mcpIds: [] as string[] })
 const skillBusy = ref(false)
 const skillError = ref('')
 
@@ -157,7 +159,10 @@ function mcpStatusClass(m: McpServer): 'ready' | 'setup' | 'login' {
   if (auth === 'none') return 'ready'
   const connected = (m.connectedAccountCount ?? 0) > 0 || !!m.authConnected
   if (connected) return 'ready'
-  return m.authRequired || auth !== 'none' ? 'login' : 'setup'
+  // Reaching here means auth is already not 'none' (guarded above), so this
+  // server always needs a login/connection. (The old `auth !== 'none'` check
+  // was always true — TS flagged it as a no-op comparison.)
+  return 'login'
 }
 
 function mcpStatusText(m: McpServer) {
@@ -258,7 +263,7 @@ async function refresh() {
 
 function openAddSkill() {
   skillEditing.value = null
-  skillForm.value = { name: '', system: '', mcpIds: [] }
+  skillForm.value = { name: '', system: '', description: '', mcpIds: [] }
   skillError.value = ''
   skillModalOpen.value = true
 }
@@ -268,6 +273,7 @@ function openEditSkill(skill: Skill) {
   skillForm.value = {
     name: skill.name,
     system: skill.system || '',
+    description: skill.description || '',
     mcpIds: [...(skill.mcpIds || [])],
   }
   skillError.value = ''
@@ -294,6 +300,7 @@ async function saveSkill() {
     const body = {
       name,
       system: skillForm.value.system.trim(),
+      description: skillForm.value.description.trim(),
       mcpIds: skillForm.value.mcpIds,
     }
     if (skillEditing.value) {
@@ -796,6 +803,16 @@ onUnmounted(() => {
       <NInput v-model:value="skillForm.name" placeholder="e.g. Code review" />
       <label class="modal-label">Instructions</label>
       <NInput v-model:value="skillForm.system" type="textarea" :rows="5" placeholder="What should agents do when this skill is active?" />
+      <label class="modal-label">Description (what's new in this version)</label>
+      <NInput
+        v-model:value="skillForm.description"
+        type="textarea"
+        :rows="2"
+        placeholder="One line on what this skill adds or changed — shown to users and used in update notices."
+      />
+      <p v-if="skillEditing" class="modal-hint">
+        Editing the instructions bumps this skill to v{{ (skillEditing.version || 1) + 1 }}.
+      </p>
       <template v-if="mcps.length">
         <label class="modal-label">Linked MCP servers</label>
         <div class="mcp-checklist">
