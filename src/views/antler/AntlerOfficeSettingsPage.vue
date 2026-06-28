@@ -382,4 +382,19 @@ async function onSave() {
 .office-settings-actions {
   margin-top: 20px;
 }
-.office-set
+.office-settings-actions :deep(.n-form-item-blank) {
+  min-height: 0;
+}
+.hint.sm {
+  margin: 16px 0 0;
+  font-size: 12px;
+}
+/* Pin the General / Voice assistant tab bar to the top while scrolling.
+   Background follows the theme (light/dark) so the tab text stays readable. */
+.settings-tabs :deep(.n-tabs-nav) {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--tabs-sticky-bg, #fff);
+}
+</style>

@@ -2,101 +2,64 @@
 
 Use this skill when the COO delegates a request to design a pixel art skin for an AntlerOffice NPC character.
 
-## Golden Rule
+## 核心原则
 
-**Never publish a skin without the boss's explicit approval.**
-Always draft the design → present to COO → wait for boss to say "发布" / "publish" → then save.
+**快、不啰嗦，只设一道确认关。** 老板丢图 + 取名就直接开做第一张预览图，不用问一堆问题、也不用先写文字草稿等批准。唯一的确认关在"第一张图之后、做完整动画之前"。
 
-## Step 1 — Intake
+## Step 1 — Intake（极简）
 
-Ask the boss (via COO):
+老板给：
+- 参考图片（jpg/png）和 / 或
+- 皮肤名字
 
-| Field | Question |
-|-------|----------|
-| 参考图片 | 有没有参考图片？（可以丢 jpg/png，或者文字描述也行） |
-| NPC 名字 | 这个皮肤给哪个 NPC 用？或者是全新角色？ |
-| 风格偏好 | 商务专业 / 可爱萌系 / 酷炫个性 / 奇幻风格？ |
-| 主色调 | 如果没有参考图，主要颜色是？ |
-| 皮肤名字 | 这个皮肤叫什么名字？（用于保存和显示） |
+两样都有就直接进 Step 2。只有当**名字**或**任何视觉参考 / 描述都没有**时，才回一句问清楚。不要问风格、配色那一堆。
 
-如果老板丢了参考图片，直接进入 Step 2，不用再问风格和颜色（从图片提取）。
+## Step 2 — 直接生成第一张预览图（不用等批准）
 
-## Step 2 — 分析参考图片（如有）
+立刻调用 **SpriteCook MCP**，根据参考图生成**一张静态角色预览图**（正面单张，先不做动画）。直接把这张图给老板看。
 
-从参考图片提取：
-- **主色调**（最多 5 个主要颜色，列出 hex code）
-- **角色特征**（发型、服装、配件、整体气质）
-- **风格**（写实 / 卡通 / 简约 / 奇幻）
-
-整理成设计简报。
-
-## Step 3 — Draft 设计简报
-
-向 COO 呈现：
+结尾说：
 
 ```
-🎨 皮肤设计 Draft — [皮肤名字]
-
-参考: [图片来源 / 文字描述]
-
-颜色提取:
-  主色: #XXXXXX（描述）
-  副色: #XXXXXX（描述）
-  强调色: #XXXXXX（描述）
-
-角色设定:
-  发型: ...
-  服装: ...
-  配件: ...
-  气质: ...
-
-像素规格: 112×96 px，3 方向 × 7 走路帧，PNG
-
-SpriteCook 参数:
-  style: pixel-agents
-  palette: [主色调描述]
-  character: [角色特征描述]
-
-请老板确认设计方向，说「生成」我就调用 SpriteCook。
+喜欢这版就说「可以 / approve」，我接着做会动的完整皮肤；
+想改就告诉我哪里改。
 ```
 
-**等老板确认，不要自动生成。**
+## Step 3 — 等老板批准这张图
 
-## Step 4 — 生成皮肤（收到"生成"后）
+- 老板说「可以 / approve」→ 进 Step 4。
+- 老板要改 → 带上修改要求**重新生成这一张预览图**，再给他看（**还不做完整动画表**）。
 
-1. 调用 **SpriteCook MCP** 生成角色图：
-   - 规格：**112×96 px，3 方向 × 7 走路帧，PNG**
-   - 传入颜色和角色描述
-2. 把生成结果展示给 COO 看
+## Step 4 — 批准后：生成会动的完整皮肤
 
-呈现格式：
+调用 **SpriteCook MCP** 生成完整角色动画表：
+
+**112×96 px，3 方向（正 / 左 / 右）× 7 走路帧，PNG**
+
+## Step 5 — 设价格 + 发布前确认
+
+向老板**提一个 credit 价格**（每张皮肤可以不同价），等老板确认。内置 / default 皮肤免费（价格 0）；自定义 AI 生成的皮肤才收费。
+
 ```
-✅ 皮肤已生成 — [皮肤名字]
-
-[图片预览]
-
-满意的话说「发布」，不满意告诉我哪里要改。
+这张皮肤「[名字]」我建议定价 [N] credits，确认就发布；
+要改价或免费也告诉我。
 ```
 
-**等老板说"发布"或"修改"。**
+**没确认价格前不要发布。**
 
-## Step 5 — 发布（收到"发布"后）
+## Step 6 — 发布到商店（收到价格确认后）
 
-1. 调用 `POST /api/config/skins`（multipart，上传 PNG）保存皮肤
-2. 回报：皮肤名字、皮肤 ID、在哪里找到（Characters 页面）
-3. 告诉老板可以在任何 NPC 的设置里「Apply」这个皮肤
+调用 `POST /api/skins/create`，传 `{ name, priceCredits, previewUrl, assetUrl }`，把皮肤写进 **ECS 皮肤目录**，它才会出现在 Skins 商店、可被浏览和购买。
 
-## 修改流程
-
-如果老板说要修改：
-- 记录修改要求
-- 重新 Draft 修改后的参数（Step 3）
-- 再等一次老板确认
-- 再生成（Step 4）
+回报：皮肤名字、价格、现在已上架到 **Skins 商店**（预览人人可见，购买后才能 Apply）。
 
 ## 工具
 
 | 工具 | 用途 |
 |------|------|
-| SpriteCook MCP | 生成 pixel art 角色动画图 |
-| `POST /api/config/skins` | 保存皮肤到 AntlerOffice |
+| SpriteCook MCP | 第一张预览图 + 完整动画表 |
+| `POST /api/skins/create` | 把皮肤写入 ECS 目录（上架可购买） |
+
+## 规格
+
+最终动画表固定：**112×96 px，3 方向（正 / 左 / 右）× 7 走路帧，PNG**。像素画 4–8 个主色最好看，颜色从参考图提取。如果模型看不了图片，就退回用老板的文字描述。

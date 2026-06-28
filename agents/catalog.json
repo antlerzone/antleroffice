@@ -2,8 +2,8 @@
   "templates": [
     {
       "id": "ceo",
-      "name": "CEO",
-      "tagline": "Company leader — brainstorm, plan, delegate & review",
+      "name": "COO",
+      "tagline": "Your COO — brainstorm, plan, delegate & review",
       "role": "ceo",
       "category": "executive",
       "marketSection": "leadership",
@@ -145,6 +145,8 @@
     },
     {
       "id": "cursor_developer",
+      "hidden": true,
+      "retired": true,
       "name": "Cursor Developer",
       "tagline": "Write & review code with Cursor CLI",
       "role": "it",
@@ -176,12 +178,14 @@
       "trustedBy": "400+",
       "rating": 4.8,
       "reviewCount": 28,
-      "featured": true,
+      "featured": false,
       "sortOrder": 12,
-      "installable": true
+      "installable": false
     },
     {
       "id": "claude_developer",
+      "hidden": true,
+      "retired": true,
       "name": "Claude Developer",
       "tagline": "Write & review code with Claude Code CLI",
       "role": "it",
@@ -213,12 +217,14 @@
       "trustedBy": "350+",
       "rating": 4.9,
       "reviewCount": 22,
-      "featured": true,
+      "featured": false,
       "sortOrder": 13,
-      "installable": true
+      "installable": false
     },
     {
       "id": "codex_developer",
+      "hidden": true,
+      "retired": true,
       "name": "Codex Developer",
       "tagline": "Write & review code with OpenAI Codex CLI",
       "role": "it",
@@ -250,8 +256,172 @@
       "trustedBy": "380+",
       "rating": 4.8,
       "reviewCount": 31,
-      "featured": true,
+      "featured": false,
       "sortOrder": 14,
+      "installable": false
+    },
+    {
+      "id": "it_allrounder",
+      "name": "IT Engineer",
+      "tagline": "Your all-round developer — writes code locally",
+      "role": "it",
+      "devEngine": "cursor",
+      "devEngineOptions": [
+        "cursor",
+        "codex",
+        "claude"
+      ],
+      "devScopeDefault": {
+        "canWrite": true,
+        "canReview": false
+      },
+      "localOnly": true,
+      "serverAccess": {
+        "enabled": false
+      },
+      "defaultSkinId": "ocean",
+      "sprite": 1,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 200,
+      "currency": "credits",
+      "skillIds": [
+        "cursor_developer",
+        "dev_cursor_codex"
+      ],
+      "openclawSkillNames": [
+        "antleroffice-it-dev-pipeline"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": [
+        "antleroffice"
+      ],
+      "highlights": [
+        "Writes code locally (Cursor / Codex / Claude under the hood)",
+        "Never touches the ECS server",
+        "Boss APPROVED before git push"
+      ],
+      "trustedBy": "400+",
+      "rating": 4.8,
+      "reviewCount": 28,
+      "featured": true,
+      "sortOrder": 12,
+      "installable": true
+    },
+    {
+      "id": "it_reviewer",
+      "name": "IT Reviewer",
+      "tagline": "Second pair of eyes — reviews before push",
+      "role": "it",
+      "devEngine": "codex",
+      "devEngineOptions": [
+        "cursor",
+        "codex",
+        "claude"
+      ],
+      "devScopeDefault": {
+        "canWrite": false,
+        "canReview": true
+      },
+      "localOnly": true,
+      "serverAccess": {
+        "enabled": false
+      },
+      "defaultSkinId": "forest",
+      "sprite": 2,
+      "hueShift": 15,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 200,
+      "currency": "credits",
+      "skillIds": [
+        "codex_developer",
+        "dev_cursor_codex"
+      ],
+      "openclawSkillNames": [
+        "antleroffice-it-dev-pipeline"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": [
+        "antleroffice"
+      ],
+      "highlights": [
+        "Reviews the IT Engineer's diff, flags issues",
+        "Read-only — never writes or deploys",
+        "Approves before code is allowed to push"
+      ],
+      "trustedBy": "300+",
+      "rating": 4.8,
+      "reviewCount": 19,
+      "featured": true,
+      "sortOrder": 13,
+      "installable": true
+    },
+    {
+      "id": "cto",
+      "name": "CTO",
+      "tagline": "Tech lead — the only one who can deploy to ECS",
+      "role": "it",
+      "isLead": true,
+      "devScopeDefault": {
+        "canWrite": false,
+        "canReview": true
+      },
+      "serverAccess": {
+        "enabled": false,
+        "requiresSshSetup": true,
+        "requiresApprovalPerAction": true,
+        "scope": "ecs"
+      },
+      "defaultSkinId": "slate",
+      "sprite": 3,
+      "hueShift": 30,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 350,
+      "currency": "credits",
+      "skillIds": [
+        "dev_cursor_codex"
+      ],
+      "openclawSkillNames": [
+        "antleroffice-it-dev-pipeline"
+      ],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": [
+        "antleroffice"
+      ],
+      "highlights": [
+        "Plans big tasks & gives technical advice",
+        "ONLY role that can deploy / pull to ECS",
+        "Server locked until you enable SSH; every action needs your OK"
+      ],
+      "trustedBy": "250+",
+      "rating": 4.9,
+      "reviewCount": 15,
+      "featured": true,
+      "sortOrder": 11,
       "installable": true
     },
     {

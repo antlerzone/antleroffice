@@ -308,27 +308,78 @@ function mergeLocalMonorepoCatalog(remoteTemplates) {
   );
 }
 
+// ── Browse category tabs (server-driven) ────────────────────────────────────
+// The list of category tabs comes from ECS (data/categories.json there), so the
+// company can change tabs once on the server and every desktop syncs.
+const DEFAULT_CATEGORIES = [
+  { id: 'operations', label: 'Operations', sortOrder: 1 },
+  { id: 'customer', label: 'Customer', sortOrder: 2 },
+  { id: 'creative', label: 'Creative', sortOrder: 3 },
+  { id: 'growth', label: 'Growth', sortOrder: 4 },
+  { id: 'finance', label: 'Finance', sortOrder: 5 },
+  { id: 'product', label: 'Product', sortOrder: 6 },
+  { id: 'executive', label: 'Executive', sortOrder: 7 },
+];
+
+async function fetchCategoriesFromEcs() {
+  const base = ecsBaseUrl();
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base}/api/catalog/categories`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data.categories) && data.categories.length ? data.categories : null;
+  } catch {
+    return null;
+  }
+}
+
+async function categoriesMerged() {
+  const remote = await fetchCategoriesFromEcs();
+  return remote && remote.length ? remote : DEFAULT_CATEGORIES;
+}
+
+// Local display override: the leadership agent is presented as "COO" everywhere
+// in Browse. The remote ECS catalog may still label it "CEO" (and "CEO" is also
+// used for the human boss elsewhere), so we rename it here regardless of source.
+function applyLeadershipRename(templates) {
+  return (templates || []).map((t) => {
+    const isLeadership =
+      t.id === 'ceo' || t.role === 'ceo' || t.departmentId === 'ceo' || t.marketSection === 'leadership';
+    if (!isLeadership) return t;
+    return {
+      ...t,
+      name: 'COO',
+      tagline: 'Your COO — brainstorm, plan, delegate & review',
+    };
+  });
+}
+
 async function loadCatalogMerged() {
   const remote = await fetchCatalogFromEcs();
   if (remote?.length) {
-    return injectMandatoryLocalTemplates(
-      mergeLocalMonorepoCatalog(applyLocalPricingOverlay(remote.filter(isInstallableTemplate))),
+    return applyLeadershipRename(
+      injectMandatoryLocalTemplates(
+        mergeLocalMonorepoCatalog(applyLocalPricingOverlay(remote.filter(isInstallableTemplate))),
+      ),
     );
   }
   const localMerged = loadLocalDepartmentsMerged();
-  if (localMerged?.length) return injectMandatoryLocalTemplates(localMerged);
-  return injectMandatoryLocalTemplates(
-    agentCatalog
-      .loadCatalog()
-      .map((t) => ({
-        ...t,
-        departmentId: t.departmentId || t.id,
-        category: inferCategory(t),
-        marketSection: marketSectionFor(t),
-        sortOrder: Number(t.sortOrder) || 999,
-        installable: isInstallableTemplate(t),
-      }))
-      .filter(isInstallableTemplate),
+  if (localMerged?.length) return applyLeadershipRename(injectMandatoryLocalTemplates(localMerged));
+  return applyLeadershipRename(
+    injectMandatoryLocalTemplates(
+      agentCatalog
+        .loadCatalog()
+        .map((t) => ({
+          ...t,
+          departmentId: t.departmentId || t.id,
+          category: inferCategory(t),
+          marketSection: marketSectionFor(t),
+          sortOrder: Number(t.sortOrder) || 999,
+          installable: isInstallableTemplate(t),
+        }))
+        .filter(isInstallableTemplate),
+    ),
   );
 }
 
@@ -384,6 +435,7 @@ module.exports = {
   fetchCatalogFromEcs,
   loadCatalogMerged,
   catalogWithStatusMerged,
+  categoriesMerged,
   inferCategory,
   marketSectionFor,
 };

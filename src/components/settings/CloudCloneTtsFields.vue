@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { NAlert, NInput, NText } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
+import FieldHint from '@/components/settings/FieldHint.vue'
 import { isValidFishAudioReferenceId } from '@/utils/fish-audio'
 
 const props = defineProps<{ engine: 'elevenlabs' | 'fishaudio' }>()
@@ -20,9 +21,6 @@ const fishVoiceIdInvalid = computed(() => {
 <template>
   <div class="cloud-clone-tts-fields">
     <template v-if="engine === 'elevenlabs'">
-      <NAlert type="info" :show-icon="false">
-        {{ t('pages.settings.voiceAssistant.realtime.elIntro') }}
-      </NAlert>
       <div>
         <NText strong>{{ t('pages.settings.voiceAssistant.realtime.elApiKeyLabel') }}</NText>
         <NInput
@@ -35,23 +33,17 @@ const fishVoiceIdInvalid = computed(() => {
         />
       </div>
       <div>
-        <NText strong>Voice ID</NText>
+        <NText strong>Voice ID<FieldHint :text="t('pages.settings.voiceAssistant.persona.elVoiceIdHint')" /></NText>
         <NInput
           :value="settings.voice.elevenLabsVoiceId"
           placeholder="ElevenLabs Voice ID"
           style="margin-top: 8px"
           @update:value="(v) => updateVoice({ elevenLabsVoiceId: v })"
         />
-        <NText depth="3" style="display: block; font-size: 12px; margin-top: 4px">
-          {{ t('pages.settings.voiceAssistant.persona.elVoiceIdHint') }}
-        </NText>
       </div>
     </template>
 
     <template v-else>
-      <NAlert type="info" :show-icon="false">
-        {{ t('pages.settings.voiceAssistant.persona.fishIntro') }}
-      </NAlert>
       <div>
         <NText strong>{{ t('pages.settings.voiceAssistant.persona.fishApiKeyLabel') }}</NText>
         <NInput
@@ -64,16 +56,13 @@ const fishVoiceIdInvalid = computed(() => {
         />
       </div>
       <div>
-        <NText strong>Voice ID</NText>
+        <NText strong>Voice ID<FieldHint :text="t('pages.settings.voiceAssistant.persona.fishVoiceIdHint')" /></NText>
         <NInput
           :value="settings.voice.fishAudioVoiceId"
           placeholder="Fish Audio reference_id"
           style="margin-top: 8px"
           @update:value="(v) => updateVoice({ fishAudioVoiceId: v })"
         />
-        <NText depth="3" style="display: block; font-size: 12px; margin-top: 4px">
-          {{ t('pages.settings.voiceAssistant.persona.fishVoiceIdHint') }}
-        </NText>
         <NAlert v-if="fishVoiceIdInvalid" type="warning" :show-icon="false" style="margin-top: 8px">
           {{ t('pages.settings.voiceAssistant.persona.fishVoiceInvalid') }}
         </NAlert>

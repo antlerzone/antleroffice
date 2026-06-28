@@ -6,6 +6,7 @@ import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettin
 import { useEdgeTTS } from '@/composables/useEdgeTTS'
 import { defaultTtsVoiceForLanguage, resolveReplyLanguage } from '@/constants/voiceAssistant'
 import { unlockAudioPlayback } from '@/lib/audio-unlock'
+import { ttsBegin, ttsEnd } from '@/lib/tts-gate'
 
 export type VoiceOutputEngine =
   | 'kokoro'
@@ -13,6 +14,7 @@ export type VoiceOutputEngine =
   | 'webspeech'
   | 'elevenlabs'
   | 'fishaudio'
+  | 'openai'
   | null
 
 export interface SpeakOptions {
@@ -57,6 +59,9 @@ export function useVoiceOutput() {
   }
 
   async function setSpeakingFlag(speaking: boolean, bargeIn = false) {
+    // Close/open the local TTS gate so the realtime mic ignores our own playback.
+    if (speaking) ttsBegin()
+    else ttsEnd()
     try {
       await fetch('/api/voice/listener/speaking', {
         method: 'POST',
@@ -127,6 +132,32 @@ export function useVoiceOutput() {
     try {
       engine.value = cloudEngine
       await playBlob(blob)
+    } finally {
+      isSynthesizing.value = false
+      void setSpeakingFlag(false)
+    }
+  }
+
+  // OpenAI built-in TTS. The backend reuses your configured OpenAI key (falls back to
+  // the OpenClaw / Models key), so no key is needed in the request.
+  async function speakOpenAI(text: string, opts?: SpeakOptions) {
+    const rt = assistantSettings.value.realtime
+    const voice = opts?.voiceId || rt.voice || 'alloy'
+    const model = rt.openaiTtsModel?.trim() || 'gpt-4o-mini-tts'
+    void setSpeakingFlag(true, !!opts?.bargeIn)
+    isSynthesizing.value = true
+    try {
+      const result = await api.postBlob(
+        '/api/voice/tts/openai',
+        { text, voice, model },
+        { timeoutMs: 120000 },
+      )
+      if ('blob' in result) {
+        engine.value = 'openai'
+        await playBlob(result.blob)
+        return
+      }
+      throw new Error('error' in result ? result.error || 'OpenAI TTS failed' : 'OpenAI TTS failed')
     } finally {
       isSynthesizing.value = false
       void setSpeakingFlag(false)
@@ -263,6 +294,11 @@ export function useVoiceOutput() {
     if (!trimmed) return
 
     stop()
+
+    if (opts?.engine === 'openai') {
+      await speakOpenAI(trimmed, opts)
+      return
+    }
 
     if (opts?.engine === 'elevenlabs' || opts?.engine === 'fishaudio') {
       await speakCloud(trimmed, opts.engine, opts)

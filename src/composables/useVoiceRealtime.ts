@@ -18,6 +18,7 @@ import { resolveReplyLanguage } from '@/constants/voiceAssistant'
 import { pickThinkingAck, pickThinkingFollowUp } from '@/lib/thinking-acks'
 import { summonError, summonMark, summonWarn, resetSummonTimer } from '@/lib/summon-debug'
 import { touchSummonActivity } from '@/lib/summon-session'
+import { isTtsActive, ttsBegin, ttsEnd } from '@/lib/tts-gate'
 
 export type RealtimeStatus =
   | 'idle'
@@ -91,6 +92,36 @@ function isWakePhraseOnly(text: string, phrases: string[]): boolean {
       const rest = norm.slice(p.length).trim()
       if (!rest) return true
     }
+  }
+  return false
+}
+
+// Greeting / small-talk / noise that realtime must NOT respond to — the summon system
+// already greeted. If realtime's mic picks up the greeting tail or ambient and Whisper
+// returns one of these, we drop it so the orchestrator never replies with its own
+// greeting ("office running smoothly"). Real office commands are longer and specific.
+const GREETING_NOISE = [
+  'good morning', 'good afternoon', 'good evening', 'good morning sir',
+  'how can i help', 'how can i help you', 'how can i help you today',
+  'hello', 'hi', 'hey', 'hey there', 'how are you', 'how are you doing',
+  'whats up', "what's up", 'good day', 'morning', 'thank you', 'thanks',
+  '你好', '早上好', '早安', '在吗', '请问有什么可以帮您', '需要我为您安排什么吗',
+]
+// The wake name itself (and common Whisper mishearings) — realtime often re-hears the
+// "Jarvis" of "Hey Jarvis" and would answer it as a query. Drop these standalone.
+const WAKE_NAMES = ['jarvis', 'javis', 'jervis', 'jarvic', 'jarvees', 'travis', 'harvis', 'jervais']
+function isLowValueUtterance(text: string): boolean {
+  const norm = (text || '').toLowerCase().replace(/[^a-z0-9一-鿿\s]/g, '').trim()
+  if (!norm) return true
+  // Too short to be a real command (e.g. a stray syllable / cough).
+  const hasCjk = /[一-鿿]/.test(norm)
+  if (!hasCjk && norm.replace(/\s+/g, '').length < 4) return true
+  // Standalone wake name or "hey/hi/ok jarvis" with nothing after it.
+  const words = norm.split(/\s+/)
+  const lastWord = words[words.length - 1]
+  if (WAKE_NAMES.includes(norm) || (words.length <= 2 && WAKE_NAMES.includes(lastWord))) return true
+  for (const g of GREETING_NOISE) {
+    if (norm === g || norm.startsWith(`${g} `) || norm.endsWith(` ${g}`)) return true
   }
   return false
 }
@@ -195,9 +226,10 @@ export function useVoiceRealtime() {
     const rt = settings.value.realtime
     if (rt.thinkingChimeEnabled === false) return
     cancelThinkingFollowUp()
-    const lang =
-      langHint ||
-      (rt.thinkingChimeText && detectLang(rt.thinkingChimeText) === 'en' ? 'en' : 'zh')
+    // Follow the boss's Reply language for the waiting prompt — never default to Chinese.
+    const replyLang = settings.value.voice.replyLanguage
+    const lang: 'zh' | 'en' =
+      replyLang === 'zh' ? 'zh' : replyLang === 'en' ? 'en' : (langHint || 'en')
     const custom = rt.thinkingChimeText?.trim()
     const first =
       custom && custom !== '嗯…' && custom !== 'Hmm…' ? custom : pickThinkingAck(lang)
@@ -215,6 +247,14 @@ export function useVoiceRealtime() {
   }
 
   async function playQuickAck(text: string) {
+    // Match the boss's Reply voice for the filler too — no stray OpenAI/browser voice.
+    const vo = settings.value.realtime.voiceOutput || 'openai'
+    if (vo === 'fishaudio' || vo === 'elevenlabs') {
+      ttsBegin()
+      const ac = new AbortController()
+      try { await ocSpeakCloud(text, vo, ac.signal) } finally { ttsEnd() }
+      return
+    }
     if (typeof speechSynthesis === 'undefined') return
     try {
       speechSynthesis.cancel()
@@ -222,9 +262,12 @@ export function useVoiceRealtime() {
       u.lang = detectLang(text) === 'zh' ? 'zh-CN' : 'en-US'
       u.rate = 1.12
       u.volume = 0.88
+      ttsBegin() // gate the mic while the chime plays
+      u.onend = () => ttsEnd()
+      u.onerror = () => ttsEnd()
       speechSynthesis.speak(u)
     } catch {
-      /* ignore */
+      ttsEnd()
     }
   }
 
@@ -262,6 +305,20 @@ export function useVoiceRealtime() {
   function processLocalVad(samples: Float32Array) {
     if (!isActive.value) return
     if (Date.now() < listenGraceUntil) return
+    // ECHO GUARD: while any voice is playing (summon greeting, holding phrases, or our
+    // own reply), ignore the mic — otherwise realtime hears the speaker and replies to
+    // itself. Also drop any half-captured utterance so the tail isn't transcribed.
+    if (isTtsActive()) {
+      if (speechRecording) {
+        speechRecording = false
+        localVadInSpeech = false
+        localVadSilenceFrames = 0
+        localVadSpeechFrames = 0
+        speechRecordBuffer = []
+        speechPreBuffer = []
+      }
+      return
+    }
     const rms = chunkRms(samples)
     const startTh = vadStartThreshold()
     const endTh = vadEndThreshold()
@@ -413,6 +470,10 @@ export function useVoiceRealtime() {
               console.log('[summon] realtime ignored wake phrase (use Persona sample reply only):', transcript)
               return
             }
+            if (isLowValueUtterance(transcript)) {
+              summonMark(`realtime ignored low-value utterance: "${transcript}"`)
+              return
+            }
             userTranscript.value = transcript
             playThinkingChime(detectLang(transcript))
             void runRealtimeVoiceTurn(transcript)
@@ -429,6 +490,10 @@ export function useVoiceRealtime() {
       const wakePhrases = settings.value.summon.wakePhrases || []
       if (isWakePhraseOnly(transcript, wakePhrases)) {
         console.log('[summon] realtime ignored wake phrase (use Persona sample reply only):', transcript)
+        return
+      }
+      if (isLowValueUtterance(transcript)) {
+        summonMark(`realtime ignored low-value utterance: "${transcript}"`)
         return
       }
       if (transcript && isActive.value) {
@@ -621,14 +686,23 @@ export function useVoiceRealtime() {
     ocSpeakAbort = new AbortController()
     const signal = ocSpeakAbort.signal
     const rt = settings.value.realtime
+    ttsBegin() // close the mic gate while we speak our own reply (no self-echo)
     await setListenerSpeaking(true)
     try {
-      stepLog(5, '🔊', 'TTS → OpenAI', `model=${rt.openaiTtsModel || 'gpt-4o-mini-tts'} chars=${text.length}`)
-      await ocSpeakOpenAI(text, signal)
+      // Use the boss's configured Reply voice so realtime matches the summon greeting.
+      const vo = rt.voiceOutput || 'openai'
+      if (vo === 'fishaudio' || vo === 'elevenlabs') {
+        stepLog(5, '🔊', `TTS → ${vo}`, `chars=${text.length}`)
+        await ocSpeakCloud(text, vo, signal)
+      } else {
+        stepLog(5, '🔊', 'TTS → OpenAI', `model=${rt.openaiTtsModel || 'gpt-4o-mini-tts'} chars=${text.length}`)
+        await ocSpeakOpenAI(text, signal)
+      }
     } catch (e: unknown) {
       if ((e as Error)?.name !== 'AbortError') console.error('[TTS] error:', e)
     } finally {
       await setListenerSpeaking(false)
+      ttsEnd()
       touchSummonActivity()
       ocSpeakAbort = null
     }
@@ -677,6 +751,60 @@ export function useVoiceRealtime() {
     }
   }
 
+  // Speak a sentence using the boss's configured Reply voice (Fish Audio clone /
+  // ElevenLabs), so realtime answers match the summon greeting instead of a stray
+  // OpenAI voice. Synthesized via /api/voice/synthesize, played on the same AudioContext.
+  async function ocSpeakCloud(
+    text: string,
+    engine: 'fishaudio' | 'elevenlabs',
+    signal: AbortSignal,
+  ): Promise<void> {
+    const v = settings.value.voice
+    const rt = settings.value.realtime
+    const apiKey = (
+      engine === 'fishaudio' ? v.fishAudioApiKey || rt.fishAudioApiKey
+        : v.elevenLabsApiKey || rt.elevenLabsApiKey
+    )?.trim() || ''
+    const voiceId = (
+      engine === 'fishaudio' ? v.fishAudioVoiceId || rt.fishAudioVoiceId
+        : v.elevenLabsVoiceId || rt.elevenLabsVoiceId
+    )?.trim() || ''
+    if (!apiKey || !voiceId) {
+      console.warn(`[TTS] ${engine} key/id missing — falling back to OpenAI voice`)
+      await ocSpeakOpenAI(text, signal)
+      return
+    }
+    try {
+      const boss = useBossStore()
+      const res = await fetch('/api/voice/synthesize', {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json', ...boss.authHeaders() },
+        body: JSON.stringify({ text, engine, apiKey, voiceId }),
+      })
+      if (!res.ok) { console.error(`[TTS] ${engine} error:`, res.status); return }
+      const buf = await res.arrayBuffer()
+      if (signal.aborted) return
+      ensurePlayCtx(24000)
+      if (!playCtx) return
+      const decoded = await playCtx.decodeAudioData(buf)
+      const src = playCtx.createBufferSource()
+      src.buffer = decoded; src.connect(playCtx.destination)
+      const startAt = Math.max(playCtx.currentTime, nextPlayTime)
+      src.start(startAt); nextPlayTime = startAt + decoded.duration
+      activeSources.push(src)
+      src.onended = () => { activeSources = activeSources.filter(s => s !== src) }
+      stepLog(6, '▶️', `Playing ${engine} TTS`, `${decoded.duration.toFixed(1)}s`)
+      const endAt = nextPlayTime
+      await new Promise<void>((resolve) => {
+        const check = () => { if (signal.aborted || !playCtx || playCtx.currentTime >= endAt - 0.05) resolve(); else setTimeout(check, 80) }
+        setTimeout(check, 80)
+      })
+    } catch (e: unknown) {
+      if ((e as Error)?.name !== 'AbortError') console.error(`[TTS] ${engine} error:`, e)
+    }
+  }
+
   function sttKeyAvailable(): boolean {
     return hasUserOpenAiKey()
   }
@@ -707,13 +835,20 @@ export function useVoiceRealtime() {
     localVadInSpeech = false
     localVadSilenceFrames = 0
     localVadSpeechFrames = 0
-    listenGraceUntil = opts?.afterWake ? Date.now() + 4500 : 0
+    // Grace is set AFTER startMic() below — on the FIRST wake getUserMedia init is slow,
+    // and if the clock started here most of the window would elapse before the mic is
+    // even capturing, letting realtime hear the summon greeting's tail and reply to it
+    // ("office running smoothly"). Starting the clock once the mic is live gives the
+    // full window every time, including the first wake.
+    listenGraceUntil = 0
 
     try { await api.send('POST', '/api/voice/listener/mode', { mode: 'sleep' }) } catch { /* ignore */ }
     try {
       isActive.value = true
       await startMic()
       if (status.value !== 'error') {
+        // Mic is live now — start the ignore-window from this moment.
+        listenGraceUntil = opts?.afterWake ? Date.now() + 4500 : 0
         status.value = 'listening'
         resetSummonTimer('realtime session')
         stepLog(0, '✅', 'Voice OS realtime ready', 'VAD + Whisper + intent router + OpenAI TTS')

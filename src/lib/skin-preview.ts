@@ -30,7 +30,14 @@ type PreviewEntry = {
   actionTimer: number
   poseTimer: number
   poseInterval: number
+  // Optional custom sprite-sheet image (paid/custom skins). When loaded, it is
+  // used instead of the palette-indexed builtin char_N.png. Same 16×32 frame
+  // layout (7 walk/action cols × 3 direction rows).
+  customImage?: HTMLImageElement | null
 }
+
+// Cache custom sprite-sheet images by URL so each skin loads once.
+const customImageCache = new Map<string, HTMLImageElement>()
 
 let charImages: HTMLImageElement[] | null = null
 let charImageCount = 6
@@ -116,7 +123,17 @@ function pickNextPose(entry: PreviewEntry) {
   entry.poseInterval = randomPoseInterval()
 }
 
-function createPreviewState(canvas: HTMLCanvasElement, palette: number, hueShift = 0): PreviewEntry {
+function loadCustomImage(src: string): HTMLImageElement {
+  let im = customImageCache.get(src)
+  if (!im) {
+    im = new Image()
+    im.src = src
+    customImageCache.set(src, im)
+  }
+  return im
+}
+
+function createPreviewState(canvas: HTMLCanvasElement, palette: number, hueShift = 0, customSrc?: string | null): PreviewEntry {
   return {
     canvas,
     palette,
@@ -131,6 +148,7 @@ function createPreviewState(canvas: HTMLCanvasElement, palette: number, hueShift
     actionTimer: 0,
     poseTimer: 0,
     poseInterval: randomPoseInterval(),
+    customImage: customSrc ? loadCustomImage(customSrc) : null,
   }
 }
 
@@ -141,9 +159,15 @@ export function drawSkinPreview(entry: PreviewEntry) {
   ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const imgs = charImages
-  if (!imgs?.length) return
-  const img = imgs[palette % imgs.length]
+  // Prefer a loaded custom sprite sheet; otherwise fall back to the builtin palette image.
+  let img: HTMLImageElement | undefined
+  if (entry.customImage && entry.customImage.complete && entry.customImage.naturalWidth > 0) {
+    img = entry.customImage
+  } else {
+    const imgs = charImages
+    if (!imgs?.length) return
+    img = imgs[palette % imgs.length]
+  }
   if (!img?.complete) return
 
   const row = DIR_ROW[direction] ?? 0
@@ -170,12 +194,14 @@ export function registerPreview({
   canvas,
   palette,
   hueShift = 0,
+  customSrc = null,
 }: {
   canvas: HTMLCanvasElement
   palette: number
   hueShift?: number
+  customSrc?: string | null
 }) {
-  const entry = createPreviewState(canvas, palette, hueShift)
+  const entry = createPreviewState(canvas, palette, hueShift, customSrc)
   previews.add(entry)
   drawSkinPreview(entry)
   return entry

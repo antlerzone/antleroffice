@@ -22,6 +22,8 @@ import {
   BROWSE_SECTIONS,
   CATEGORY_TABS,
   categoryLabel,
+  setCatalogCategories,
+  getCategoryTabs,
   filterBrowseTemplates,
   groupTemplatesByCategory,
   isVipTemplate,
@@ -105,6 +107,7 @@ interface Template {
   ceoDepartmentCount?: number
   ceoPricingNote?: string
   devEngine?: string
+  devEngineOptions?: string[]
   devScopeDefault?: { canWrite?: boolean; canReview?: boolean }
 }
 
@@ -133,6 +136,9 @@ const viewMode = ref<'grid' | 'list'>(
 const search = ref('')
 const browseSection = ref<BrowseSection>('department')
 const categoryFilter = ref<CatalogCategory | ''>('')
+// Category tabs — start with the built-in fallback, replaced by the server list
+// once load() fetches /api/config/agents/categories.
+const categoryTabs = ref<{ id: CatalogCategory | ''; label: string }[]>([...CATEGORY_TABS])
 const status = ref('')
 const role = ref('')
 const creditMin = ref('')
@@ -193,6 +199,20 @@ function triggerOnboarding(t: Template, name: string) {
 }
 const hireDevScopeCanWrite = ref(true)
 const hireDevScopeCanReview = ref(true)
+const hireDevEngine = ref('cursor')
+
+const DEV_ENGINE_LABELS: Record<string, string> = {
+  cursor: 'Cursor',
+  codex: 'Codex',
+  claude: 'Claude',
+}
+
+const hireEngineOptions = computed<string[]>(() => {
+  const t = hireTemplate.value
+  if (!t) return []
+  const opts = Array.isArray(t.devEngineOptions) ? t.devEngineOptions.filter(Boolean) : []
+  return opts.length ? opts : []
+})
 const hireTemplate = ref<Template | null>(null)
 const hireName = ref('')
 const hirePassword = ref('')
@@ -466,12 +486,22 @@ async function mountPreviews() {
 
 async function load() {
   stopSkinPreviews()
-  const [sk, cat] = await Promise.all([
+  const [sk, cat, catg] = await Promise.all([
     api.get<{ skins: Skin[] }>('/api/config/skins'),
     api.get<{ templates: Template[] }>('/api/config/agents/catalog'),
+    api
+      .get<{ categories: { id: string; label: string; sortOrder?: number }[] }>(
+        '/api/config/agents/categories',
+      )
+      .catch(() => null),
   ])
   skins.value = sk.skins || []
   templates.value = cat.templates || []
+  // Server-driven category tabs (falls back to CATEGORY_TABS if the call failed).
+  if (catg?.categories?.length) {
+    setCatalogCategories(catg.categories)
+    categoryTabs.value = getCategoryTabs()
+  }
   const maxPal = Math.max(0, ...skins.value.map((s) => s.palette ?? 0), ...templates.value.map((t) => t.sprite ?? 0))
   await loadCharacterImages(maxPal + 1)
   await mountPreviews()
@@ -733,6 +763,8 @@ function openHire(t: Template) {
   if (isDevTemplate(t)) {
     hireDevScopeCanWrite.value = t.devScopeDefault?.canWrite !== false
     hireDevScopeCanReview.value = t.devScopeDefault?.canReview !== false
+    const opts = Array.isArray(t.devEngineOptions) ? t.devEngineOptions.filter(Boolean) : []
+    hireDevEngine.value = t.devEngine || opts[0] || 'cursor'
   }
   hireOpen.value = true
   detailOpen.value = false
@@ -872,6 +904,9 @@ async function confirmHire() {
         canWrite: hireDevScopeCanWrite.value,
         canReview: hireDevScopeCanReview.value,
       }
+      if (hireEngineOptions.value.length) {
+        hireBody.devEngine = hireDevEngine.value
+      }
     }
     const r = await api.send<{
       ok: boolean
@@ -910,7 +945,7 @@ async function confirmHire() {
       })
     }
 
-    if (isDevTemplate(t)) {
+    if (isDevTemplate(t) && t.id !== 'cto') {
       const bundle = r.devCliInstall || { cursor: r.cursorInstall, codex: r.codexInstall, claude: r.claudeInstall }
       const engine = r.devEngine || t.devEngine || 'cursor'
       const needsInstall =
@@ -945,6 +980,10 @@ async function confirmHire() {
       }
       await maybeShowItGuysSetup(t.name, engine)
       showMcpDialog()
+    } else if (t.id === 'cto') {
+      // CTO writes no code (no engine key). Onboarding asks about server (SSH) access.
+      if (mcps.length) showMcpDialog()
+      triggerOnboarding(t, hireName.value)
     } else if (mcps.length) {
       showMcpDialog()
       triggerOnboarding(t, hireName.value)
@@ -1052,7 +1091,7 @@ onUnmounted(() => {
       aria-label="Department category"
     >
       <button
-        v-for="cat in CATEGORY_TABS"
+        v-for="cat in categoryTabs"
         :key="cat.id || 'all'"
         type="button"
         class="seg-btn"
@@ -1106,7 +1145,7 @@ onUnmounted(() => {
         <div class="channels-filter-item">
           <label class="channels-filter-label">Category</label>
           <select v-model="categoryFilter" class="channels-filter">
-            <option v-for="cat in CATEGORY_TABS" :key="cat.id || 'all'" :value="cat.id">
+            <option v-for="cat in categoryTabs" :key="cat.id || 'all'" :value="cat.id">
               {{ cat.label }}
             </option>
           </select>
@@ -1595,6 +1634,24 @@ onUnmounted(() => {
         <label class="channels-filter-label">Display name</label>
         <NInput v-model:value="hireName" style="margin: 8px 0 12px" />
         <template v-if="isDevTemplate(hireTemplate)">
+          <template v-if="hireEngineOptions.length">
+            <label class="channels-filter-label">写代码引擎</label>
+            <NSpace style="margin: 8px 0 6px">
+              <NButton
+                v-for="eng in hireEngineOptions"
+                :key="eng"
+                size="small"
+                :type="hireDevEngine === eng ? 'primary' : 'default'"
+                @click="hireDevEngine = eng"
+              >
+                {{ DEV_ENGINE_LABELS[eng] || eng }}
+              </NButton>
+            </NSpace>
+            <p class="hint sm" style="margin-top: 0">
+              聘用后会请您填入 <strong>{{ DEV_ENGINE_LABELS[hireDevEngine] || hireDevEngine }}</strong> 的 API Key。
+              没填的话这位员工暂时无法写代码，之后可在 Settings → Dev tools 补上。
+            </p>
+          </template>
           <label class="channels-filter-label">Job scope</label>
           <NSpace vertical style="margin: 8px 0 12px">
             <NCheckbox v-model:checked="hireDevScopeCanWrite">Can write code</NCheckbox>
@@ -1620,7 +1677,7 @@ onUnmounted(() => {
           If sign-in fails or is cancelled, hire is blocked.
         </p>
         <p v-if="templateIsVip(hireTemplate)" class="hint sm" style="margin-top: 0">
-          <strong>VIP Worker</strong> — included at no salary. Does not add to CEO $1/day department billing.
+          <strong>VIP Worker</strong> — included at no salary. Does not add to COO $1/day department billing.
         </p>
         <template v-if="(hireTemplate.salaryCreditsPerMonth ?? 0) > 0 && hireTemplate.pricingModel !== 'per_department'">
           <div class="hire-billing-field">
@@ -1644,7 +1701,7 @@ onUnmounted(() => {
           </div>
         </template>
         <p v-if="hireTemplate.pricingModel === 'per_department'" class="hint sm" style="margin-top: 0">
-          CEO salary: <strong>$1/day per hired department</strong> (1 credit = $1 USD). Charged today on hire, then every day at 12:00 AM local time.
+          COO salary: <strong>$1/day per hired department</strong> (1 credit = $1 USD). Charged today on hire, then every day at 12:00 AM local time.
           {{ hireTemplate.ceoPricingNote ? `Current: ${hireTemplate.ceoPricingNote}.` : '' }}
         </p>
         <p v-if="hireIsPaygo" class="hint sm" style="margin-top: 0">
@@ -1738,17 +1795,17 @@ onUnmounted(() => {
   position: relative;
   overflow: visible;
   padding: 8px 16px;
-  border: none;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.82);
+  background: var(--panel-2);
+  color: var(--text); /* theme-aware: dark text in light mode, light in dark */
   font-size: 14px;
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 .hire-billing-tab:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--line);
 }
 .hire-billing-tab.active {
   background: #5eead4;

@@ -4021,4 +4021,14 @@ watch(
 .image-preview-container {
   display: flex;
   justify-content: center;
-  
+  align-items: center;
+  min-height: 200px;
+}
+
+.image-preview-full {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+</style>

@@ -30,13 +30,13 @@ const draftKey = ref('')
 const statusType = computed(() => (configured.value ? 'success' : 'warning'))
 const statusText = computed(() =>
   configured.value
-    ? t('pages.models.retell.statusConnected', { maskedKey: maskedKey.value })
-    : t('pages.models.retell.statusMissing'),
+    ? t('accounts.retell.statusConnected', { maskedKey: maskedKey.value })
+    : t('accounts.retell.statusMissing'),
 )
 const keyPlaceholder = computed(() =>
   configured.value
-    ? t('pages.models.retell.keyPlaceholderSet')
-    : t('pages.models.retell.keyPlaceholderEmpty'),
+    ? t('accounts.retell.keyPlaceholderSet')
+    : t('accounts.retell.keyPlaceholderEmpty'),
 )
 
 function applyStatus(s: RetellStatus) {
@@ -61,7 +61,7 @@ async function load() {
 async function save() {
   const key = draftKey.value.trim()
   if (!key) {
-    message.warning(t('pages.models.retell.warnEmpty'))
+    message.warning(t('accounts.retell.warnEmpty'))
     return
   }
   saving.value = true
@@ -69,9 +69,9 @@ async function save() {
     const s = await api.send<RetellStatus>('POST', '/api/config/retell', { apiKey: key })
     applyStatus(s)
     draftKey.value = ''
-    message.success(t('pages.models.retell.saved'))
+    message.success(t('accounts.retell.saved'))
   } catch (e) {
-    message.error(e instanceof Error ? e.message : t('pages.models.retell.saveFailed'))
+    message.error(e instanceof Error ? e.message : t('accounts.retell.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -83,9 +83,9 @@ async function remove() {
     const s = await api.send<RetellStatus>('DELETE', '/api/config/retell')
     applyStatus(s)
     draftKey.value = ''
-    message.success(t('pages.models.retell.removed'))
+    message.success(t('accounts.retell.removed'))
   } catch (e) {
-    message.error(e instanceof Error ? e.message : t('pages.models.retell.removeFailed'))
+    message.error(e instanceof Error ? e.message : t('accounts.retell.removeFailed'))
   } finally {
     removing.value = false
   }
@@ -95,14 +95,14 @@ onMounted(load)
 </script>
 
 <template>
-  <NCard :title="t('pages.models.retell.title')" :class="cardClass">
+  <NCard :title="t('accounts.retell.title')" :class="cardClass">
     <NSpin :show="loading">
       <NSpace vertical :size="14">
         <NText depth="3" style="font-size: 13px; line-height: 1.6">
-          <i18n-t keypath="pages.models.retell.intro" tag="span">
+          <i18n-t keypath="accounts.retell.intro" tag="span">
             <template #link>
               <a href="https://dashboard.retellai.com" target="_blank" rel="noopener">
-                {{ t('pages.models.retell.dashboardLink') }}
+                {{ t('accounts.retell.dashboardLink') }}
               </a>
             </template>
           </i18n-t>
@@ -114,7 +114,7 @@ onMounted(load)
 
         <div>
           <NText style="font-size: 13px; display: block; margin-bottom: 6px">
-            {{ t('pages.models.retell.keyLabel') }}
+            {{ t('accounts.retell.keyLabel') }}
           </NText>
           <NInput
             v-model:value="draftKey"
@@ -126,10 +126,10 @@ onMounted(load)
 
         <NSpace :size="10">
           <NButton type="primary" :loading="saving" @click="save">
-            {{ t('pages.models.retell.save') }}
+            {{ t('accounts.retell.save') }}
           </NButton>
           <NButton v-if="configured" tertiary type="error" :loading="removing" @click="remove">
-            {{ t('pages.models.retell.remove') }}
+            {{ t('accounts.retell.remove') }}
           </NButton>
         </NSpace>
       </NSpace>

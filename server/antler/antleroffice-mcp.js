@@ -13,6 +13,25 @@ const retellClient = () => require('./retell-client');
 
 const TOOLS = [
   {
+    name: 'get_server_access',
+    description:
+      'Read the CTO server-access (SSH) gate: whether SSH is enabled and the saved host/user. Use when the boss asks about server access status.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'configure_server_access',
+    description:
+      "Configure the CTO server-access (SSH) gate. Only the CTO may ever use the server, and even when enabled every action still needs the boss's per-action approval. Set enabled=false to lock it. Use when the boss asks to turn on/off SSH or set the server host/user via chat.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', description: 'Turn CTO SSH access on or off (gate 1). Default off.' },
+        host: { type: 'string', description: 'Server host/IP, e.g. 10.0.0.5 or your-ecs-host.' },
+        user: { type: 'string', description: 'SSH login user, e.g. root or ec2-user.' },
+      },
+    },
+  },
+  {
     name: 'retell_status',
     description:
       'Check whether the boss has connected their Retell AI account (API key). Returns configured:true/false and a masked key preview. Call this before trying to place calls.',
@@ -580,6 +599,32 @@ function toolText(payload) {
 
 async function callTool(name, args = {}) {
   switch (name) {
+    case 'get_server_access': {
+      const sa = require('./cto-server-gate').readServerAccess();
+      return toolText({
+        ...sa,
+        note: 'Only the CTO can use the server; every action still needs boss approval.',
+      });
+    }
+    case 'configure_server_access': {
+      const settingsStore = require('./store');
+      const s = settingsStore.readSettings();
+      const cur = (s.dev && s.dev.serverAccess) || {};
+      const next = { ...cur };
+      if (typeof args.enabled === 'boolean') next.sshEnabled = args.enabled;
+      if (typeof args.host === 'string') next.host = args.host.trim();
+      if (typeof args.user === 'string') next.user = args.user.trim();
+      s.dev = { ...(s.dev || {}), serverAccess: next };
+      settingsStore.writeSettings(s);
+      const sa = require('./cto-server-gate').readServerAccess();
+      return toolText({
+        ok: true,
+        serverAccess: sa,
+        note: sa.sshEnabled
+          ? 'SSH enabled (gate 1). Each action still needs boss approval (gate 2).'
+          : 'SSH is locked — CTO has no server access.',
+      });
+    }
     case 'retell_status': {
       return toolText(retellClient().status());
     }

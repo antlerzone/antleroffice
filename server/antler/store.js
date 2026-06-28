@@ -139,6 +139,14 @@ const DEFAULT_SETTINGS = {
       writerAgentId: null,
       reviewerAgentIds: [],
     },
+    // CTO server access (SSH/ECS). Double-gated: default OFF (gate 1 = boss must
+    // enable), and every action still needs per-action boss approval (gate 2).
+    serverAccess: {
+      sshEnabled: false,
+      host: '',
+      user: '',
+      requireApprovalPerAction: true,
+    },
   },
 };
 
@@ -159,6 +167,16 @@ function mergeDefaults(s) {
   if (s.providers) {
     for (const key of Object.keys(out.providers)) {
       if (s.providers[key]) out.providers[key] = { ...out.providers[key], ...s.providers[key] };
+    }
+  }
+  if (s.browserAgent) out.browserAgent = { ...out.browserAgent, ...s.browserAgent };
+  if (s.dev) {
+    out.dev = { ...out.dev, ...s.dev };
+    if (s.dev.devTeam) {
+      out.dev.devTeam = { ...out.dev.devTeam, ...s.dev.devTeam };
+    }
+    if (s.dev.serverAccess) {
+      out.dev.serverAccess = { ...out.dev.serverAccess, ...s.dev.serverAccess };
     }
   }
   if (s.npcBrains) out.npcBrains = { ...out.npcBrains, ...s.npcBrains };

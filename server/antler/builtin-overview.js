@@ -14,17 +14,17 @@ function normSlug(value) {
 const BUILTIN_RESUME = {
   secretary: {
     description:
-      'Your executive secretary and the only CEO Chat front door. Secretary handles Facebook login (opens Chrome for you), then asks if you want to post to groups before passing work to your COO.',
+      'Your COO and the only Chat front door. The COO handles Facebook login (opens Chrome for you), then asks if you want to post to groups before delegating the work.',
     examples: [
-      '「我要登入 Facebook」— Secretary opens Chrome for one-time login.',
-      'Reply「登好了」— Secretary asks whether to post to groups.',
-      '「发到所有群名带房的群」— Secretary passes to COO → Marketing Junior.',
+      '「我要登入 Facebook」— COO opens Chrome for one-time login.',
+      'Reply「登好了」— COO asks whether to post to groups.',
+      '「发到所有群名带房的群」— COO delegates to Marketing Junior.',
     ],
     jobScopeExtra: {
       key: 'routing',
       icon: 'gear',
       label: 'Front door',
-      text: 'CEO → Secretary (login FB) → COO (posting) → Marketing Junior (execute). Secretary never schedules posts.',
+      text: 'Boss → COO (login FB / posting) → Marketing Junior (execute).',
     },
   },
   coo: {
@@ -130,8 +130,8 @@ async function buildBuiltinOverview(role, { office, registry }) {
       label: 'Channels',
       text:
         role === 'secretary'
-          ? 'Inbound Telegram and other channels route to Secretary by default unless you change the target.'
-          : 'COO receives work forwarded by Secretary after you hire one.',
+          ? 'Inbound Telegram and other channels route to the COO by default unless you change the target.'
+          : 'Receives work forwarded from the COO front door.',
     },
   );
 

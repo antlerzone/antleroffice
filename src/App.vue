@@ -145,4 +145,8 @@ watch(
           <RouterView />
           <DownloadToastManager />
           <SummonWakeNotifier />
-        </ND
+        </NDialogProvider>
+      </NMessageProvider>
+    </NNotificationProvider>
+  </NConfigProvider>
+</template>

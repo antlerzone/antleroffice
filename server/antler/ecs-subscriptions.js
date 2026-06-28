@@ -202,6 +202,36 @@ function isEcsBillingEnabled(bossToken) {
   return !!(ecsBaseUrl() && ecsTokenFromBossToken(bossToken));
 }
 
+// ── Paid skins (server-authoritative on ECS) ─────────────────────────────────
+async function skinCatalog({ bossToken, ecsToken, officeId } = {}) {
+  const token = ecsToken || ecsTokenFromBossToken(bossToken);
+  const resolvedOfficeId = await resolveOfficeId({ bossToken, ecsToken: token, officeId });
+  if (!resolvedOfficeId) return { ok: false, error: 'officeId required', code: 'OFFICE_REQUIRED' };
+  return ecsFetch(`/api/skins/catalog?officeId=${encodeURIComponent(resolvedOfficeId)}`, { ecsToken: token });
+}
+
+async function purchaseSkin({ bossToken, ecsToken, officeId, skinId } = {}) {
+  const token = ecsToken || ecsTokenFromBossToken(bossToken);
+  const resolvedOfficeId = await resolveOfficeId({ bossToken, ecsToken: token, officeId });
+  if (!resolvedOfficeId) return { ok: false, error: 'officeId required', code: 'OFFICE_REQUIRED' };
+  return ecsFetch(`/api/skins/${encodeURIComponent(skinId)}/purchase`, {
+    ecsToken: token,
+    method: 'POST',
+    body: { officeId: resolvedOfficeId },
+  });
+}
+
+async function createSkin({ bossToken, ecsToken, officeId, name, priceCredits, previewUrl, assetUrl } = {}) {
+  const token = ecsToken || ecsTokenFromBossToken(bossToken);
+  const resolvedOfficeId = await resolveOfficeId({ bossToken, ecsToken: token, officeId });
+  if (!resolvedOfficeId) return { ok: false, error: 'officeId required', code: 'OFFICE_REQUIRED' };
+  return ecsFetch('/api/skins', {
+    ecsToken: token,
+    method: 'POST',
+    body: { officeId: resolvedOfficeId, name, priceCredits, previewUrl, assetUrl },
+  });
+}
+
 module.exports = {
   ecsBaseUrl,
   ecsFetch,
@@ -212,4 +242,7 @@ module.exports = {
   payrollHeartbeat,
   ecsTokenFromBossToken,
   isEcsBillingEnabled,
+  skinCatalog,
+  purchaseSkin,
+  createSkin,
 };

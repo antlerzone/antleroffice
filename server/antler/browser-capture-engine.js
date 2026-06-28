@@ -23,12 +23,8 @@ const { randomUUID } = require('node:crypto');
 const store = require('./store');
 const webAccounts = require('./web-accounts-store');
 
-let chromium = null;
-try {
-  ({ chromium } = require('playwright'));
-} catch {
-  chromium = null;
-}
+// Browser driver via stealth-browser: Patchright if installed, else Playwright.
+const { chromium } = require('./stealth-browser');
 
 /** In-memory map of live capture sessions */
 const _sessions = new Map(); // sessionId → { context, page, meta, startedAt, timer }

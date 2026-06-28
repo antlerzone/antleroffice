@@ -22,13 +22,9 @@ const path = require('node:path');
 const store = require('./store');
 const bossChat = require('./boss-chat-store');
 
-// ── Playwright (optional dep, graceful degrade) ───────────────────────────────
-let chromium = null;
-try {
-  ({ chromium } = require('playwright'));
-} catch {
-  chromium = null;
-}
+// ── Browser driver (Patchright-hardened, optional dep, graceful degrade) ──────
+// Goes through stealth-browser: Patchright if installed, else plain Playwright.
+const { chromium } = require('./stealth-browser');
 
 // ── Session registry ──────────────────────────────────────────────────────────
 const sessions = new Map(); // id → session object

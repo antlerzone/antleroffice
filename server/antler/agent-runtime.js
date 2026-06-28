@@ -658,9 +658,9 @@ async function runAsSecretary({
   threadId = null,
   ownerKey = null,
 }) {
-  const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'Secretary' };
+  const sec = orgRoles.findSecretary() || { id: 'secretary', role: 'secretary', label: 'COO' };
   const ceo = orgRoles.findHiredCoo();
-  const secName = sec.label || 'Secretary';
+  const secName = sec.label || 'COO';
   const taskText = rawTask || instruction;
 
   if (!planning) {
@@ -806,7 +806,7 @@ async function runAsSecretary({
     office.work(sec.id, 'Listening…', { label: shortTask, step: 'Reception', progress: 1, total: 2 });
     const fbHint = secretaryFbIntake.secretaryFbSystem(secName);
     const system =
-      `You are ${secName}, the executive secretary and the boss's only front-door contact in AntlerOffice. ` +
+      `You are ${secName}, the COO and the boss's only front-door contact in AntlerOffice. ` +
       `Be warm, concise, and professional. Record what the boss asks for. ` +
       `There is no COO hired yet — you cannot dispatch group posting to departments. ` +
       `For posting tasks (after FB login), explain they should hire a COO from the Hire page first. ` +

@@ -6,7 +6,8 @@
 const memory = require('../memory-store');
 const { recordAfterTask } = require('../memory-record');
 
-function getContext(memoryKey, query) {
+// Async now: ranking by meaning needs to embed the query (see memory-store).
+async function getContext(memoryKey, query) {
   return memory.context(memoryKey, query);
 }
 

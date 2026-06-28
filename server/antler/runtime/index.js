@@ -23,8 +23,8 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
       : '';
 
   // 1) Gather context: relevant long-term memory + retrieved knowledge chunks.
-  const mem = hermes.getContext(memoryKey, instruction);
-  const knowledge = rag.context(memoryKey, instruction);
+  const mem = await hermes.getContext(memoryKey, instruction);
+  const knowledge = await rag.context(memoryKey, instruction);
   const materialsRoot = materials.getRootPath();
   const fullSystem = [
     system,

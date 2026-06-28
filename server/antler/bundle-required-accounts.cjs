@@ -93,6 +93,34 @@ function listAllRequiredAccounts() {
   return { accounts, grouped };
 }
 
+function listRequiredAccountsForTemplates(templateIds) {
+  const wanted = new Set((templateIds || []).map((id) => String(id || '').trim()).filter(Boolean));
+  const seen = new Set();
+  const accounts = [];
+
+  if (wanted.size) {
+    for (const root of bundlesRoots()) {
+      for (const bundleId of listBundleIds(root)) {
+        if (!wanted.has(bundleId)) continue;
+        for (const acct of loadBundleRequiredAccounts(root, bundleId)) {
+          if (seen.has(acct.alias)) continue;
+          seen.add(acct.alias);
+          accounts.push(acct);
+        }
+      }
+    }
+  }
+
+  const grouped = {};
+  for (const acct of accounts) {
+    const cat = acct.category || 'other';
+    if (!grouped[cat]) grouped[cat] = [];
+    grouped[cat].push(acct);
+  }
+
+  return { accounts, grouped };
+}
+
 function loadAgentCatalogEntry(templateId) {
   const id = String(templateId || '').trim();
   if (!id) return null;
@@ -119,6 +147,7 @@ function loadAgentCatalogEntry(templateId) {
 
 module.exports = {
   listAllRequiredAccounts,
+  listRequiredAccountsForTemplates,
   loadAgentCatalogEntry,
   loadBundleRequiredAccounts,
 };

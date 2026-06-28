@@ -8,6 +8,7 @@ import AgentUsageBars from '@/components/antler/AgentUsageBars.vue'
 import AgentHireCompareCard from '@/components/antler/AgentHireCompareCard.vue'
 import { NDropdown, NModal, NButton, NInput, NCheckbox, NSpace, NSelect, useMessage, useDialog, type DropdownOption } from 'naive-ui'
 import { useAntlerApi } from '@/composables/useAntlerApi'
+import { useWebSocketStore } from '@/stores/websocket'
 import { formatTokenCount, useAntlerAgentTokens } from '@/composables/useAntlerAgentTokens'
 import {
   loadCharacterImages,
@@ -111,6 +112,7 @@ const AGENT_VIEW_KEY = 'antleroffice.agentView'
 type AgentTab = 'mine' | 'browse' | 'hierarchy'
 
 const api = useAntlerApi()
+const wsStore = useWebSocketStore()
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
@@ -625,7 +627,8 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
     { label: 'View overview', key: 'view' },
     { label: 'Set model', key: 'model', disabled: !agent.openclawAgentId },
     { label: 'Rename', key: 'rename' },
-    { label: 'Change skin', key: 'skin' },
+    { label: 'Edit soul', key: 'soul' },
+    { label: 'Apply skin', key: 'skin' },
     { label: 'Review', key: 'review' },
     { label: 'MCP accounts', key: 'mcps' },
   ]
@@ -736,6 +739,136 @@ function openRename(agent: UserAgent) {
   renameModalOpen.value = true
 }
 
+// ---- Apply skin（弹窗里选皮肤后 Save）----
+const skinModalOpen = ref(false)
+const skinModalAgent = ref<UserAgent | null>(null)
+const skinSelectedId = ref('')
+const skinBusy = ref(false)
+const skinError = ref('')
+
+function openSkinApply(agent: UserAgent) {
+  skinModalAgent.value = agent
+  skinSelectedId.value = skinIdForAgent(agent) || skins.value[0]?.id || ''
+  skinError.value = ''
+  skinModalOpen.value = true
+}
+
+// ---- Edit soul（每个 agent 的人格/SOUL，可自定义 + 还原默认）----
+const SOUL_FILE = 'SOUL.md'
+const SOUL_DEFAULT_FILE = 'SOUL.default.md'
+const soulModalOpen = ref(false)
+const soulAgentName = ref('')
+const soulAgentRpcId = ref('')
+const soulContent = ref('')
+const soulDefault = ref('')
+const soulLoading = ref(false)
+const soulBusy = ref(false)
+const soulError = ref('')
+
+const soulIsCustomized = computed(
+  () => soulContent.value.trim() !== soulDefault.value.trim(),
+)
+
+function builtinSoulId(npc: BuiltinNpc) {
+  if (npc.role === 'secretary') return 'main'
+  return npc.openclawAgentId || 'main'
+}
+
+async function openSoulEditor(name: string, rpcId: string | null | undefined) {
+  if (!rpcId) {
+    message.warning('This agent has no OpenClaw runtime yet (demo).')
+    return
+  }
+  soulAgentName.value = name
+  soulAgentRpcId.value = rpcId
+  soulContent.value = ''
+  soulDefault.value = ''
+  soulError.value = ''
+  soulModalOpen.value = true
+  soulLoading.value = true
+  try {
+    const cur = await wsStore.rpc.getAgentFile(rpcId, SOUL_FILE)
+    soulContent.value = cur.file.content || ''
+    // 取已保存的默认快照；没有就把当前内容当默认存一份（首次）
+    let def = ''
+    try {
+      const d = await wsStore.rpc.getAgentFile(rpcId, SOUL_DEFAULT_FILE)
+      def = d.file.missing ? '' : d.file.content || ''
+    } catch {
+      def = ''
+    }
+    if (!def && soulContent.value.trim()) {
+      def = soulContent.value
+      try {
+        await wsStore.rpc.setAgentFile(rpcId, SOUL_DEFAULT_FILE, def)
+      } catch {
+        /* 快照失败不阻断编辑 */
+      }
+    }
+    soulDefault.value = def
+  } catch (e) {
+    soulError.value = e instanceof Error ? e.message : 'Could not load soul'
+  } finally {
+    soulLoading.value = false
+  }
+}
+
+async function saveSoul() {
+  if (!soulAgentRpcId.value) return
+  soulBusy.value = true
+  soulError.value = ''
+  try {
+    await wsStore.rpc.setAgentFile(soulAgentRpcId.value, SOUL_FILE, soulContent.value)
+    message.success('Soul saved')
+    soulModalOpen.value = false
+    void refresh()
+  } catch (e) {
+    soulError.value = e instanceof Error ? e.message : 'Could not save soul'
+  } finally {
+    soulBusy.value = false
+  }
+}
+
+function resetSoulToDefault() {
+  if (!soulDefault.value) {
+    message.info('No default snapshot for this agent yet.')
+    return
+  }
+  soulContent.value = soulDefault.value
+  message.info('Default restored — click Save to apply.')
+}
+
+async function saveSkinApply() {
+  if (!skinModalAgent.value) return
+  const skin = skins.value.find((s) => s.id === skinSelectedId.value)
+  if (!skin) {
+    skinError.value = 'Pick a skin first.'
+    return
+  }
+  skinBusy.value = true
+  skinError.value = ''
+  try {
+    const payload = { sprite: skin.palette, hueShift: skin.hueShift || 0 }
+    const r = await api.send<{ agent?: UserAgent }>(
+      'PUT',
+      `/api/config/agents/${skinModalAgent.value.id}`,
+      payload,
+    )
+    const hit = agents.value.find((a) => a.id === skinModalAgent.value!.id)
+    if (hit) {
+      hit.sprite = r.agent?.sprite ?? skin.palette
+      hit.hueShift = r.agent?.hueShift ?? (skin.hueShift || 0)
+    }
+    message.success('Skin applied')
+    skinModalOpen.value = false
+    void mountPreviews()
+  } catch (e) {
+    skinError.value = e instanceof Error ? e.message : 'Could not apply skin'
+  } finally {
+    skinBusy.value = false
+  }
+}
+
 function openScope(agent: UserAgent) {
   scopeModalAgent.value = agent
   scopeCanWrite.value = agent.devScope?.canWrite !== false
@@ -811,6 +944,8 @@ async function saveRename() {
 
 function builtinMenuOptions(npc?: BuiltinNpc): DropdownOption[] {
   const opts: DropdownOption[] = [{ label: 'View overview', key: 'view' }]
+  // 内置 NPC 也能编辑 soul（人格）
+  opts.push({ label: 'Edit soul', key: 'soul' })
   // 内置 COO 可以改名（也就是语音助手 Jarvis 的名字）
   if (npc && (npc.role === 'coo' || npc.role === 'ceo')) {
     opts.unshift({ label: 'Rename', key: 'rename' })
@@ -842,6 +977,7 @@ function openBuiltinOverview(npc: BuiltinNpc) {
 function onBuiltinMenu(key: string, npc: BuiltinNpc) {
   if (key === 'view') openBuiltinOverview(npc)
   else if (key === 'rename') openRenameBuiltin(npc)
+  else if (key === 'soul') void openSoulEditor(npc.label, builtinSoulId(npc))
 }
 
 const renameBuiltinId = ref<string | null>(null)
@@ -870,8 +1006,9 @@ function onUserMenu(key: string, agent: UserAgent) {
   else if (key === 'view') openOverview(agent)
   else if (key === 'model') void openModel(agent)
   else if (key === 'rename') openRename(agent)
+  else if (key === 'soul') void openSoulEditor(agentDisplayName(agent), agent.openclawAgentId)
   else if (key === 'scope') openScope(agent)
-  else if (key === 'skin') void router.push({ name: 'AntlerSkins', query: { agent: agent.id } })
+  else if (key === 'skin') openSkinApply(agent)
   else if (key === 'review') void openReview(agent)
   else if (key === 'mcps') openMcpBindings(agent)
 }
@@ -933,7 +1070,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-show="agentTab === 'mine'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Your hired NPC employees plus built-in COO and CEO station. Salary auto-renews each billing period until you resign at contract end.
+          Your hired NPC employees, including your COO. Salary auto-renews each billing period until you resign at contract end.
         </p>
         <div class="inline">
           <div class="seg">
@@ -1121,7 +1258,7 @@ onUnmounted(() => stopSkinPreviews())
             <div class="npc-market-actions agent-mine-actions">
               <NDropdown
                 trigger="click"
-                :options="builtinMenuOptions()"
+                :options="builtinMenuOptions(b)"
                 @select="(key) => onBuiltinMenu(String(key), b)"
               >
                 <button type="button" class="btn ghost npc-market-details">Actions ▾</button>
@@ -1228,7 +1365,7 @@ onUnmounted(() => stopSkinPreviews())
     <div v-if="agentTab === 'hierarchy'" class="skilltab">
       <div class="tab-toolbar">
         <p class="hint">
-          Boss → COO (front door) → CEO (hire from Browse) → department workers.
+          You (CEO) → COO (hire from Browse) → department workers.
         </p>
       </div>
       <OfficeOrgChart :snapshot="officeSnapshot" :user-agents="agents" />
@@ -1284,6 +1421,85 @@ onUnmounted(() => stopSkinPreviews())
           :loading="renameBusy"
           :disabled="!renameName.trim()"
           @click="saveRename"
+        >
+          Save
+        </NButton>
+      </template>
+    </NModal>
+
+    <NModal
+      v-model:show="soulModalOpen"
+      preset="card"
+      :title="soulAgentName ? `Edit soul — ${soulAgentName}` : 'Edit soul'"
+      style="max-width: 640px"
+    >
+      <p class="hint">
+        This is the agent's personality (SOUL). It comes with a default — edit it to
+        customize, or reset to the default any time.
+        <span v-if="soulIsCustomized" class="soul-state soul-state--custom">Customized</span>
+        <span v-else class="soul-state">Default</span>
+      </p>
+      <p v-if="soulLoading" class="hint">Loading soul…</p>
+      <NInput
+        v-else
+        v-model:value="soulContent"
+        type="textarea"
+        :autosize="{ minRows: 10, maxRows: 22 }"
+        placeholder="Describe how this agent should think, talk and behave…"
+      />
+      <p v-if="soulError" class="modal-error">{{ soulError }}</p>
+      <template #footer>
+        <div class="soul-footer">
+          <NButton
+            quaternary
+            :disabled="soulLoading || soulBusy || !soulDefault"
+            @click="resetSoulToDefault"
+          >
+            Reset to default
+          </NButton>
+          <div class="soul-footer-right">
+            <NButton @click="soulModalOpen = false">Cancel</NButton>
+            <NButton
+              type="primary"
+              :loading="soulBusy"
+              :disabled="soulLoading"
+              @click="saveSoul"
+            >
+              Save
+            </NButton>
+          </div>
+        </div>
+      </template>
+    </NModal>
+
+    <NModal
+      v-model:show="skinModalOpen"
+      preset="card"
+      :title="skinModalAgent ? `Apply skin — ${skinModalAgent.name}` : 'Apply skin'"
+      style="max-width: 460px"
+    >
+      <p class="hint">Pick a character skin (default or purchased), then Save.</p>
+      <div class="skin-pick-grid">
+        <button
+          v-for="s in skins"
+          :key="s.id"
+          type="button"
+          class="skin-pick-chip"
+          :class="{ active: skinSelectedId === s.id }"
+          @click="skinSelectedId = s.id"
+        >
+          <span class="skin-pick-name">{{ s.name }}</span>
+        </button>
+        <p v-if="!skins.length" class="hint">No skins available yet.</p>
+      </div>
+      <p v-if="skinError" class="modal-error">{{ skinError }}</p>
+      <template #footer>
+        <NButton @click="skinModalOpen = false">Cancel</NButton>
+        <NButton
+          type="primary"
+          :loading="skinBusy"
+          :disabled="!skinSelectedId || !skins.length"
+          @click="saveSkinApply"
         >
           Save
         </NButton>
@@ -1531,6 +1747,51 @@ onUnmounted(() => stopSkinPreviews())
 .agents-page {
   padding-bottom: 24px;
 }
+.skin-pick-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+.skin-pick-chip {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--antler-border, #d0d0d8);
+  background: var(--antler-surface, #fff);
+  cursor: pointer;
+  font-size: 13px;
+}
+.skin-pick-chip.active {
+  border-color: var(--antler-primary, #6750ff);
+  box-shadow: 0 0 0 2px var(--antler-primary, #6750ff) inset;
+}
+.skin-pick-name {
+  white-space: nowrap;
+}
+.soul-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+.soul-footer-right {
+  display: flex;
+  gap: 8px;
+}
+.soul-state {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--antler-surface-2, #eef0f4);
+  color: var(--antler-text-muted, #6b7280);
+}
+.soul-state--custom {
+  background: rgba(103, 80, 255, 0.12);
+  color: var(--antler-primary, #6750ff);
+}
 .view-head {
   margin-bottom: 4px;
 }
@@ -1648,4 +1909,65 @@ onUnmounted(() => stopSkinPreviews())
 }
 .hire-billing-tabs {
   display: flex;
-  
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+.hire-billing-tab {
+  position: relative;
+  overflow: visible;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.hire-billing-tab.active {
+  background: #5eead4;
+  color: #101418;
+}
+.hire-billing-tab--yearly {
+  margin-top: 2px;
+}
+.hire-billing-ribbon {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #101418;
+  background: linear-gradient(135deg, #ffd76a 0%, #f0b429 100%);
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.hire-price-was {
+  margin-right: 8px;
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.hire-price-adjust {
+  margin-left: 6px;
+  font-weight: 600;
+  color: #5eead4;
+}
+.agent-browse-detail-list {
+  margin: 12px 0 0;
+}
+.agent-browse-detail-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.agent-browse-detail-row dt {
+  min-width: 110px;
+  color: var(--muted);
+}
+</style>

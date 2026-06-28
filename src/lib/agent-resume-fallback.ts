@@ -80,24 +80,24 @@ const ROLE_RESUME: Record<
   },
   secretary: {
     description:
-      'Your COO and the only Boss Chat front door. COO records what you need and forwards work to your hired CEO.',
+      'Your COO and the only Boss Chat front door. The COO records what you need and delegates work to your department workers.',
     examples: [
       'Chat with COO about what you want done today.',
-      'After hiring a CEO, tell COO your goals — COO will pass them along.',
+      'Tell your COO your goals — it will delegate to the team.',
     ],
   },
   ceo: {
     description:
-      'Your hired CEO runs brainstorm → plan → execute → review and delegates to department workers. Hire from the Agents page.',
+      'Your hired COO runs brainstorm → plan → execute → review and delegates to department workers. Hire from the Agents page.',
     examples: [
-      'Ask your CEO to plan a launch and assign Marketing.',
-      'Have the CEO research a competitor and summarize findings.',
+      'Ask your COO to plan a launch and assign Marketing.',
+      'Have the COO research a competitor and summarize findings.',
     ],
   },
   coo: {
     description:
-      'Legacy COO role — now CEO. Hire a CEO from the Agents page.',
-    examples: ['Hire a CEO from Agents → Browse.'],
+      'Your COO — hire one from the Agents page to run brainstorm → plan → execute → review.',
+    examples: ['Hire a COO from Agents → Browse.'],
   },
 }
 

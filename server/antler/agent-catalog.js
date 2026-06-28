@@ -254,7 +254,7 @@ function chargeLocalFirstPeriod({ template, templateId, displayName, charge, bil
   return billing.getBalance();
 }
 
-async function hireFromTemplate({ templateId, name, bossToken, hirePassword, billingInterval, autoRenew, devScope, model } = {}) {
+async function hireFromTemplate({ templateId, name, bossToken, hirePassword, billingInterval, autoRenew, devScope, devEngine, model } = {}) {
   const template = await resolveTemplate(templateId);
   if (!template) {
     const err = new Error('Unknown NPC template.');
@@ -366,8 +366,23 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
   const devTeamResolver = require('./runtime/dev-team-resolver');
   const isDevHire =
     devTeamResolver.isDevTemplate(template.id) || template.role === 'it' || !!template.devEngine;
+  // Honor the boss's engine choice when the template allows picking one
+  // (e.g. it_allrounder / it_reviewer expose devEngineOptions). Fall back to
+  // the template's fixed engine otherwise.
+  const engineOptions = Array.isArray(template.devEngineOptions)
+    ? template.devEngineOptions.filter(Boolean)
+    : null;
+  const requestedEngine =
+    typeof devEngine === 'string' && devTeamResolver.DEV_ENGINES.has(devEngine)
+      ? devEngine
+      : null;
+  const engineAllowed =
+    requestedEngine && (!engineOptions || engineOptions.includes(requestedEngine));
   const resolvedDevEngine =
-    template.devEngine || devTeamResolver.engineForTemplate(template.id) || null;
+    (engineAllowed ? requestedEngine : null) ||
+    template.devEngine ||
+    devTeamResolver.engineForTemplate(template.id) ||
+    null;
   const resolvedDevScope = devTeamResolver.normalizeDevScope(
     devScope || template.devScopeDefault || { canWrite: true, canReview: true },
   );

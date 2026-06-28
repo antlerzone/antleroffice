@@ -16,12 +16,9 @@ try {
 // Variable names that represent the login username/email field.
 const LOGIN_USER_VARS = new Set(['account_email', 'username', 'email', 'login', 'user']);
 
-let chromium = null;
-try {
-  ({ chromium } = require('playwright'));
-} catch {
-  chromium = null;
-}
+// Browser driver via stealth-browser: Patchright if installed, else Playwright.
+const { chromium } = require('./stealth-browser');
+const selectorHeal = require('./selector-heal');
 
 const _sessions = new Map();
 const _pendingIntakeFile = () => path.join(engineRoot(), 'pending-intake.json');
@@ -711,35 +708,16 @@ function discoverCheckboxGroupsFromTrace() {
   return [];
 }
 
-// Self-healing click: try id / name / role+text / text (each must resolve to a
-// single visible element) before falling back to recorded coordinates. Worst
-// case is identical to the old coordinate-only behaviour (zero regression).
-async function selfHealingClick(page, evt) {
-  const el = evt.element || {};
-  const esc = (s) => String(s).replace(/(["\\])/g, '\\$1');
-  const roleByTag = { a: 'link', button: 'button' };
-  const role = el.role || roleByTag[el.tag] || '';
-  const candidates = [];
-  if (el.id) candidates.push({ level: 1, method: 'id', loc: page.locator(`[id="${esc(el.id)}"]`) });
-  if (el.name) candidates.push({ level: 2, method: 'name', loc: page.locator(`[name="${esc(el.name)}"]`) });
-  if (role && el.text) candidates.push({ level: 3, method: 'role+text', loc: page.getByRole(role, { name: el.text, exact: false }) });
-  if (el.text) candidates.push({ level: 4, method: 'text', loc: page.getByText(el.text, { exact: false }) });
-  for (const c of candidates) {
-    try {
-      const n = await c.loc.count();
-      if (n === 1 && (await c.loc.isVisible())) {
-        await c.loc.click({ timeout: 3000 });
-        return { healed: c.level > 1, heal_level: c.level, method: c.method };
-      }
-    } catch {
-      /* try next candidate */
-    }
-  }
-  if (evt.mouse) {
-    await page.mouse.click(evt.mouse.x, evt.mouse.y);
-    return { healed: false, heal_level: 5, method: 'coordinates', x: evt.mouse.x, y: evt.mouse.y };
-  }
-  return { healed: false, heal_level: null, method: 'none' };
+// Self-healing click. Delegates to selector-heal, which tries selectors in a
+// reliability order AND verifies each candidate actually matches the recorded
+// element (confidence check) before clicking — so a redesigned page can't make
+// it click the wrong thing. Successful heals are logged + remembered (overlay,
+// rollbackable); all-fail returns needsHuman instead of guessing.
+async function selfHealingClick(page, evt, opts = {}) {
+  return selectorHeal.resolveClick(page, evt, {
+    workflowPath: opts.workflowPath,
+    allowCoordinates: opts.allowCoordinates,
+  });
 }
 
 // Summarise self-healing for one row's replay steps, for the batch result table.
@@ -795,7 +773,7 @@ async function simulateOnce({ workflow_name, slow_mo_ms = 300, row = null, accou
         steps.push({ seq: evt.seq, action: 'navigate', url: evt.url, screenshot: shot });
       }
       if (evt.type === 'click') {
-        const healed = await selfHealingClick(page, evt);
+        const healed = await selfHealingClick(page, evt, { workflowPath });
         steps.push({ seq: evt.seq, action: 'click', ...healed });
       }
       if (evt.type === 'input' && evt.variable) {

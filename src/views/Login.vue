@@ -409,4 +409,29 @@ function openSignUp() {
 }
 
 .login-btn--secondary {
-  marg
+  margin-top: 0;
+}
+
+.login-hint {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .login-left {
+    display: none;
+  }
+
+  .login-right {
+    padding: 24px;
+  }
+
+  .login-mobile-brand {
+    display: flex;
+  }
+}
+</style>
+

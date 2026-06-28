@@ -539,4 +539,63 @@ class WhisperPhraseDetector:
         if len(words) < 2:
             return None
         for i in range(min(4, len(words) - 1)):
-        
+            greet = words[i].lower()
+            if greet not in _JARVIS_GREETING_PREFIXES:
+                continue
+            name = words[i + 1].lower()
+            if name not in _JARVIS_SOUNDALIKES and not _sounds_like_jarvis(name):
+                continue
+            for phrase in jarvis_phrases:
+                if phrase.startswith(greet) or (
+                    phrase.startswith('hey') and greet in ('hej', 'hello', 'hallo', 'hiya', 'heya')
+                ):
+                    return phrase
+                if phrase.startswith('hi') and greet == 'hi':
+                    return phrase
+            return jarvis_phrases[0]
+        return None
+
+
+def build_frame_detector(config: dict[str, Any]) -> FrameWakeDetector | None:
+    engine = str(config.get('wakeEngine') or 'openwakeword').lower()
+    phrases = list(config.get('wakePhrases') or [])
+    sensitivity = float(config.get('sensitivity') or 0.5)
+
+    if engine == 'whisper':
+        return None
+
+    if engine == 'openwakeword':
+        try:
+            det = OpenWakeWordDetector(phrases, sensitivity=sensitivity)
+            wlog(f'build_frame_detector OK engine=openwakeword phrases={phrases}')
+            return det
+        except Exception as exc:
+            print(f'[listener] openWakeWord init failed: {exc}', flush=True)
+            wlog(f'build_frame_detector FAILED engine=openwakeword err={exc!r} phrases={phrases}')
+            return None
+
+    if engine == 'porcupine':
+        try:
+            return PorcupineDetector(
+                phrases,
+                access_key=str(config.get('porcupineAccessKey') or ''),
+                sensitivity=sensitivity,
+                keyword_paths=list(config.get('porcupineKeywordPaths') or []),
+            )
+        except Exception as exc:
+            print(f'[listener] Porcupine init failed: {exc}', flush=True)
+            return None
+
+    return None
+
+
+def needs_whisper_fallback(config: dict[str, Any]) -> bool:
+    if bool(config.get('wakeRequireStt', True)):
+        return True
+    engine = str(config.get('wakeEngine') or 'openwakeword').lower()
+    phrases = list(config.get('wakePhrases') or [])
+    if engine == 'whisper':
+        return True
+    if not phrases:
+        return False
+    return _phrase_needs_whisper_fallback(phrases, engine)

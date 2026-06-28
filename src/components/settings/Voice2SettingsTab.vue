@@ -79,4 +79,89 @@ const isExternal = computed(() => settings.ttsProvider !== 'openai')
               <NButton :loading="genBusy" @click="generateGreeting">{{ t('voice2.settings.generate') }}</NButton>
             </NSpace>
             <NText depth="3" style="font-size:12px">{{ t('voice2.settings.greetingHint') }}</NText>
-    
+          </NSpace>
+        </NFormItem>
+
+        <NFormItem :label="t('voice2.settings.sleepPhrases')">
+          <NSpace vertical :size="6" style="width:100%">
+            <NSpace v-for="(_, i) in settings.sleepPhrases" :key="i" :size="8" :wrap="false" align="center" style="width:100%">
+              <NInput v-model:value="settings.sleepPhrases[i]" :placeholder="t('voice2.settings.sleepPhrasesPlaceholder')" />
+              <NButton quaternary circle :title="t('voice2.settings.removeRow')" @click="removeRow(settings.sleepPhrases, i)">🗑️</NButton>
+            </NSpace>
+            <NButton dashed size="small" @click="addRow(settings.sleepPhrases)">＋ {{ t('voice2.settings.addRow') }}</NButton>
+            <NText depth="3" style="font-size:12px">{{ t('voice2.settings.sleepPhrasesHint') }}</NText>
+          </NSpace>
+        </NFormItem>
+
+        <NFormItem :label="t('voice2.settings.sleepReply')">
+          <NSpace vertical :size="4" style="width:100%">
+            <NInput v-model:value="settings.sleepReply" :placeholder="t('voice2.settings.sleepReplyPlaceholder')" />
+            <NText depth="3" style="font-size:12px">{{ t('voice2.settings.sleepReplyHint') }}</NText>
+          </NSpace>
+        </NFormItem>
+
+        <NFormItem :label="t('voice2.settings.alwaysListen')">
+          <NSpace vertical :size="4" style="width:100%">
+            <NSwitch v-model:value="settings.localWake" />
+            <NText depth="3" style="font-size:12px">{{ t('voice2.settings.alwaysListenHint') }}</NText>
+          </NSpace>
+        </NFormItem>
+
+        <NFormItem :label="t('voice2.settings.wakePhrase')">
+          <NSpace vertical :size="6" style="width:100%">
+            <NSpace v-for="(_, i) in settings.wakePhrases" :key="i" :size="8" :wrap="false" align="center" style="width:100%">
+              <NInput v-model:value="settings.wakePhrases[i]" placeholder="邓紫棋" />
+              <NButton
+                quaternary circle
+                :disabled="settings.wakePhrases.length <= 1"
+                :title="t('voice2.settings.removeRow')"
+                @click="removeRow(settings.wakePhrases, i)"
+              >🗑️</NButton>
+            </NSpace>
+            <NSpace :size="8">
+              <NButton dashed size="small" @click="addRow(settings.wakePhrases)">＋ {{ t('voice2.settings.addRow') }}</NButton>
+              <NButton size="small" type="primary" :loading="wakeBusy" @click="applyWakeWord">{{ t('voice2.settings.applyWake') }}</NButton>
+            </NSpace>
+            <NText depth="3" style="font-size:12px">{{ t('voice2.settings.wakePhraseHint') }}</NText>
+          </NSpace>
+        </NFormItem>
+
+        <NFormItem :label="t('voice2.settings.model')">
+          <NInput v-model:value="settings.model" placeholder="gpt-realtime" />
+        </NFormItem>
+      </NForm>
+    </NCard>
+
+    <NCard :title="t('voice2.settings.ttsTitle')" :class="cardClass" size="small">
+      <NForm label-placement="left" :label-width="120">
+        <NFormItem :label="t('voice2.settings.provider')">
+          <NSelect v-model:value="settings.ttsProvider" :options="ttsOptions" style="max-width:280px" />
+        </NFormItem>
+
+        <NFormItem v-if="settings.ttsProvider === 'openai'" :label="t('voice2.settings.voice')">
+          <NSelect v-model:value="settings.voice" :options="voiceOptions" style="max-width:280px" />
+        </NFormItem>
+
+        <NFormItem v-if="settings.ttsProvider === 'elevenlabs'" :label="t('voice2.settings.elevenKey')">
+          <NInput v-model:value="settings.elevenLabsKey" type="password" show-password-on="click" placeholder="el_..." />
+        </NFormItem>
+        <NFormItem v-if="settings.ttsProvider === 'elevenlabs'" :label="t('voice2.settings.elevenVoiceId')">
+          <NInput v-model:value="settings.elevenVoiceId" placeholder="e.g. 21m00Tcm4TlvDq8ikWAM" />
+        </NFormItem>
+
+        <NFormItem v-if="settings.ttsProvider === 'fish'" :label="t('voice2.settings.fishKey')">
+          <NInput v-model:value="settings.fishKey" type="password" show-password-on="click" placeholder="fish_..." />
+        </NFormItem>
+        <NFormItem v-if="settings.ttsProvider === 'fish'" :label="t('voice2.settings.fishVoiceId')">
+          <NInput v-model:value="settings.fishVoiceId" placeholder="Fish referenceId" />
+        </NFormItem>
+
+        <NText v-if="isExternal" depth="3" style="font-size:12px">{{ t('voice2.settings.externalHint') }}</NText>
+      </NForm>
+    </NCard>
+
+    <NCard :class="cardClass" size="small">
+      <NText depth="3" style="font-size:12px">{{ t('voice2.settings.keyNote') }}</NText>
+    </NCard>
+  </NSpace>
+</template>

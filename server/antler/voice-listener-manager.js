@@ -418,4 +418,7 @@ module.exports = {
   setListenerMode,
   setListenerSpeaking,
   getStandupPlaybackState,
-  setStandupPlaybackSta
+  setStandupPlaybackState,
+  clearStandupPlaybackState,
+  isWakeOnlyPhrase,
+};

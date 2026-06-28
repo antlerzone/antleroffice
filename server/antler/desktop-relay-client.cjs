@@ -157,4 +157,29 @@ function connect(ecsToken) {
     if (/Unexpected server response: 4\d\d/.test(msg)) {
       fatal = true;
       console.log(`[Relay] 远程中转端点不可用(${msg})，已停止重连。本地语音/COO 不受影响。`);
-    } el
+    } else {
+      console.log('[Relay] Connection error:', msg);
+    }
+    relayConnected = false;
+  });
+
+  return { ok: true };
+}
+
+function startFromBossSession(session) {
+  const token = session?.ecsAccessToken;
+  if (!token || !auth.ecsBaseUrl()) return;
+  connect(token);
+}
+
+function stop() {
+  disconnect();
+}
+
+module.exports = {
+  connect,
+  startFromBossSession,
+  stop,
+  getPublicGatewayUrl,
+  isRelayConnected: () => relayConnected,
+};

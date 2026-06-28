@@ -8,16 +8,50 @@ const voicePersona = require('./voice-persona');
 
 const VOICE_MODEL = 'gpt-4o-mini';
 
+// Greeting / small-talk / noise realtime may pick up (the summon greeting's tail, an
+// ambient sound). These must never reach an intent — the COO would greet back. Real
+// office commands are longer and specific.
+const GREETING_NOISE = [
+  'good morning', 'good afternoon', 'good evening', 'good morning sir',
+  'how can i help', 'how can i help you', 'how can i help you today',
+  'hello', 'hi', 'hey', 'hey there', 'how are you', 'how are you doing',
+  'whats up', "what's up", 'good day', 'morning', 'thank you', 'thanks', 'thank you sir',
+  '你好', '早上好', '早安', '在吗', '请问有什么可以帮您', '需要我为您安排什么吗', '谢谢',
+];
+const WAKE_NAMES = ['jarvis', 'javis', 'jervis', 'jarvic', 'jarvees', 'travis', 'harvis', 'jervais'];
+function isLowValueUtterance(text) {
+  const norm = String(text || '').toLowerCase().replace(/[^a-z0-9一-鿿\s]/g, '').trim();
+  if (!norm) return true;
+  const hasCjk = /[一-鿿]/.test(norm);
+  if (!hasCjk && norm.replace(/\s+/g, '').length < 4) return true;
+  const words = norm.split(/\s+/);
+  const lastWord = words[words.length - 1];
+  if (WAKE_NAMES.includes(norm) || (words.length <= 2 && WAKE_NAMES.includes(lastWord))) return true;
+  for (const g of GREETING_NOISE) {
+    if (norm === g || norm.startsWith(`${g} `) || norm.endsWith(` ${g}`)) return true;
+  }
+  return false;
+}
+
 function langHint(replyLanguage) {
   if (replyLanguage === 'zh') return 'Reply in Simplified Chinese. Short spoken sentences.';
   if (replyLanguage === 'en') return 'Reply in English. Short spoken sentences.';
   return 'Match the boss language. Short spoken sentences.';
 }
 
+// The summon system already greeted the boss out loud, so realtime must never greet or
+// make small talk — otherwise it produces a second greeting ("the office is running
+// smoothly, what would you like me to handle?"). Answer the actual request only.
+const NO_GREETING_RULE =
+  'IMPORTANT: Do NOT greet, welcome, or make small talk — the boss has already been greeted. '
+  + 'Never say things like "good morning", "how can I help", or "the office is running smoothly". '
+  + 'Answer ONLY the actual request. If there is no real question or the input is just a greeting '
+  + 'or unclear noise, reply with an empty string (say nothing at all).';
+
 function buildPersonaSystem({ personaEnabled, honorific, personaPrompt, replyLanguage }) {
-  if (!personaEnabled) return langHint(replyLanguage);
+  if (!personaEnabled) return `${langHint(replyLanguage)}\n\n${NO_GREETING_RULE}`;
   const base = voicePersona.buildJarvisPersonaSnippet(honorific || 'boss', personaPrompt, replyLanguage);
-  return `${langHint(replyLanguage)}\n\n${base}`;
+  return `${langHint(replyLanguage)}\n\n${base}\n\n${NO_GREETING_RULE}`;
 }
 
 function emit(onEvent, payload) {
@@ -245,6 +279,13 @@ async function runRealtimeTurn({
   if (!trimmed) {
     emit(onEvent, { type: 'error', error: 'empty utterance' });
     return { ok: false, error: 'empty utterance' };
+  }
+  // Greeting / small-talk / noise must never reach an intent (especially the COO, which
+  // would reply with its own greeting "Hello sir, how can I assist you today?"). The
+  // summon system already greeted — realtime answers real requests only.
+  if (isLowValueUtterance(trimmed)) {
+    emit(onEvent, { type: 'intent', intent: 'noise', query: trimmed });
+    return { ok: true, intent: 'noise', text: '' };
   }
   if (!apiKey) {
     emit(onEvent, { type: 'error', error: 'No OpenAI API key configured' });

@@ -6,6 +6,44 @@ const OPENAI_HOST = 'api.openai.com';
 const OPENAI_SESSION_PATH = '/v1/realtime/client_secrets';
 const OPENAI_DEFAULT_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 
+// The ONE office tool. The model hands any office/business task to the COO verbatim;
+// the COO (OpenClaw) does all the real analysis/execution — the model needs to know
+// nothing about Bukku/invoices/etc.
+const FORWARD_TO_COO_TOOL = {
+  type: 'function',
+  name: 'forward_to_coo',
+  description:
+    "Hand an office or business task to the COO — the office's executive agent that can "
+    + "create invoices/quotes, post to accounting (Bukku), look up clients/projects, assign work "
+    + "to staff, and report on what the office did. Call this for ANY request about the user's "
+    + "own office, business, clients, staff, accounting, schedule, reports, or 'what did X do'. "
+    + "Do NOT call it for general chit-chat, jokes, or world knowledge — answer those yourself. "
+    + "Before calling, first say a brief spoken acknowledgement (e.g. 'Got it, let me handle that'). "
+    + "The COO may reply with a follow-up question (needsBossInput) — voice it and call again with "
+    + "the user's answer to continue.",
+  parameters: {
+    type: 'object',
+    properties: {
+      instruction: {
+        type: 'string',
+        description:
+          "The user's request passed through verbatim, in their original language — exactly as if "
+          + "they had typed it to the COO in boss chat. Do not summarise or translate.",
+      },
+    },
+    required: ['instruction'],
+  },
+};
+
+// Default behaviour rules, always prepended to the session instructions.
+const DEFAULT_REALTIME_BEHAVIOR =
+  "You are the boss's voice assistant for their office. Two kinds of input:\n"
+  + "1) Office/business tasks (invoices, accounting, clients, staff, projects, reports, 'what did X do') "
+  + "→ FIRST give a short spoken acknowledgement, THEN call forward_to_coo with the request verbatim. "
+  + "When its result returns, speak it naturally. If it returns a follow-up question, ask the user.\n"
+  + "2) General chit-chat, jokes, or world knowledge → answer directly yourself, no tool.\n"
+  + "Keep replies short and spoken-friendly. Always acknowledge immediately so the user never waits in silence.";
+
 function httpsPost(host, path, headers, body) {
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body);
@@ -33,7 +71,12 @@ async function createOpenAISession({ apiKey, model, voice, useAudioOut, systemPr
   const sessionModel = model || OPENAI_DEFAULT_MODEL;
   const sessionConfig = { type: 'realtime', model: sessionModel };
   if (useAudioOut && voice) sessionConfig.voice = voice;
-  if (systemPrompt && systemPrompt.trim()) sessionConfig.instructions = systemPrompt.trim();
+  // Always prepend the behaviour rules; append caller-supplied office context if any.
+  const extra = systemPrompt && systemPrompt.trim() ? '\n\n' + systemPrompt.trim() : '';
+  sessionConfig.instructions = DEFAULT_REALTIME_BEHAVIOR + extra;
+  // Give the model its single office tool.
+  sessionConfig.tools = [FORWARD_TO_COO_TOOL];
+  sessionConfig.tool_choice = 'auto';
   const requestBody = { session: sessionConfig };
   console.log('[voice-realtime] POST', OPENAI_SESSION_PATH, JSON.stringify(requestBody));
   const { status, body: json, raw } = await httpsPost(
@@ -251,6 +294,41 @@ function registerRealtimeRoutes(app) {
         send({ type: 'done', ok: false });
       }
       res.end();
+    }
+  });
+
+  // forward_to_coo relay — the OpenAI Realtime model calls a `forward_to_coo` tool
+  // with the boss's instruction (verbatim). We pipe it straight into the existing
+  // boss→COO channel (OpenClaw gateway), exactly like typing in boss chat. The COO
+  // does the real analysis/execution. `needsBossInput` signals a follow-up question
+  // (multi-turn): the model should voice it and the next call reuses the same threadId.
+  app.post('/api/voice/realtime/coo', async function(req, res) {
+    try {
+      const body = req.body || {};
+      const instruction = String(body.instruction || '').trim();
+      if (!instruction) return res.status(400).json({ ok: false, error: 'instruction is required' });
+      const ownerKey = String(body.ownerKey || 'local:boss').trim() || 'local:boss';
+      // Stable threadId keeps the COO conversation continuous across follow-ups.
+      const threadId = String(body.threadId || ('voice-' + ownerKey)).trim();
+
+      const cooChat = require('./runtime/openclaw-gateway-chat');
+      const result = await cooChat.run({
+        instruction,
+        agentId: 'main',
+        threadId,
+        ownerKey,
+        timeoutMs: Number(body.timeoutMs) || 180000,
+      });
+
+      res.json({
+        ok: result.ok !== false,
+        text: result.text || '',
+        needsBossInput: !!result.needsBossInput,
+        threadId,
+        error: result.ok === false ? (result.error || 'COO call failed') : undefined,
+      });
+    } catch (e) {
+      res.status(503).json({ ok: false, error: e.message || String(e) });
     }
   });
 }

@@ -325,7 +325,7 @@ async function main() {
       throw new Error(JSON.stringify(resolved));
     }
     const rag = require('./rag');
-    const ctx = rag.context('secretary', 'coliving ops');
+    const ctx = await rag.context('secretary', 'coliving ops');
     if (!ctx.includes('Reference material')) throw new Error('RAG context missing reference text');
     pass('pending choice → reference RAG', `${resolved.chunks} chunks`);
   } catch (e) {

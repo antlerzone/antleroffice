@@ -848,4 +848,167 @@ export function useVoiceWake() {
   async function repairStaleListenerFlags() {
     if (wakeFlowInProgress) return
     const now = Date.now()
-    t
+    try {
+      const res = await api.get<{
+        health?: { data?: { state?: { mode?: string } } }
+        config?: { realtimeSessionActive?: boolean; summonSessionEngaged?: boolean }
+      }>('/api/voice/listener/status', { timeoutMs: 3000 })
+      const listenerMode = res.health?.data?.state?.mode
+      const staleSummon = res.config?.summonSessionEngaged === true
+      const staleRealtime = res.config?.realtimeSessionActive === true && !realtime.isActive.value
+      const clientEngaged = summonSessionActive.value || isSummonEngaged()
+
+      if (!clientEngaged && (staleSummon || staleRealtime) && now - lastStaleRealtimeRepairAt >= 15_000) {
+        lastStaleRealtimeRepairAt = now
+        summonWarn('clearing stale listener session flags (was blocking sleep wake)')
+        await setListenerSummonSession(false)
+      }
+      if (
+        summonSessionActive.value &&
+        mode.value === 'sleep' &&
+        !realtime.isActive.value &&
+        !wakeFlowInProgress
+      ) {
+        summonWarn('repair: stale summonSessionActive while sleep — clearing')
+        clearSummonSession()
+        await setListenerSummonSession(false)
+        await setMode('sleep')
+        return
+      }
+      if (!clientEngaged && (listenerMode === 'active' || listenerMode === 'speaking')) {
+        const orphanSince = listenerOrphanActiveSince || (listenerOrphanActiveSince = now)
+        const speakingNow = now - lastMicAboveVadAt < 2500
+        if (speakingNow) {
+          summonVerbose('listener orphan-active during speech — deferring sleep repair')
+        } else if (now - orphanSince >= 4000) {
+          listenerOrphanActiveSince = 0
+          await forceListenerSleep('client sleep / listener active mismatch')
+        }
+      } else {
+        listenerOrphanActiveSince = 0
+      }
+      const clientWantsListenerActive =
+        mode.value === 'active' || mode.value === 'speaking' || realtime.isActive.value
+      if (clientWantsListenerActive && listenerMode === 'sleep' && !realtime.isActive.value) {
+        summonVerbose('client engaged but listener sleep — resync listener mode (no greeting)')
+        await setMode(mode.value === 'speaking' ? 'speaking' : 'active')
+        await setListenerSummonSession(true)
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function startListenerResync() {
+    if (listenerResyncTimer) return
+    listenerResyncTimer = setInterval(() => {
+      void repairStaleListenerFlags()
+    }, 5000)
+  }
+
+  async function bootstrap() {
+    if (bootstrapPromise) return bootstrapPromise
+    bootstrapPromise = bootstrapInner().finally(() => {
+      bootstrapPromise = null
+    })
+    return bootstrapPromise
+  }
+
+  async function bootstrapInner() {
+    if (!isSummonHost()) {
+      summonInfo('bootstrap skipped — summon only runs in Electron or localhost dev')
+      return
+    }
+    if (!settings.value.summon.globalListenEnabled) {
+      summonInfo('bootstrap skipped — global listen disabled (Summon settings)')
+      return
+    }
+    console.log(`%c[summon] ${VOICE_BUILD}`, 'color:#0a0;font-weight:bold')
+    summonInfo('bootstrap start', {
+      wakeEngine: 'openwakeword',
+      wakePhrases: effectiveWakePhrases(),
+      clipPhrases: Object.keys(settings.value.summon.wakePhraseClips || {}),
+    })
+    if (!isSummonEngaged()) {
+      await setListenerSummonSession(false)
+      await setMode('sleep')
+    } else {
+      summonLog('bootstrap — keeping engaged summon session')
+    }
+    await syncListenerConfig()
+    await repairStaleListenerFlags()
+    connectEvents()
+    startListenerResync()
+    startMicMonitor()
+    if (!summonIdleHookInstalled && typeof window !== 'undefined') {
+      summonIdleHookInstalled = true
+      window.addEventListener('antler:summon-idle', () => {
+        void endSummonSession('client-idle-timeout')
+      })
+    }
+    summonBanner('ready — filter DevTools console by [summon]', {
+      wakePhrases: effectiveWakePhrases(),
+      replyLanguage: settings.value.voice.replyLanguage,
+      greeting: resolvedSampleReply.value.slice(0, 80),
+      sse: '/api/voice/listener/events',
+      verbose: "localStorage.setItem('antleroffice-summon-debug','1')",
+    })
+    if (isElectronApp()) {
+      const status = await window.antlerDesktop?.voiceWakeGetStatus?.()
+      if (
+        summonSessionActive.value &&
+        (status?.state?.mode === 'active' || status?.state?.mode === 'speaking')
+      ) {
+        mode.value = status.state.mode
+      }
+      window.antlerDesktop?.onVoiceWakeState?.((state) => {
+        summonLog('desktop state', state)
+        if (!summonSessionActive.value) return
+        if (state.mode === 'active' || state.mode === 'speaking') mode.value = state.mode
+        else mode.value = 'sleep'
+      })
+    }
+  }
+
+  if (!summonSettingsWatchInstalled) {
+    summonSettingsWatchInstalled = true
+    watch(
+      () => settings.value.summon,
+      () => {
+        scheduleSyncListenerConfig()
+      },
+      { deep: true },
+    )
+
+    watch(
+      () => [settings.value.persona, settings.value.voice.replyLanguage, honorific.value, boss.chatOwnerKey],
+      () => {
+        scheduleSyncListenerConfig()
+      },
+      { deep: true },
+    )
+
+    watch(
+      () => realtime.isActive.value,
+      () => {
+        if (summonSessionActive.value) scheduleSyncListenerConfig()
+      },
+    )
+  }
+
+  return {
+    mode,
+    connected,
+    lastTranscript,
+    lastReply,
+    realtime,
+    syncListenerConfig,
+    setMode,
+    notifySpeaking,
+    bootstrap,
+    disconnectEvents,
+    endSummonSession,
+    toggleSummonSession,
+    isSummonEngaged,
+  }
+}

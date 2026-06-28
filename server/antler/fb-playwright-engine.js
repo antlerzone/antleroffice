@@ -8,12 +8,8 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const store = require('./store');
 
-let chromium = null;
-try {
-  ({ chromium } = require('playwright'));
-} catch {
-  chromium = null;
-}
+// Browser driver via stealth-browser: Patchright if installed, else Playwright.
+const { chromium } = require('./stealth-browser');
 
 const _sessions = new Map();
 const _timers = new Map();

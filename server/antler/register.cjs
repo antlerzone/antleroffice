@@ -929,7 +929,7 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
   app.post('/api/config/agents/hire', async (req, res) => {
     try {
-      const { templateId, name, hirePassword, billingInterval, autoRenew, devScope, model } = req.body || {};
+      const { templateId, name, hirePassword, billingInterval, autoRenew, devScope, devEngine, model } = req.body || {};
       const bossToken = req.headers['x-boss-token'] || req.body?.token;
       const result = await agentCatalog.hireFromTemplate({
         templateId,
@@ -939,6 +939,7 @@ function registerAntlerRoutes(app, hooks = {}) {
         billingInterval,
         autoRenew,
         devScope,
+        devEngine,
         model,
       });
       auth.refreshAllSessionCredits();

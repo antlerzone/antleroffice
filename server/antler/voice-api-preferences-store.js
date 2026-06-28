@@ -63,12 +63,24 @@ function openclawOpenAiKeyConfigured() {
   return oc.hasProviderApiKey('openai');
 }
 
+// Last 4 chars of the configured OpenAI key — for a masked UI hint only.
+// The full key never leaves the backend.
+function openclawOpenAiKeyLast4() {
+  try {
+    const k = String(oc.readProviderApiKey('openai') || '').trim();
+    return k.length >= 4 ? k.slice(-4) : '';
+  } catch {
+    return '';
+  }
+}
+
 function publicView(row) {
   const norm = normalizeRow(row);
   return {
     hasSttKey: fieldIsSet(norm.sttApiKey),
     openaiSttModel: norm.openaiSttModel,
     openclawOpenAiKeyConfigured: openclawOpenAiKeyConfigured(),
+    openaiKeyLast4: openclawOpenAiKeyConfigured() ? openclawOpenAiKeyLast4() : '',
   };
 }
 

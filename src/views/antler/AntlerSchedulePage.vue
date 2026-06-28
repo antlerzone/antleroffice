@@ -232,7 +232,7 @@ onMounted(() => refresh())
     </div>
 
     <p class="hint">
-      Recurring work for your agents — e.g. daily report through COO or CEO. Finished runs appear as summaries in Complete Job.
+      Recurring work for your agents — e.g. daily report through your COO. Finished runs appear as summaries in Complete Job.
     </p>
 
     <div v-if="available && (jobs.length || loading)" class="schedule-toolbar">
@@ -340,7 +340,7 @@ onMounted(() => refresh())
     </div>
 
     <NModal v-model:show="addOpen" preset="card" title="Add schedule" style="max-width: 520px">
-      <p class="hint">Assign recurring work. Most offices route through COO, then CEO delegates to specialists.</p>
+      <p class="hint">Assign recurring work. Most offices route through the COO, who delegates to specialists.</p>
       <label class="modal-label">Job name</label>
       <input v-model="form.name" type="text" class="field" placeholder="e.g. Daily report" />
       <label class="modal-label">Agent</label>

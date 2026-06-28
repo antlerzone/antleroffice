@@ -78,18 +78,17 @@ const MCP_DEFS = {
     skipProbeOnHire: true,
   },
   // Candidate MCP: only installed when the user picks Bukku during onboarding.
+  // Verified 2026-06-28 against @centry-digital/bukku-mcp README (169 tools).
   bukku: {
     slug: 'bukku',
     name: 'Bukku Accounting',
     transport: 'stdio',
     command: 'npx',
-    // TODO(verify): exact npm package name of the Bukku MCP.
-    args: ['-y', '@futureconnectd/bukku-mcp'],
+    args: ['-y', '@centry-digital/bukku-mcp'],
     suggestedAuthType: 'api_key',
     skipProbeOnHire: true,
-    // Saved account (username = subdomain, password = access token) -> MCP env.
-    // TODO(verify): exact env var names expected by bukku-mcp.
-    accountEnv: { username: 'BUKKU_SUBDOMAIN', password: 'BUKKU_ACCESS_TOKEN' },
+    // Saved account (username = company subdomain, password = API token) -> MCP env.
+    accountEnv: { username: 'BUKKU_COMPANY_SUBDOMAIN', password: 'BUKKU_API_TOKEN' },
   },
 };
 

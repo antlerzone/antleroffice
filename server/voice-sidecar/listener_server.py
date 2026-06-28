@@ -1554,4 +1554,137 @@ class Handler(BaseHTTPRequestHandler):
             with _state_lock:
                 state_copy = dict(_state)
             with _detector_lock:
-        
+                clap_active = _clap_detector is not None
+                clap_threshold = _clap_detector._threshold if _clap_detector else 2500.0
+            sens = float(_config.get('sensitivity') or 0.5)
+            vad_thr = _vad_threshold(sens)
+            peak = 0 if _peak_rms != _peak_rms else round(_peak_rms)
+            current = 0 if _current_rms != _current_rms else round(_current_rms)
+            raw = 0 if _raw_rms != _raw_rms else round(_raw_rms)
+            _json(self, 200, {
+                'ready': True,
+                'state': state_copy,
+                'clapDetectorActive': clap_active,
+                'clapThreshold': clap_threshold,
+                'peakRms': peak,
+                'currentRms': current,
+                'rawRms': raw,
+                'vadThreshold': round(vad_thr),
+                'micGain': MIC_GAIN,
+                'maxTotalGain': MAX_TOTAL_GAIN,
+                'inputDevice': _input_device,
+            })
+            return
+        if path == '/devices':
+            try:
+                import sounddevice as sd  # type: ignore
+
+                _json(self, 200, {'ok': True, 'devices': _list_input_devices(sd), 'active': _input_device})
+            except Exception as exc:
+                _json(self, 500, {'ok': False, 'error': str(exc)})
+            return
+        if path == '/status':
+            with _state_lock:
+                _json(self, 200, {'ok': True, **dict(_state), 'config': dict(_config)})
+            return
+        self.send_error(404)
+
+    def do_POST(self) -> None:
+        path = self.path.split('?')[0]
+        length = int(self.headers.get('Content-Length', '0'))
+        raw = self.rfile.read(length) if length else b'{}'
+        try:
+            body = json.loads(raw.decode('utf-8') or '{}')
+        except json.JSONDecodeError:
+            _json(self, 400, {'ok': False, 'error': 'Invalid JSON'})
+            return
+
+        if path == '/config':
+            body = body or {}
+            _config.update(body)
+            if 'realtimeSessionActive' in body:
+                _config['realtimeSessionActive'] = bool(body['realtimeSessionActive'])
+            if 'summonSessionEngaged' in body:
+                _config['summonSessionEngaged'] = bool(body['summonSessionEngaged'])
+            elif str(_state.get('mode') or 'sleep') == 'sleep':
+                _config['summonSessionEngaged'] = False
+            if 'realtimeSessionActive' not in body and 'summonSessionEngaged' not in body:
+                if str(_state.get('mode') or 'sleep') == 'sleep':
+                    _config['realtimeSessionActive'] = False
+            if _config_fingerprint(_config) != _config_token:
+                _rebuild_detectors()
+            with _state_lock:
+                _state['global_listen'] = bool(_config.get('globalListenEnabled', True))
+            if _config.get('globalListenEnabled', True):
+                _ensure_mic_thread()
+            with _state_lock:
+                _json(self, 200, {'ok': True, 'config': dict(_config), 'state': dict(_state)})
+            return
+
+        if path == '/mode':
+            mode = str(body.get('mode') or 'sleep').lower()
+            if mode in ('sleep', 'active', 'speaking'):
+                with _state_lock:
+                    _state['mode'] = mode
+                    if mode == 'active':
+                        _state['last_wake_at'] = time.time()
+                    if mode == 'sleep':
+                        _state['last_wake_at'] = None
+                        _state['speaking'] = False
+                        _state['barge_in'] = False
+                        _config['realtimeSessionActive'] = False
+                        _config['summonSessionEngaged'] = False
+                if mode == 'sleep':
+                    with _detector_lock:
+                        if _frame_detector:
+                            _frame_detector.reset()
+            with _state_lock:
+                _json(self, 200, {'ok': True, 'state': dict(_state)})
+            return
+
+        if path == '/speaking':
+            global _last_speaking_end_at
+            with _state_lock:
+                was_speaking = bool(_state.get('speaking'))
+                _state['speaking'] = bool(body.get('speaking'))
+                _state['barge_in'] = bool(body.get('bargeIn')) if _state['speaking'] else False
+                if _state['speaking']:
+                    if _state['barge_in']:
+                        _state['mode'] = 'active'
+                        _state['last_wake_at'] = time.time()
+                    else:
+                        _state['mode'] = 'speaking'
+                    # TTS / greeting playback counts as summon activity.
+                    if _state.get('last_wake_at'):
+                        _state['last_wake_at'] = time.time()
+                else:
+                    if was_speaking:
+                        _last_speaking_end_at = time.time()
+                    if _state['mode'] == 'speaking':
+                        _state['mode'] = 'active' if _state.get('last_wake_at') else 'sleep'
+                _json(self, 200, {'ok': True, 'state': dict(_state)})
+            if not body.get('speaking'):
+                _block_wake_for(WAKE_BLOCK_AFTER_SPEAKING_SEC)
+                with _detector_lock:
+                    if _frame_detector:
+                        _frame_detector.reset()
+            return
+
+        if path == '/wake':
+            _emit_wake()
+            with _state_lock:
+                _json(self, 200, {'ok': True, 'state': dict(_state)})
+            return
+
+        self.send_error(404)
+
+
+def main() -> None:
+    print(f'[listener] on http://{HOST}:{PORT} callback={CALLBACK_URL}', flush=True)
+    _ensure_mic_thread()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server.serve_forever()
+
+
+if __name__ == '__main__':
+    main()

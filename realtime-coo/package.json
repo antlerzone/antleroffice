@@ -1,0 +1,15 @@
+{
+  "name": "antler-realtime-coo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AntlerOffice 语音新版：OpenAI Realtime 直接听+说，COO 做成 MCP 给它调。与 AntlerOffice2 主项目目录分离。",
+  "type": "commonjs",
+  "scripts": {
+    "mcp": "node server/coo-mcp.js",
+    "app": "node server/app.js",
+    "dev": "node server/dev.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -76,14 +76,19 @@ function ceoAgentOrFallback() {
 }
 
 function migrateOfficeAgents() {
-  // Remove any legacy secretary agent from state
-  const legacySec = office.getAgent('secretary');
-  if (legacySec && legacySec.id === 'secretary') {
-    office.removeAgent('secretary');
+  // Remove any legacy secretary agent from state (match by role, not the
+  // generated npc id, so seeded/persisted secretaries are reliably cleared).
+  for (const a of [...office.state.agents]) {
+    if (a.role === 'secretary') {
+      office.removeAgent(a.id);
+    }
   }
 
-  const cooStation = office.ensureRole(COO_ROLE, 'COO', 5);
-  if (!cooStation.userAgentId) {
+  // NOTE: We no longer auto-create a COO station here. New users start with an
+  // empty office and hire a COO from Browse. If a COO already exists (hired, or
+  // grandfathered by register.cjs), only normalize it — never create one.
+  const cooStation = office.getAgent(COO_ROLE);
+  if (cooStation && !cooStation.userAgentId) {
     office.setAgent(cooStation.id, {
       label: 'COO',
       npcState: 'resting',
@@ -113,12 +118,16 @@ function migrateOfficeAgents() {
     office.removeAgent(legacyCeoVacant.id);
   }
 
-  const itJunior = office.ensureRole(IT_JUNIOR_ROLE, 'IT Junior', 3);
-  office.setAgent(itJunior.id, {
-    label: office.getAgent(IT_JUNIOR_ROLE)?.label || 'IT Junior',
-    npcState: 'resting',
-    bubbleText: '',
-  });
+  // IT Junior is no longer auto-seeded. New users start empty. If one was hired
+  // or grandfathered, just normalize its label; never create one here.
+  const itJunior = office.getAgent(IT_JUNIOR_ROLE);
+  if (itJunior) {
+    office.setAgent(itJunior.id, {
+      label: itJunior.label || 'IT Junior',
+      npcState: 'resting',
+      bubbleText: '',
+    });
+  }
 }
 
 module.exports = {

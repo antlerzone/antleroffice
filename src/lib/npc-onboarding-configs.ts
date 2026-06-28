@@ -638,6 +638,36 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
     ],
     steps: [],
   },
+  cto: {
+    templateId: 'cto',
+    greeting: '老板好！我是 CTO，负责出技术主意、统筹大项目，也是团队里唯一能动 ECS 服务器的人。',
+    capabilities: ['给技术建议与方案', '统筹复杂开发任务', '审查代码', '部署 / 上线到 ECS（需您批准）'],
+    completionHint: '跟 COO 说：「问 CTO 这个功能该怎么设计」',
+    extraPersonality: [
+      { id: 'strategic', label: '战略眼光', emoji: '♟️' },
+      { id: 'technical', label: '技术专精', emoji: '⌨️' },
+    ],
+    steps: [
+      {
+        id: 'enable_ssh',
+        type: 'choice',
+        question: '现在就给 CTO 开通服务器（SSH）访问吗？',
+        hint: '默认不开最安全。开通后，CTO 每次操作服务器仍需您逐次批准；IT Engineer 和 Reviewer 永远碰不到服务器。之后也能随时跟 COO 说「开通 / 关闭服务器访问」来调整。',
+        options: [
+          { value: 'no', label: '暂时不开（推荐）', emoji: '🔒', hint: 'CTO 先只做技术建议和统筹，碰不到服务器' },
+          { value: 'yes', label: '现在开通 SSH', emoji: '🔓', hint: '仍需每次操作时您点头批准' },
+        ],
+      },
+      {
+        id: 'ssh_enabled_note',
+        type: 'info',
+        showWhen: { stepId: 'enable_ssh', value: 'yes' },
+        title: '已开通服务器访问',
+        hint: '服务器地址和登录用户可以稍后在 Settings → Dev tools 填写，或直接跟 COO 说「把服务器地址设成 …」。每次真正操作服务器前，CTO 都会回来请您批准。',
+        optional: true,
+      },
+    ],
+  },
 }
 
 // ── Public helpers ─────────────────────────────────────────────────────────────

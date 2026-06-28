@@ -3,7 +3,7 @@
 const DEPARTMENTS = [
   {
     role: 'secretary',
-    label: 'Secretary',
+    label: 'COO',
     charSprite: 0,
     skillId: null,
     routable: false,
@@ -146,9 +146,11 @@ function residents() {
   return DEPARTMENTS;
 }
 
-// Built-in office NPCs on boot: Secretary (free front door) + COO station (vacant until hired).
+// Built-in office NPCs on boot: NONE. New users start with an empty office and
+// must hire a COO from Browse. Existing users keep their COO via the
+// grandfather path in register.cjs (see office-flags).
 function defaults() {
-  return DEPARTMENTS.filter((d) => d.role === 'secretary' || d.role === 'coo');
+  return [];
 }
 
 function route(instruction) {

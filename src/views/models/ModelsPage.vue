@@ -42,7 +42,6 @@ import {
 } from '@/lib/masked-api-key'
 import type { DataTableColumns } from 'naive-ui'
 import type { ConfigPatch, ModelProviderConfig, OpenClawConfig } from '@/api/types'
-import RetellApiKeyCard from '@/components/settings/RetellApiKeyCard.vue'
 
 const configStore = useConfigStore()
 const wsStore = useWebSocketStore()
@@ -2432,8 +2431,6 @@ function handleCreateProviderClick() {
       </div>
 
     </NCard>
-
-    <RetellApiKeyCard class="models-default-model-card" />
 
     <NCard :title="t('pages.models.defaultModel.title')" class="models-default-model-card">
       <NAlert type="info" :bordered="false" style="margin-bottom: 12px;">

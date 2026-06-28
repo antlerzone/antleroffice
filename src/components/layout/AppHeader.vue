@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useLocaleStore } from '@/stores/locale'
 import { useWebSocketStore } from '@/stores/websocket'
 import ConnectionStatus from '@/components/common/ConnectionStatus.vue'
-import SummonHeaderStatus from '@/components/common/SummonHeaderStatus.vue'
+import Voice2Status from '@/components/antler/Voice2Status.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -77,7 +77,7 @@ async function handleLogout() {
     </div>
 
     <NSpace :size="8" align="center">
-      <SummonHeaderStatus />
+      <Voice2Status />
       <ConnectionStatus />
 
       <NTooltip>

@@ -27,6 +27,54 @@
   --text: var(--text-color, #e8eaed);
 }
 
+/* ── Teleported overlays (naive-ui modals/dialogs mount under <body>, OUTSIDE
+   .antler-v1-root). data-theme lives on <html>, so define the same theme vars
+   at the document level too — otherwise modal text loses its color and turns
+   invisible (e.g. the Hire dialog). ─────────────────────────────────────────── */
+:root {
+  --panel: var(--bg-card, #1e222d);
+  --panel-2: var(--bg-muted, #252a36);
+  --line: var(--border-color, rgba(255, 255, 255, 0.12));
+  --muted: var(--text-color-3, rgba(255, 255, 255, 0.55));
+  --text: var(--text-color, #e8eaed);
+}
+[data-theme="light"] {
+  --panel: var(--bg-card, #f4f6fa);
+  --panel-2: var(--bg-muted, #eaeef5);
+  --line: var(--border-color, rgba(0, 0, 0, 0.16));
+  --muted: var(--text-color-3, rgba(0, 0, 0, 0.45));
+  --text: var(--text-color, #1a1a2e);
+}
+[data-theme="dark"] {
+  --panel: var(--bg-card, #1e222d);
+  --panel-2: var(--bg-muted, #252a36);
+  --line: var(--border-color, rgba(255, 255, 255, 0.12));
+  --muted: var(--text-color-3, rgba(255, 255, 255, 0.55));
+  --text: var(--text-color, #e8eaed);
+}
+
+/* Belt-and-suspenders: force naive-ui dialog text to follow the theme, in case
+   a child class' color variable fails to resolve outside .antler-v1-root.
+   Covers the Hire dialog and every other teleported modal. */
+[data-theme="light"] .n-card,
+[data-theme="light"] .n-modal,
+[data-theme="light"] .n-modal-body-wrapper,
+[data-theme="light"] .n-card__content {
+  color: #1a1a2e;
+}
+[data-theme="light"] .n-card .hint,
+[data-theme="light"] .n-modal .hint,
+[data-theme="light"] .n-card .channels-filter-label,
+[data-theme="light"] .n-modal .channels-filter-label {
+  color: rgba(0, 0, 0, 0.55);
+}
+[data-theme="dark"] .n-card,
+[data-theme="dark"] .n-modal,
+[data-theme="dark"] .n-modal-body-wrapper,
+[data-theme="dark"] .n-card__content {
+  color: #e8eaed;
+}
+
 .antler-v1-root .btn {
   background: var(--accent);
   color: #1a1205;
@@ -430,10 +478,28 @@
 /* 鈹€鈹€ Agents Browse: NPC market cards 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .npc-market-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)); /* always 4 per row on desktop */
   gap: 20px;
   width: 100%;
   margin-top: 12px;
+}
+
+@media (max-width: 1280px) {
+  .npc-market-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 920px) {
+  .npc-market-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .npc-market-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 #agentBrowseGrid.npc-market-grid > .warn-banner {
@@ -449,6 +515,19 @@
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
   overflow: hidden;
   transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+  /* Dark theme default: dark card + light text via --text */
+  color: var(--text);
+}
+
+.npc-market-name {
+  color: var(--text);
+}
+
+/* Light theme: card follows the page — light background, dark text */
+[data-theme="light"] .npc-market-card {
+  background: linear-gradient(165deg, #ffffff 0%, #f4f6fa 100%);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
 }
 
 .npc-market-card:hover {
@@ -522,6 +601,27 @@
     radial-gradient(ellipse 80% 60% at 50% 100%, rgba(70, 209, 96, 0.12), transparent 55%),
     linear-gradient(180deg, rgba(20, 32, 48, 0.9), rgba(12, 16, 24, 0.95));
   background-size: 24px 24px, 24px 24px, auto, auto;
+}
+
+/* Light theme: light pixel stage so it matches the page */
+[data-theme="light"] .npc-market-preview {
+  background:
+    linear-gradient(rgba(70, 209, 96, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(70, 209, 96, 0.06) 1px, transparent 1px),
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(70, 209, 96, 0.16), transparent 55%),
+    linear-gradient(180deg, #eef2f7, #e2e8f1);
+  background-size: 24px 24px, 24px 24px, auto, auto;
+}
+
+/* On the light stage, outline the pixel character so it stays visible
+   even when the sprite itself is light-colored. */
+[data-theme="light"] .npc-market-stage canvas {
+  filter:
+    drop-shadow(1px 0 0 rgba(15, 23, 35, 0.7))
+    drop-shadow(-1px 0 0 rgba(15, 23, 35, 0.7))
+    drop-shadow(0 1px 0 rgba(15, 23, 35, 0.7))
+    drop-shadow(0 -1px 0 rgba(15, 23, 35, 0.7))
+    drop-shadow(0 3px 5px rgba(0, 0, 0, 0.25));
 }
 
 .npc-market-skin-pill {
@@ -625,6 +725,7 @@
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px 18px;
+  flex: 1 1 auto; /* fill card height so actions can pin to the bottom */
 }
 
 .npc-market-name {
@@ -672,6 +773,12 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+/* Light theme: soft green-tinted salary box instead of dark */
+[data-theme="light"] .npc-market-price {
+  background: rgba(70, 209, 96, 0.1);
+  border-color: rgba(70, 209, 96, 0.22);
+}
+
 .npc-market-price-icon {
   font-size: 22px;
   color: var(--accent-2);
@@ -688,6 +795,12 @@
   font-weight: 700;
   line-height: 1;
   color: var(--text);
+}
+
+/* "Included" label for VIP workers — smaller than the price numbers */
+.npc-market-price-text strong.npc-vip-price {
+  font-size: 16px;
+  color: var(--accent-2);
 }
 
 .npc-market-price-text span {
@@ -713,7 +826,7 @@
   gap: 8px;
   font-size: 12px;
   line-height: 1.35;
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--text);
 }
 
 .npc-market-check {
@@ -734,7 +847,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: auto; /* pin Hire/Details to the bottom; aligns across a row */
 }
 
 .npc-market-hire {
@@ -781,7 +894,7 @@
   justify-content: space-between;
   gap: 12px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--line);
   font-size: 11px;
   color: var(--muted);
 }
@@ -2041,20 +2154,23 @@
   min-width: 200px;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: #1e222d;
-  color: #e8eaed;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
   font-size: 14px;
 }
 .channels-filter {
   width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: #1e222d;
-  color: #e8eaed;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
   font-size: 13px;
-  color-scheme: dark;
+  color-scheme: dark; /* dark-mode default; light override below */
+}
+[data-theme="light"] .channels-filter {
+  color-scheme: light; /* native dropdown options follow light theme too */
 }
 
 .market-grid {
@@ -2274,20 +2390,23 @@
   min-width: 200px;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: #1e222d;
-  color: #e8eaed;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
   font-size: 14px;
 }
 .channels-filter {
   width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: #1e222d;
-  color: #e8eaed;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
   font-size: 13px;
-  color-scheme: dark;
+  color-scheme: dark; /* dark-mode default; light override below */
+}
+[data-theme="light"] .channels-filter {
+  color-scheme: light; /* native dropdown options follow light theme too */
 }
 .channels-table-wrap {
   width: 100%;

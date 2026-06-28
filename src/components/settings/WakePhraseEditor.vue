@@ -14,6 +14,7 @@ import {
 import { MicOutline, StopOutline, VolumeHighOutline } from '@vicons/ionicons5'
 import { useI18n } from 'vue-i18n'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
+import FieldHint from '@/components/settings/FieldHint.vue'
 import { useVoiceInput } from '@/composables/useVoiceInput'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import {
@@ -180,9 +181,9 @@ onUnmounted(() => {
 
 <template>
   <div class="wake-phrase-editor">
-    <NText strong>{{ t('pages.settings.voiceAssistant.summon.wakePhrases') }}</NText>
-    <NText depth="3" style="display: block; font-size: 13px; margin-top: 4px">
-      {{ t('pages.settings.voiceAssistant.summon.wakePhrasesHint') }}
+    <NText strong>
+      {{ t('pages.settings.voiceAssistant.summon.wakePhrases') }}
+      <FieldHint :text="t('pages.settings.voiceAssistant.summon.wakePhrasesHint')" />
     </NText>
 
     <NSpace v-if="wakePhrases.length" wrap style="margin-top: 12px">
@@ -229,9 +230,6 @@ onUnmounted(() => {
         </NButton>
       </NSpin>
     </NSpace>
-    <NText depth="3" style="display: block; font-size: 12px; margin-top: 6px">
-      {{ t('pages.settings.voiceAssistant.summon.recordWakeHint') }}
-    </NText>
 
     <NModal
       v-model:show="showRecordModal"

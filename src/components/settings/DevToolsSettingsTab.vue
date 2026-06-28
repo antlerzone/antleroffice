@@ -10,6 +10,7 @@ import {
   NSpace,
   NSpin,
   NSelect,
+  NSwitch,
   useMessage,
 } from 'naive-ui'
 import {
@@ -50,6 +51,9 @@ const claudeApiKeySet = ref(false)
 const claudeApiKey = ref('')
 
 const projectRootOverride = ref('')
+const ctoSshEnabled = ref(false)
+const ctoServerHost = ref('')
+const ctoServerUser = ref('')
 const installLog = ref('')
 
 const devAgents = ref<DevAgent[]>([])
@@ -107,6 +111,9 @@ async function loadStatus() {
     const settings = await settingsRes.json()
     if (settingsRes.ok && settings.ok) {
       projectRootOverride.value = settings.dev?.projectRootOverride || ''
+      ctoSshEnabled.value = !!settings.dev?.serverAccess?.sshEnabled
+      ctoServerHost.value = settings.dev?.serverAccess?.host || ''
+      ctoServerUser.value = settings.dev?.serverAccess?.user || ''
       cursorApiKeySet.value = !!settings.dev?.cursorApiKeySet
       codexApiKeySet.value = !!settings.dev?.codexApiKeySet
       claudeApiKeySet.value = !!settings.dev?.claudeApiKeySet
@@ -165,6 +172,11 @@ async function saveDevSettings() {
       devTeam: {
         writerAgentId: writerAgentId.value,
         reviewerAgentIds: reviewerAgentIds.value,
+      },
+      serverAccess: {
+        sshEnabled: ctoSshEnabled.value,
+        host: ctoServerHost.value.trim(),
+        user: ctoServerUser.value.trim(),
       },
     }
     const key = cursorApiKey.value.trim()
@@ -236,6 +248,26 @@ onMounted(() => {
               />
             </NFormItem>
             <p v-if="!devAgents.length" class="hint sm">Hire at least one Developer NPC from the marketplace.</p>
+          </NForm>
+        </div>
+
+        <div>
+          <div class="row-label">CTO server access (SSH / ECS)</div>
+          <p class="hint sm" style="margin-top: 0">
+            默认关闭。只有 CTO 能连服务器；开启后 CTO 每次操作仍需老板逐次批准。
+            IT Engineer 与 Reviewer 永远碰不到服务器。
+          </p>
+          <NSpace align="center" style="margin: 8px 0">
+            <NSwitch v-model:value="ctoSshEnabled" />
+            <span class="hint sm">{{ ctoSshEnabled ? '已开启 SSH（仍需逐次批准）' : '已锁定（CTO 无服务器权限）' }}</span>
+          </NSpace>
+          <NForm v-if="ctoSshEnabled" label-placement="top" style="max-width: 560px">
+            <NFormItem label="服务器地址 (host)" :show-feedback="false">
+              <NInput v-model:value="ctoServerHost" placeholder="e.g. 10.0.0.5 或 your-ecs-host" />
+            </NFormItem>
+            <NFormItem label="登录用户 (user)" :show-feedback="false">
+              <NInput v-model:value="ctoServerUser" placeholder="e.g. root / ec2-user" />
+            </NFormItem>
           </NForm>
         </div>
 

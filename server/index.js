@@ -4244,4 +4244,23 @@ function startHttpServer() {
 
 startHttpServer()
 
-function shutdownSe
+function shutdownServer(signal) {
+  console.log(`\nShutting down (${signal})...`)
+  cleanupAllTerminalSessions()
+  gateway.disconnect()
+  if (typeof server.closeAllConnections === 'function') {
+    server.closeAllConnections()
+  }
+  const forceExit = setTimeout(() => {
+    console.warn('[server] Force exit after shutdown timeout')
+    process.exit(0)
+  }, 2000)
+  server.close(() => {
+    clearTimeout(forceExit)
+    console.log('Server closed')
+    process.exit(0)
+  })
+}
+
+process.on('SIGINT', () => shutdownServer('SIGINT'))
+process.on('SIGTERM', () => shutdownServer('SIGTERM'))

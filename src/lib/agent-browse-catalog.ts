@@ -2,13 +2,9 @@ export type BrowseSection = 'department' | 'leadership' | 'vip' | 'all'
 
 export type MarketSection = 'department' | 'leadership'
 
-export type CatalogCategory =
-  | 'operations'
-  | 'customer'
-  | 'creative'
-  | 'growth'
-  | 'digital'
-  | 'executive'
+// Category ids are server-driven now, so this is a plain string. The literals
+// below are kept only as the built-in fallback list (CATEGORY_TABS).
+export type CatalogCategory = string
 
 export type BrowseTemplate = {
   id: string
@@ -88,21 +84,32 @@ const ROLE_CATEGORY: Record<string, CatalogCategory> = {
   ceo: 'executive',
 }
 
+// Server-driven: accept ANY non-empty category id (e.g. "finance", "product"),
+// don't force unknown ones into "operations". Empty falls back to "operations".
 export function normalizeCategory(value?: string | null): CatalogCategory {
-  const raw = String(value || '')
-    .trim()
-    .toLowerCase()
-  if (
-    raw === 'operations' ||
-    raw === 'customer' ||
-    raw === 'creative' ||
-    raw === 'growth' ||
-    raw === 'digital' ||
-    raw === 'executive'
-  ) {
-    return raw
-  }
-  return 'operations'
+  return String(value || '').trim().toLowerCase() || 'operations'
+}
+
+// Category list pushed from the server (via /api/config/agents/categories).
+// When set, it drives the tabs, labels and grouping order. Falls back to the
+// hardcoded CATEGORY_TABS below when not loaded.
+let serverCategories: { id: string; label: string; sortOrder?: number }[] | null = null
+
+export function setCatalogCategories(
+  list: { id: string; label: string; sortOrder?: number }[] | null,
+) {
+  serverCategories =
+    list && list.length
+      ? [...list].sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999))
+      : null
+}
+
+export function getCategoryTabs(): { id: CatalogCategory | ''; label: string }[] {
+  if (!serverCategories) return CATEGORY_TABS
+  return [
+    { id: '', label: 'All categories' },
+    ...serverCategories.map((c) => ({ id: c.id, label: c.label })),
+  ]
 }
 
 export function inferTemplateCategory(template: Pick<BrowseTemplate, 'category' | 'role'>): CatalogCategory {
@@ -126,7 +133,14 @@ export function templateMarketSection(template: Pick<BrowseTemplate, 'category' 
 
 export function categoryLabel(category?: string | null) {
   const id = normalizeCategory(category)
-  return CATEGORY_TABS.find((tab) => tab.id === id)?.label || 'Operations'
+  if (serverCategories) {
+    const hit = serverCategories.find((c) => c.id === id)
+    if (hit) return hit.label
+  }
+  const tab = CATEGORY_TABS.find((t) => t.id === id)
+  if (tab) return tab.label
+  // Unknown id (e.g. a new server category) → capitalize it.
+  return id.charAt(0).toUpperCase() + id.slice(1)
 }
 
 function templateVisibility(t: BrowseTemplate) {
@@ -237,20 +251,25 @@ export function filterBrowseTemplates(
 }
 
 export function groupTemplatesByCategory(templates: BrowseTemplate[]) {
-  const order: CatalogCategory[] = [
-    'operations',
-    'customer',
-    'creative',
-    'growth',
-    'digital',
-    'executive',
-  ]
   const groups = new Map<CatalogCategory, BrowseTemplate[]>()
   for (const t of templates) {
     const cat = inferTemplateCategory(t)
     const list = groups.get(cat) || []
     list.push(t)
     groups.set(cat, list)
+  }
+  // Order: follow the server category order when available; otherwise the
+  // built-in fallback. Any category present in data but missing from the
+  // configured order is appended so nothing is ever dropped.
+  const order: CatalogCategory[] = serverCategories
+    ? serverCategories.map((c) => c.id)
+    : ['operations', 'customer', 'creative', 'growth', 'digital', 'executive']
+  const seen = new Set(order)
+  for (const cat of groups.keys()) {
+    if (!seen.has(cat)) {
+      order.push(cat)
+      seen.add(cat)
+    }
   }
   return order
     .filter((cat) => groups.has(cat))

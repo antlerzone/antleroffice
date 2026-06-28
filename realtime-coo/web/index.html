@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AntlerOffice · Realtime COO（新版·本地中转）</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; max-width: 720px;
+         margin: 24px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 20px; }
+  #status { padding: 8px 12px; border-radius: 8px; background: #f0f0f0; display: inline-block; }
+  #status.on { background: #d6f5d6; }
+  #status.err { background: #f8d7da; }
+  button { font-size: 15px; padding: 10px 18px; border-radius: 8px; border: 1px solid #888;
+           background: #fff; cursor: pointer; }
+  button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  #log { margin-top: 16px; border: 1px solid #ddd; border-radius: 8px; padding: 12px;
+         height: 320px; overflow-y: auto; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  .row { margin: 10px 0; display: flex; gap: 8px; }
+  input[type=text] { flex: 1; padding: 9px 12px; border: 1px solid #aaa; border-radius: 8px; font-size: 14px; }
+  .you { color: #1a73e8; } .ai { color: #137333; } .tool { color: #b06000; } .sys { color: #888; } .err { color: #c00; }
+</style>
+</head>
+<body>
+  <h1>AntlerOffice · Realtime COO（新版）</h1>
+  <p>流程：① 点「开始」并允许麦克风 → ② 说「Hello Jarvis」唤醒 → ③ 说出你的指令，它会直接语音回你；遇到办公室/业务的事会本地调用 COO。</p>
+
+  <div class="row">
+    <button id="startBtn" class="primary">开始（Summon）</button>
+    <button id="stopBtn" disabled>停止</button>
+    <span id="status">未连接</span>
+  </div>
+
+  <div class="row">
+    <input id="textInput" type="text" placeholder="也可以打字测试（不用麦克风）：例如 帮我看看昨天各部门做了什么" />
+    <button id="sendBtn" disabled>发送</button>
+  </div>
+
+  <div id="log"></div>
+  <audio id="aiAudio" autoplay></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+function log(who, text, cls) {
+  const div = document.createElement('div');
+  div.className = cls || '';
+  div.textContent = (who ? who + '：' : '') + text;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setStatus(text, cls) { const s = $('status'); s.textContent = text; s.className = cls || ''; }
+
+let pc = null, dc = null, micStream = null;
+let aiBuf = '';
+
+async function start() {
+  $('startBtn').disabled = true;
+  setStatus('正在申请令牌…');
+  let session;
+  try {
+    const r = await fetch('/session');
+    session = await r.json();
+    if (session.error) throw new Error(session.error);
+  } catch (e) {
+    setStatus('拿令牌失败：' + e.message, 'err'); $('startBtn').disabled = false; return;
+  }
+  log('系统', 'COO 本地中转已就绪（无需隧道）✅', 'sys');
+
+  pc = new RTCPeerConnection();
+  pc.ontrack = (e) => { $('aiAudio').srcObject = e.streams[0]; };
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    pc.addTrack(micStream.getTracks()[0]);
+  } catch (e) {
+    setStatus('拿不到麦克风：' + e.message, 'err'); return;
+  }
+
+  dc = pc.createDataChannel('oai-events');
+  dc.onopen = () => { setStatus('已连接 · 说 “Hello Jarvis” 唤醒', 'on'); $('stopBtn').disabled = false; $('sendBtn').disabled = false; };
+  dc.onmessage = (e) => handleEvent(JSON.parse(e.data));
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  setStatus('正在连接 Realtime…');
+  const resp = await fetch('https://api.openai.com/v1/realtime/calls?model=' + encodeURIComponent(session.model), {
+    method: 'POST',
+    body: offer.sdp,
+    headers: { Authorization: 'Bearer ' + session.value, 'Content-Type': 'application/sdp' },
+  });
+  if (!resp.ok) { setStatus('Realtime 连接失败 HTTP ' + resp.status, 'err'); return; }
+  await pc.setRemoteDescription({ type: 'answer', sdp: await resp.text() });
+}
+
+async function handleEvent(ev) {
+  switch (ev.type) {
+    case 'conversation.item.input_audio_transcription.completed':
+      if (ev.transcript) log('你（语音）', ev.transcript.trim(), 'you');
+      break;
+    case 'response.output_audio_transcript.delta':
+    case 'response.audio_transcript.delta':
+      aiBuf += ev.delta || '';
+      break;
+    case 'response.output_audio_transcript.done':
+    case 'response.audio_transcript.done':
+      if (aiBuf.trim()) log('Jarvis', aiBuf.trim(), 'ai');
+      aiBuf = '';
+      break;
+    // —— 关键：Realtime 想用 COO 时会“喊一声”，我们在本地把它执行掉再递回去 ——
+    case 'response.function_call_arguments.done':
+      if (ev.name === 'forward_to_coo') await relayToCoo(ev);
+      break;
+    case 'error':
+      log('错误', JSON.stringify(ev.error || ev), 'err');
+      break;
+  }
+}
+
+async function relayToCoo(ev) {
+  let instruction = '';
+  try { instruction = (JSON.parse(ev.arguments || '{}').instruction || '').trim(); } catch {}
+  log('调用 COO', instruction, 'tool');
+
+  // 等太久的垫场话：超过 9 秒还没回，就让 Jarvis 说一句“还在查”，之后每 12 秒再来一句
+  let pending = true;
+  const fillers = ['还在查，再稍等一下哦', '马上好，正在整理', '稍等，快查到了'];
+  let fi = 0, fillerTimer = null;
+  const tick = () => {
+    if (!pending || !dc || dc.readyState !== 'open') return;
+    dc.send(JSON.stringify({
+      type: 'response.create',
+      response: { instructions: '用一句很短的口语告诉老板你还在查、请稍候，就说“' + fillers[fi % fillers.length] + '”，只说这一句。' },
+    }));
+    fi += 1;
+    fillerTimer = setTimeout(tick, 12000);
+  };
+  fillerTimer = setTimeout(tick, 9000);
+
+  let result = { text: '(COO 无回应)' };
+  try {
+    const r = await fetch('/coo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+    result = await r.json();
+  } catch (e) {
+    result = { text: 'COO 调用失败：' + e.message };
+  }
+  pending = false;
+  if (fillerTimer) clearTimeout(fillerTimer);
+  log('COO 回复', (result.text || '').slice(0, 800), 'tool');
+  // 把结果交回给 Realtime，让它念出来
+  dc.send(JSON.stringify({
+    type: 'conversation.item.create',
+    item: { type: 'function_call_output', call_id: ev.call_id, output: result.text || '' },
+  }));
+  dc.send(JSON.stringify({ type: 'response.create' }));
+}
+
+function sendText() {
+  const t = $('textInput').value.trim();
+  if (!t || !dc || dc.readyState !== 'open') return;
+  log('你（文字）', t, 'you');
+  dc.send(JSON.stringify({
+    type: 'conversation.item.create',
+    item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: t }] },
+  }));
+  dc.send(JSON.stringify({ type: 'response.create' }));
+  $('textInput').value = '';
+}
+
+function stop() {
+  if (dc) dc.close();
+  if (pc) pc.close();
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  pc = dc = micStream = null;
+  setStatus('已停止'); $('startBtn').disabled = false; $('stopBtn').disabled = true; $('sendBtn').disabled = true;
+}
+
+$('startBtn').onclick = start;
+$('stopBtn').onclick = stop;
+$('sendBtn').onclick = sendText;
+$('textInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
+</script>
+</body>
+</html>

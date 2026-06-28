@@ -297,6 +297,10 @@ const selectedAgent = computed(
   () => listAgents.value.find((a) => a.id === selectedAgentId.value) || null,
 )
 
+// Front-door COO present? listAgents only holds coo/secretary agents, so an
+// empty list means the user hasn't hired a COO yet.
+const hasCoo = computed(() => listAgents.value.length > 0)
+
 const composerTargetLabel = computed(() => {
   const a = selectedAgent.value
   if (!a) return 'COO'
@@ -1303,6 +1307,15 @@ onUnmounted(stopPoll)
           <!-- Main chat area -->
           <section class="bcm-main">
 
+            <!-- No COO yet → prompt to hire one from Browse -->
+            <div v-if="!hasCoo" class="bcm-no-coo">
+              <NIcon :component="ChatbubblesOutline" :size="40" style="opacity:0.3" />
+              <strong>还没有 COO</strong>
+              <p>先到 Browse 雇一个 COO。他是你的总指挥，会帮你头脑风暴、拆解计划，并把活派给各部门。</p>
+              <button type="button" class="bcm-no-coo-btn" @click="addAgent">去 Browse 雇 COO</button>
+            </div>
+
+            <template v-else>
             <!-- Thread / target bar -->
             <div class="bcm-thread-bar">
               <span class="bcm-thread-bar-title">
@@ -1444,6 +1457,7 @@ onUnmounted(stopPoll)
                   </div>
                 </div>
               </form>
+            </template>
             </template>
           </section>
         </div>
@@ -2019,6 +2033,42 @@ onUnmounted(stopPoll)
   font-size: 13px;
 }
 
+.bcm-no-coo {
+  margin: auto;
+  max-width: 320px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  color: var(--text);
+}
+.bcm-no-coo strong {
+  font-size: 15px;
+}
+.bcm-no-coo p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.bcm-no-coo-btn {
+  margin-top: 4px;
+  padding: 9px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.bcm-no-coo-btn:hover {
+  background: #1d4ed8;
+}
+
 .bcm-queue-notice {
   margin: 0;
   padding: 7px 12px;
@@ -2128,4 +2178,190 @@ onUnmounted(stopPoll)
 }
 
 .bcm-dots {
-  dis
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.bcm-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: bcm-bounce 1.4s infinite ease-in-out;
+}
+.bcm-dots span:nth-child(2) { animation-delay: 0.16s; }
+.bcm-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes bcm-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ─── Composer ─── */
+.bcm-composer {
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.bcm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.bcm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 99px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(59,130,246,0.3);
+  font-size: 11px;
+  color: var(--text);
+}
+.bcm-chip button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.bcm-composer-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  transition: border-color 0.15s;
+}
+.bcm-composer-inner:focus-within {
+  border-color: var(--accent);
+}
+
+.bcm-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 44px;
+  max-height: 160px;
+}
+.bcm-textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.bcm-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bcm-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.bcm-tool-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.07);
+  color: var(--text);
+}
+.bcm-tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.bcm-send-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity 0.12s, filter 0.12s;
+  flex-shrink: 0;
+}
+.bcm-send-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.bcm-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── Transition ─── */
+.bcm-slide-enter-active,
+.bcm-slide-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.bcm-slide-enter-from,
+.bcm-slide-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+/* ─── Light theme overrides ─── */
+.bcm-panel--light {
+  --bg: #ffffff;
+  --bg2: #f4f5f7;
+  --surface: #eaecf0;
+  --border: rgba(0,0,0,0.1);
+  --text: #111827;
+  --muted: rgba(0,0,0,0.4);
+  --accent: #2563eb;
+  --accent-dim: rgba(37,99,235,0.1);
+  --green: #16a34a;
+  --green-dim: rgba(22,163,74,0.12);
+  color-scheme: light;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
+}
+
+.bcm-panel--light .bcm-msg.boss .bcm-msg-bubble {
+  background: #2563eb;
+  color: #dbeafe;
+}
+
+.bcm-panel--light .bcm-oc-badge {
+  background: rgba(37,99,235,0.15);
+  color: #1d4ed8;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 680px) {
+  .bcm-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .bcm-sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    max-height: 100px;
+    overflow-x: auto;
+  }
+  .bcm-agent-list { max-height: unset; display: flex; }
+  .bcm-thread-list { display: flex; }
+}
+</style>

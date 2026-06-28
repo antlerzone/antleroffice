@@ -32,4 +32,14 @@ const hint = computed(() => {
     <template #trigger>
       <NTag
         :type="tag.type"
-        size="smal
+        size="small"
+        round
+        style="cursor: pointer; user-select: none;"
+        @click="tapHeader"
+      >
+        🎙️ {{ tag.label }}
+      </NTag>
+    </template>
+    {{ hint }}
+  </NTooltip>
+</template>

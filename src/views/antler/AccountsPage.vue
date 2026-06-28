@@ -5,6 +5,7 @@ import { EyeOutline, EyeOffOutline, LogoFacebook, LogoInstagram, LogoLinkedin, L
 import { useI18n } from 'vue-i18n'
 import { useWebAccounts, type BossWebAccount } from '@/composables/useWebAccounts'
 import { useBossStore } from '@/stores/boss'
+import RetellApiKeyCard from '@/components/settings/RetellApiKeyCard.vue'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -52,10 +53,25 @@ async function togglePassword(row: BossWebAccount) {
 onMounted(() => {
   refresh().catch(() => message.error(t('accounts.loadFailed')))
   fetchAccountTypes()
+  fetchTelemarketerHired()
 })
 
 function authHeaders(): Record<string, string> {
   return boss.token ? { 'X-Boss-Token': boss.token, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' }
+}
+
+// ── Telemarketer hire status (gates the Retell API key card) ───────────────
+const telemarketerHired = ref(false)
+
+async function fetchTelemarketerHired() {
+  try {
+    const res = await fetch('/api/config/agents/catalog', { headers: authHeaders() })
+    const data = await res.json()
+    const templates: Array<{ id?: string; hired?: boolean }> = data.templates ?? []
+    telemarketerHired.value = templates.some((tpl) => tpl.id === 'telemarketer' && tpl.hired === true)
+  } catch {
+    telemarketerHired.value = false
+  }
 }
 
 // ── Account types from installed bundles ───────────────────────────────────
@@ -81,13 +97,19 @@ const accountTypes = ref<AccountType[]>([])
 
 async function fetchAccountTypes() {
   try {
-    const res = await fetch('/api/catalog/all-required-accounts', { headers: authHeaders() })
+    // Only accounts required by currently hired NPCs — the page stays empty of
+    // manual-entry options until a hired NPC actually needs an account.
+    const res = await fetch('/api/catalog/hired-required-accounts', { headers: authHeaders() })
     const data = await res.json()
     if (data.ok) accountTypes.value = data.accounts ?? []
   } catch {
     // Ignore — fallback to empty list
   }
 }
+
+// Manual account entry (Add Account / Browser Login) only appears once a hired
+// NPC requires at least one account.
+const canAddAccounts = computed(() => accountTypes.value.length > 0)
 
 const CATEGORY_ORDER = ['utility', 'banking', 'government', 'saas', 'other']
 const CATEGORY_ICONS: Record<string, string> = {
@@ -396,7 +418,7 @@ function addAnother() {
     <!-- ── Page header ── -->
     <div class="view-head">
       <h1 class="view-title">{{ t('accounts.title') }}</h1>
-      <div class="head-actions">
+      <div v-if="canAddAccounts" class="head-actions">
         <button type="button" class="btn primary connect-btn" @click="openAddAccount">
           <NIcon :size="16"><KeyOutline /></NIcon>
           Add Account
@@ -407,6 +429,9 @@ function addAnother() {
         </button>
       </div>
     </div>
+
+    <!-- ── Retell API key (only when Telemarketer NPC is hired) ── -->
+    <RetellApiKeyCard v-if="telemarketerHired" class="accounts-retell-card" />
 
     <!-- ── Search bar ── -->
     <div v-if="!loading" class="accounts-list-bar">
@@ -773,6 +798,8 @@ function addAnother() {
   align-items: center;
   gap: 6px;
 }
+
+.accounts-retell-card { margin-bottom: 16px; }
 
 /* ── Search / table ── */
 .accounts-list-bar { margin-bottom: 12px; }

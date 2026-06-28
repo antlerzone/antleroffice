@@ -17,6 +17,22 @@ interface Skin {
   name: string
   palette: number
   hueShift?: number
+  // Paid-skin overlay (from ECS store; builtins default to owned/free)
+  priceCredits?: number
+  owned?: boolean
+  isDefault?: boolean
+  previewUrl?: string | null
+  assetUrl?: string | null
+}
+
+interface StoreSkin {
+  id: string
+  name: string
+  priceCredits: number
+  isDefault: boolean
+  owned: boolean
+  previewUrl?: string | null
+  assetUrl?: string | null
 }
 
 interface OfficeAgent {
@@ -49,9 +65,93 @@ const applyError = ref('')
 const saving = ref(false)
 const renaming = ref<string | null>(null)
 
+// Filter + search + purchase state
+const filterMode = ref<'all' | 'owned' | 'unowned'>('all')
+const searchText = ref('')
+const purchasing = ref<string | null>(null)
+
+const filteredSkins = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  return skins.value.filter((s) => {
+    const owned = s.owned !== false
+    if (filterMode.value === 'owned' && !owned) return false
+    if (filterMode.value === 'unowned' && owned) return false
+    if (q && !s.name.toLowerCase().includes(q)) return false
+    return true
+  })
+})
+
 async function loadSkins() {
   const r = await api.get<{ skins: Skin[] }>('/api/config/skins')
-  skins.value = r.skins || []
+  const base = r.skins || []
+  // Overlay paid-skin ownership/price from the ECS store. Failures are non-fatal:
+  // builtins simply stay free + owned so the page always works.
+  let overlay: Record<string, StoreSkin> = {}
+  try {
+    const store = await api.get<{ ok: boolean; skins?: StoreSkin[] }>('/api/skins/store')
+    for (const s of store.skins || []) overlay[s.id] = s
+  } catch {
+    overlay = {}
+  }
+  const baseIds = new Set(base.map((s) => s.id))
+  const builtins = base.map((s) => {
+    const o = overlay[s.id]
+    return {
+      ...s,
+      priceCredits: o ? o.priceCredits : 0,
+      isDefault: o ? o.isDefault : true,
+      owned: o ? o.owned : true, // no store entry → treat as owned builtin
+      previewUrl: o ? o.previewUrl ?? null : null,
+      assetUrl: o ? o.assetUrl ?? null : null,
+    }
+  })
+  // ECS custom skins (not builtins, not already in the local list).
+  const custom: Skin[] = Object.values(overlay)
+    .filter((o) => !o.isDefault && !baseIds.has(o.id))
+    .map((o) => ({
+      id: o.id,
+      name: o.name,
+      palette: 0,
+      hueShift: 0,
+      priceCredits: o.priceCredits,
+      isDefault: false,
+      owned: o.owned,
+      previewUrl: o.previewUrl ?? null,
+      assetUrl: o.assetUrl ?? null,
+    }))
+  skins.value = [...builtins, ...custom]
+}
+
+// A skin animates on a canvas when it's a builtin (palette) or an owned custom
+// skin with its full sprite sheet. Unpurchased custom skins show a still image.
+function animatable(skin: Skin): boolean {
+  if (!skin.previewUrl) return true // builtin palette skin
+  return skin.owned !== false && !!skin.assetUrl
+}
+function customSheet(skin: Skin): string {
+  return skin.owned !== false && skin.assetUrl ? skin.assetUrl : ''
+}
+
+async function purchaseSkin(skin: Skin) {
+  if (purchasing.value) return
+  purchasing.value = skin.id
+  try {
+    const r = await api.send<{ ok: boolean; charged?: boolean; creditBalance?: number }>(
+      'POST',
+      `/api/skins/${skin.id}/purchase`,
+      {},
+    )
+    if (r.ok) {
+      message.success(
+        r.charged ? `Purchased — ${skin.priceCredits} credits used` : 'Unlocked',
+      )
+      await refresh()
+    }
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : 'Purchase failed')
+  } finally {
+    purchasing.value = null
+  }
 }
 
 function agentsFromSnapshot(list: OfficeAgent[]): SkinTarget[] {
@@ -87,7 +187,8 @@ async function mountPreviews() {
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-palette]').forEach((canvas) => {
     const palette = Number(canvas.dataset.palette)
     const hue = Number(canvas.dataset.hue || 0)
-    registerPreview({ canvas, palette, hueShift: hue })
+    const customSrc = canvas.dataset.customSrc || null
+    registerPreview({ canvas, palette, hueShift: hue, customSrc })
   })
   startSkinPreviews()
 }
@@ -178,6 +279,10 @@ watch(
     focusAgentId.value = typeof q === 'string' ? q.trim() : ''
   },
 )
+// Re-mount canvas previews whenever the visible (filtered/searched) set changes.
+watch(filteredSkins, async () => {
+  await mountPreviews()
+})
 onUnmounted(() => stopSkinPreviews())
 </script>
 
@@ -189,16 +294,41 @@ onUnmounted(() => stopSkinPreviews())
     </p>
     <p v-else class="hint">Pick a character look — same animated previews as AntlerOffice 1.0.</p>
 
+    <div class="skin-toolbar">
+      <select v-model="filterMode" class="skin-filter" aria-label="Filter skins">
+        <option value="all">All</option>
+        <option value="owned">Purchased</option>
+        <option value="unowned">Not purchased</option>
+      </select>
+      <input
+        v-model="searchText"
+        class="skin-search"
+        type="search"
+        placeholder="Search skins by name…"
+        aria-label="Search skins"
+      />
+    </div>
+
     <div ref="gridRef" class="skin-char-grid">
-      <div v-for="skin in skins" :key="skin.id" class="skin-char-card">
+      <div v-for="skin in filteredSkins" :key="skin.id" class="skin-char-card">
         <div class="skin-char-stage">
           <canvas
+            v-if="animatable(skin)"
             :width="SKIN_CANVAS_SIZE"
             :height="SKIN_CANVAS_SIZE"
             :data-palette="skin.palette"
             :data-hue="skin.hueShift || 0"
+            :data-custom-src="customSheet(skin)"
             :aria-label="`${skin.name} character preview`"
             role="img"
+          />
+          <img
+            v-else
+            :src="skin.previewUrl || ''"
+            :width="SKIN_CANVAS_SIZE"
+            :height="SKIN_CANVAS_SIZE"
+            :alt="`${skin.name} preview`"
+            class="skin-char-img"
           />
         </div>
         <input
@@ -210,11 +340,30 @@ onUnmounted(() => stopSkinPreviews())
           @change="(e) => saveSkinName(skin, (e.target as HTMLInputElement).value)"
           @keydown.enter="(e) => (e.target as HTMLInputElement).blur()"
         />
-        <button type="button" class="btn" @click="openApply(skin)">Apply</button>
+        <span v-if="skin.owned !== false" class="skin-tag owned">{{ (skin.priceCredits || 0) > 0 ? 'Owned' : 'Free' }}</span>
+        <span v-else class="skin-tag price">{{ skin.priceCredits }} credits</span>
+        <button
+          v-if="skin.owned !== false"
+          type="button"
+          class="btn"
+          @click="openApply(skin)"
+        >
+          Apply
+        </button>
+        <button
+          v-else
+          type="button"
+          class="btn btn-buy"
+          :disabled="purchasing === skin.id"
+          @click="purchaseSkin(skin)"
+        >
+          {{ purchasing === skin.id ? 'Purchasing…' : 'Purchase' }}
+        </button>
       </div>
     </div>
 
     <p v-if="!skins.length" class="hint">No skins loaded yet.</p>
+    <p v-else-if="!filteredSkins.length" class="hint">No skins match your filter.</p>
 
     <NModal v-model:show="applyOpen" preset="card" :title="applySkin ? `Apply “${applySkin.name}”` : 'Apply skin'" style="max-width: 420px">
       <p class="hint">Choose which agent should wear this character.</p>
@@ -274,5 +423,52 @@ onUnmounted(() => stopSkinPreviews())
 .apply-error {
   color: #e88080;
   font-size: 13px;
+}
+.skin-toolbar {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 14px;
+  flex-wrap: wrap;
+}
+.skin-filter,
+.skin-search {
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #1e222d;
+  color: #e8eaed;
+  font-size: 14px;
+  box-sizing: border-box;
+  color-scheme: dark;
+}
+.skin-filter {
+  min-width: 150px;
+}
+.skin-search {
+  flex: 1;
+  min-width: 180px;
+}
+.skin-tag {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 6px;
+}
+.skin-tag.owned {
+  background: rgba(120, 200, 120, 0.18);
+  color: #8fd18f;
+}
+.skin-tag.price {
+  background: rgba(230, 200, 120, 0.18);
+  color: #e6c878;
+}
+.btn-buy {
+  background: #3b6fe0;
+  color: #fff;
+}
+.skin-char-img {
+  image-rendering: pixelated;
+  object-fit: contain;
 }
 </style>

@@ -25,23 +25,28 @@ export function usePersonaVoice() {
   )
 
   function personaSpeakOptions(): SpeakOptions | undefined {
-    const rv = settings.value.summon.replyVoice || 'default'
+    // Unified reply voice — drives summon greeting AND command replies.
+    const vo = settings.value.realtime.voiceOutput || 'openai'
     const v = settings.value.voice
     const rt = settings.value.realtime
-    if (rv === 'elevenlabs') {
+    if (vo === 'openai') {
+      return { engine: 'openai', voiceId: rt.voice || 'alloy' }
+    }
+    if (vo === 'elevenlabs') {
       const voiceId = v.elevenLabsVoiceId?.trim() || rt.elevenLabsVoiceId?.trim()
       if (cloudTtsReady('elevenlabs')) {
         return { engine: 'elevenlabs', voiceId }
       }
       return undefined
     }
-    if (rv === 'fishaudio') {
+    if (vo === 'fishaudio') {
       const voiceId = v.fishAudioVoiceId?.trim() || rt.fishAudioVoiceId?.trim()
       if (cloudTtsReady('fishaudio')) {
         return { engine: 'fishaudio', voiceId }
       }
       return undefined
     }
+    // edgetts / browser → fall through to the default Voice-tab engine (EdgeTTS / browser).
     return undefined
   }
 

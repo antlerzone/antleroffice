@@ -3,11 +3,26 @@
 //   - facts (pinned "core memory", always injected)
 //   - summaries (compressed task history)
 //   - episodes (raw task logs, compressed when backlog grows)
-// Retrieval uses BM25 with kind weighting (fact > summary > episode).
+//
+// Retrieval (UPGRADED):
+//   - Semantic first: a local, free embedding model (see embeddings.js) ranks by
+//     MEANING, so "退款要多久" matches an entry that says "回款周期" and synonyms
+//     across 中文/English. Embeddings are computed lazily and cached on each
+//     entry, then re-used.
+//   - BM25 fallback: if the semantic model isn't available, fall back to the
+//     original keyword ranking. Nothing breaks.
+//   - Cross-agent sharing: an agent also sees OTHER agents' durable facts (e.g.
+//     a customer preference the sales agent learned shows up for support),
+//     tagged with their source. Each agent still writes to its own file.
+//
+// Public API: list/append/clear/getPinned/maybeCompressEpisodes stay synchronous
+// (writers and HTTP routes are unchanged). Only getRelevant/context are async,
+// because ranking by meaning needs to embed the query.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { getDataDir } = require('./store');
+const embeddings = require('./embeddings');
 
 const KIND_WEIGHT = { fact: 2.5, summary: 1.5, episode: 1.0 };
 const MAX_ENTRIES = 1000;
@@ -22,9 +37,12 @@ function memDir() {
   return dir;
 }
 
+function safeKey(agentId) {
+  return String(agentId || 'shared').replace(/[^a-z0-9_:-]+/gi, '_');
+}
+
 function memPath(agentId) {
-  const safe = String(agentId || 'shared').replace(/[^a-z0-9_:-]+/gi, '_');
-  return path.join(memDir(), `${safe}.json`);
+  return path.join(memDir(), `${safeKey(agentId)}.json`);
 }
 
 function list(agentId) {
@@ -41,6 +59,18 @@ function write(agentId, entries) {
   return entries;
 }
 
+// Every other agent's file key (for cross-agent fact sharing).
+function otherAgentKeys(selfKey) {
+  let files = [];
+  try {
+    files = fs.readdirSync(memDir()).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const self = safeKey(selfKey);
+  return files.map((f) => f.replace(/\.json$/, '')).filter((k) => k && k !== self);
+}
+
 let seq = 0;
 function memId() {
   return `m-${Date.now().toString(36)}-${(seq++).toString(36)}`;
@@ -52,7 +82,8 @@ function isDuplicate(entries, text) {
   return entries.slice(-80).some((e) => String(e.text || '').trim().toLowerCase() === norm);
 }
 
-// kind: 'fact' | 'episode' | 'summary'
+// kind: 'fact' | 'episode' | 'summary'. Stays synchronous — embeddings are added
+// lazily at retrieval time so writers never have to await a model.
 function append(agentId, { kind = 'episode', text = '', pinned } = {}) {
   const t = String(text || '').trim();
   if (!t) return null;
@@ -77,13 +108,13 @@ function clear(agentId) {
   }
 }
 
-// ── BM25 over memory entries (kind-weighted, recency tie-break) ─────────────
+// ── BM25 over memory entries (kind-weighted) — the fallback ranker ───────────
 const STOP = new Set('the a an and or of to in is are for on with as at by be this that it from your you we our i'.split(' '));
 
 function tokenize(s) {
   return String(s || '')
     .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff\s]/g, ' ')
+    .replace(/[^a-z0-9一-鿿\s]/g, ' ')
     .split(/\s+/)
     .filter((t) => t && !STOP.has(t));
 }
@@ -102,14 +133,59 @@ function getPinned(agentId, limitChars = PINNED_CHAR_LIMIT) {
   return out.trim();
 }
 
-function getRelevant(agentId, query, k = 4) {
-  const entries = list(agentId).filter((e) => !(e.kind === 'fact' && e.pinned !== false));
-  if (!entries.length) return [];
-  const qTerms = [...new Set(tokenize(query))];
-  if (!qTerms.length) return entries.slice(-k).reverse();
+// Build the candidate pool: the agent's own non-core entries + OTHER agents'
+// durable (pinned) facts, each tagged with its source agent. Also makes sure
+// every candidate has an embedding cached (lazily embeds + persists per file).
+async function buildCandidates(agentId, { shared = true } = {}) {
+  const selfKey = safeKey(agentId);
+  const candidates = [];
 
-  const docs = entries.map((e) => ({ entry: e, terms: tokenize(e.text) }));
-  const N = docs.length;
+  // Own entries: everything except own pinned facts (those go via getPinned).
+  const own = list(agentId);
+  let ownChanged = await ensureEmbeddings(own);
+  if (ownChanged) write(agentId, own);
+  for (const e of own) {
+    if (e.kind === 'fact' && e.pinned !== false) continue;
+    candidates.push({ entry: e, agent: selfKey, own: true });
+  }
+
+  // Shared: other agents' pinned facts (durable, low-noise, worth sharing).
+  if (shared) {
+    for (const otherKey of otherAgentKeys(selfKey)) {
+      const entries = list(otherKey);
+      const facts = entries.filter((e) => e.kind === 'fact' && e.pinned !== false);
+      if (!facts.length) continue;
+      const changed = await ensureEmbeddings(facts);
+      if (changed) write(otherKey, entries); // facts are refs into entries
+      for (const e of facts) candidates.push({ entry: e, agent: otherKey, own: false });
+    }
+  }
+
+  return candidates;
+}
+
+// Lazily attach embeddings to any entries missing one. Returns true if changed.
+async function ensureEmbeddings(entries) {
+  let changed = false;
+  for (const e of entries) {
+    if (!e.emb && e.text) {
+      const v = await embeddings.embed(e.text);
+      if (v) { e.emb = v; changed = true; }
+    }
+  }
+  return changed;
+}
+
+function bm25Rank(candidates, query, k) {
+  const qTerms = [...new Set(tokenize(query))];
+  if (!qTerms.length) {
+    return candidates
+      .slice()
+      .sort((a, b) => b.entry.ts - a.entry.ts)
+      .slice(0, k);
+  }
+  const docs = candidates.map((c) => ({ c, terms: tokenize(c.entry.text) }));
+  const N = docs.length || 1;
   const avgdl = docs.reduce((s, d) => s + d.terms.length, 0) / N || 1;
   const df = {};
   for (const term of qTerms) df[term] = docs.filter((d) => d.terms.includes(term)).length;
@@ -118,38 +194,74 @@ function getRelevant(agentId, query, k = 4) {
   const b = 0.75;
   const scored = docs.map((d) => {
     const dl = d.terms.length || 1;
-    let score = KIND_WEIGHT[d.entry.kind] || 1;
+    // Kind weight MULTIPLIES the keyword-match score (it is NOT an additive
+    // baseline) — otherwise a cross-agent fact with zero keyword overlap could
+    // outrank a clearly relevant episode purely on its kind. Zero-match docs
+    // score 0 and drop out below.
+    let termScore = 0;
     for (const term of qTerms) {
       const n = df[term];
       if (!n) continue;
       const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
       const tf = d.terms.filter((t) => t === term).length;
-      score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + (b * dl) / avgdl)));
+      termScore += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + (b * dl) / avgdl)));
     }
-    return { entry: d.entry, score };
+    const score = termScore * (KIND_WEIGHT[d.c.entry.kind] || 1);
+    return { c: d.c, score };
   });
 
   return scored
     .filter((s) => s.score > 0)
-    .sort((a, b2) => b2.score - a.score || b2.entry.ts - a.entry.ts)
+    .sort((a, b2) => b2.score - a.score || b2.c.entry.ts - a.c.entry.ts)
     .slice(0, k)
-    .map((s) => s.entry);
+    .map((s) => s.c);
 }
 
-function formatHits(hits, limitChars) {
+// Semantic ranking by meaning (cosine), kind-weighted. Returns null when the
+// query can't be embedded, so the caller falls back to BM25.
+async function semanticRank(candidates, query, k) {
+  const qv = await embeddings.embed(query);
+  if (!qv) return null;
+  const scored = [];
+  for (const c of candidates) {
+    if (!c.entry.emb) continue;
+    const sim = embeddings.cosine(qv, c.entry.emb);
+    scored.push({ c, score: sim * (KIND_WEIGHT[c.entry.kind] || 1) });
+  }
+  if (!scored.length) return null;
+  return scored
+    .sort((a, b) => b.score - a.score || b.c.entry.ts - a.c.entry.ts)
+    .slice(0, k)
+    .map((s) => s.c);
+}
+
+// Async: returns ranked candidate wrappers { entry, agent, own }. Semantic first,
+// BM25 fallback. Includes cross-agent shared facts unless shared:false.
+async function getRelevant(agentId, query, k = 4, opts = {}) {
+  const candidates = await buildCandidates(agentId, opts);
+  if (!candidates.length) return [];
+  const semantic = await semanticRank(candidates, query, k);
+  return semantic || bm25Rank(candidates, query, k);
+}
+
+function formatHits(hits, limitChars, selfKey) {
   let out = '';
   for (const h of hits) {
-    const block = `- (${h.kind}) ${h.text}\n`;
+    const e = h.entry;
+    const src = h.own === false && h.agent && h.agent !== selfKey ? ` · from ${h.agent}` : '';
+    const block = `- (${e.kind}${src}) ${e.text}\n`;
     if ((out + block).length > limitChars) break;
     out += block;
   }
   return out.trim();
 }
 
-function context(agentId, query, k = 4, limitChars = PINNED_CHAR_LIMIT + RETRIEVED_CHAR_LIMIT) {
+// Async: assembled context block = own core memory (pinned) + related memory
+// (semantic/BM25, cross-agent).
+async function context(agentId, query, k = 4, limitChars = PINNED_CHAR_LIMIT + RETRIEVED_CHAR_LIMIT) {
   const pinned = getPinned(agentId, PINNED_CHAR_LIMIT);
-  const hits = getRelevant(agentId, query, k);
-  const retrieved = formatHits(hits, Math.max(200, limitChars - pinned.length - 32));
+  const hits = await getRelevant(agentId, query, k);
+  const retrieved = formatHits(hits, Math.max(200, limitChars - pinned.length - 32), safeKey(agentId));
 
   const parts = [];
   if (pinned) parts.push(`Core memory:\n${pinned}`);

@@ -4,6 +4,7 @@ import { NCard, NSpace, NSwitch, NText, NInput, NButton, NAlert, useMessage } fr
 import { useI18n } from 'vue-i18n'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useVoiceAssistantSettings } from '@/composables/useVoiceAssistantSettings'
+import FieldHint from '@/components/settings/FieldHint.vue'
 import { DEFAULT_JARVIS_PERSONA_PROMPT, DEFAULT_JARVIS_PERSONA_PROMPT_ZH, resolveReplyLanguage } from '@/constants/voiceAssistant'
 
 const props = withDefaults(
@@ -60,26 +61,23 @@ onMounted(() => {
     :class="cardClass"
   >
     <NSpace vertical :size="16">
-      <NAlert type="info" :show-icon="false">
-        {{ t('pages.settings.voiceAssistant.persona.hint') }}
-      </NAlert>
-
       <div>
         <NSwitch :value="settings.persona.enabled" @update:value="(v) => updatePersona({ enabled: v })" />
         <NText style="margin-left: 8px">{{ t('pages.settings.voiceAssistant.persona.enableJarvis') }}</NText>
+        <FieldHint :text="t('pages.settings.voiceAssistant.persona.hint')" />
       </div>
 
       <NSpace vertical :size="8" class="persona-honorific-field">
-        <NText strong tag="div">{{ t('pages.settings.voiceAssistant.persona.honorific') }}</NText>
+        <NText strong tag="div">
+          {{ t('pages.settings.voiceAssistant.persona.honorific') }}
+          <FieldHint :text="t('pages.settings.voiceAssistant.persona.honorificHint')" />
+        </NText>
         <NInput
           :value="settings.persona.honorific"
           :placeholder="t('pages.settings.voiceAssistant.persona.honorificPlaceholder')"
           style="max-width: 320px"
           @update:value="(v) => updatePersona({ honorific: v })"
         />
-        <NText depth="3" style="font-size: 13px">
-          {{ t('pages.settings.voiceAssistant.persona.honorificHint') }}
-        </NText>
       </NSpace>
     </NSpace>
   </NCard>

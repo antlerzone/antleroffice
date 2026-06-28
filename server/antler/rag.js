@@ -1,13 +1,26 @@
 // Fully-local RAG: split fed documents into chunks and retrieve the most
-// relevant ones with BM25 (keyword ranking, no external embedding calls). This
-// is what turns "drag in a PDF/URL" into focused context for OpenClaw, instead
-// of dumping whole files into the prompt.
+// relevant ones for a query. This is what turns "drag in a PDF/URL" into focused
+// context for OpenClaw, instead of dumping whole files into the prompt.
+//
+// Retrieval (UPGRADED):
+//   - Semantic first: the same free local embedding model as memory (see
+//     embeddings.js) ranks chunks by MEANING, so "退款要多久" finds a chunk that
+//     says "回款周期" even with no shared keywords, across 中文/English.
+//     Embeddings are computed lazily per chunk and cached.
+//   - BM25 fallback: if the model isn't available, fall back to the original
+//     keyword ranking. Nothing breaks.
+//   Knowledge stays per-agent (a PDF dragged to one agent is NOT shared with
+//   others — unlike memory facts).
+//
+// index/listSources/removeSource/clear stay synchronous (HTTP routes unchanged);
+// only retrieve/context are async, because ranking by meaning embeds the query.
 //
 // Per-agent store lives at data/knowledge/<agentId>/chunks.json.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { getDataDir } = require('./store');
+const embeddings = require('./embeddings');
 
 function agentDir(agentId) {
   const dir = path.join(getDataDir(), 'knowledge', String(agentId).replace(/[^a-z0-9_:-]+/gi, '_'));
@@ -112,9 +125,19 @@ function tokenize(s) {
     .filter((t) => t && !STOP.has(t));
 }
 
-function retrieve(agentId, query, k = 4) {
-  const chunks = readChunks(agentId);
-  if (!chunks.length) return [];
+// Lazily attach embeddings to any chunks missing one. Returns true if changed.
+async function ensureEmbeddings(chunks) {
+  let changed = false;
+  for (const c of chunks) {
+    if (!c.emb && c.text) {
+      const v = await embeddings.embed(c.text);
+      if (v) { c.emb = v; changed = true; }
+    }
+  }
+  return changed;
+}
+
+function bm25Retrieve(chunks, query, k) {
   const qTerms = [...new Set(tokenize(query))];
   if (!qTerms.length) return [];
 
@@ -149,9 +172,35 @@ function retrieve(agentId, query, k = 4) {
     .map((s) => s.chunk);
 }
 
+// Semantic ranking by meaning (cosine). Returns null when the query can't be
+// embedded or no chunk has an embedding yet, so the caller falls back to BM25.
+async function semanticRetrieve(chunks, query, k) {
+  const qv = await embeddings.embed(query);
+  if (!qv) return null;
+  const scored = [];
+  for (const c of chunks) {
+    if (!c.emb) continue;
+    scored.push({ chunk: c, score: embeddings.cosine(qv, c.emb) });
+  }
+  if (!scored.length) return null;
+  return scored
+    .sort((a, b2) => b2.score - a.score)
+    .slice(0, k)
+    .map((s) => s.chunk);
+}
+
+// Async: semantic-first, BM25 fallback. Lazily embeds + caches chunk vectors.
+async function retrieve(agentId, query, k = 4) {
+  const chunks = readChunks(agentId);
+  if (!chunks.length) return [];
+  if (await ensureEmbeddings(chunks)) writeChunks(agentId, chunks);
+  const semantic = await semanticRetrieve(chunks, query, k);
+  return semantic || bm25Retrieve(chunks, query, k);
+}
+
 // Build a compact context block from the top chunks for a query.
-function context(agentId, query, k = 4, limitChars = 2400) {
-  const hits = retrieve(agentId, query, k);
+async function context(agentId, query, k = 4, limitChars = 2400) {
+  const hits = await retrieve(agentId, query, k);
   if (!hits.length) return '';
   let out = '';
   for (const h of hits) {

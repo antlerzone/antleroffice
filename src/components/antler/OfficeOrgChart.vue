@@ -245,10 +245,6 @@ const secretaryNode = computed(() => {
   const dept = roster.value.find((d) => d.role === 'secretary')
   return dept ? resolveNode(dept) : null
 })
-const cooNode = computed(() => {
-  const dept = roster.value.find((d) => d.role === 'coo')
-  return dept ? resolveNode(dept) : null
-})
 const departmentGroups = computed(() =>
   roster.value.filter((d) => d.routable).map(buildDepartmentGroup),
 )
@@ -445,40 +441,6 @@ defineExpose({ refresh })
                 <span class="tag built">Front door · OpenClaw main</span>
                 <span class="pill" :class="{ ok: secretaryNode.npcState === 'working' }">
                   {{ secretaryNode.npcState === 'working' ? 'Working' : 'Idle' }}
-                </span>
-              </div>
-            </article>
-          </div>
-
-          <div class="org-connector org-connector-down" aria-hidden="true" />
-
-          <!-- CEO (below COO) -->
-          <div class="org-level org-level-leader">
-            <article
-              v-if="cooNode"
-              class="org-node org-node-ceo"
-              :class="cooNode.kind === 'vacant' ? 'org-node-inactive' : 'org-node-active'"
-            >
-              <div class="org-node-avatar">
-                <canvas
-                  :width="AGENT_SKIN_CANVAS"
-                  :height="AGENT_SKIN_CANVAS"
-                  :data-palette="cooNode.charSprite"
-                  :data-hue="cooNode.hueShift"
-                  :aria-label="cooNode.occupantName || cooNode.deptLabel"
-                />
-              </div>
-              <div class="org-node-body">
-                <span class="org-node-dept">{{ cooNode.deptLabel }}</span>
-                <strong class="org-node-name">{{ cooNode.occupantName || 'Vacant' }}</strong>
-                <span v-if="cooNode.kind === 'vacant'" class="tag">Hire from Browse</span>
-                <span v-else class="tag">Hired</span>
-                <span
-                  v-if="cooNode.kind !== 'vacant'"
-                  class="pill"
-                  :class="{ ok: cooNode.npcState === 'working' }"
-                >
-                  {{ cooNode.npcState === 'working' ? 'Working' : 'Idle' }}
                 </span>
               </div>
             </article>

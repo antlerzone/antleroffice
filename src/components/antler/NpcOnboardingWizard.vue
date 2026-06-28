@@ -232,12 +232,29 @@ function nextSetupStep() {
   }
 }
 
+async function applyCtoServerChoice() {
+  // CTO onboarding: if boss chose to enable SSH, flip gate 1 on. Host/user and
+  // per-action approval are handled later (Settings or COO chat).
+  if (props.templateId !== 'cto') return
+  if (answers.value['enable_ssh'] !== 'yes') return
+  try {
+    await fetch('/api/dev/settings', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ serverAccess: { sshEnabled: true } }),
+    })
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function completeDone() {
   // Cancel any open browser session
   if (captureSessionId.value) {
     cancelCapture().catch(() => {})
     captureSessionId.value = ''
   }
+  void applyCtoServerChoice()
   phase.value = 'done'
 }
 
