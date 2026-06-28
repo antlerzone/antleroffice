@@ -22,7 +22,7 @@ function readDevPort() {
 }
 
 const DEV_PORT = readDevPort();
-let resolvedDevUrl = `http://127.0.0.1:${DEV_PORT}`;
+let resolvedDevUrl = `http://localhost:${DEV_PORT}`;
 /** Dev loads Vite (live source); production loads backend static dist on PORT. */
 function appBaseUrl() {
   return isDev ? resolvedDevUrl : SERVER_URL;
@@ -59,17 +59,20 @@ async function discoverViteDevUrl() {
     if (!port || seen.has(port)) continue;
     seen.add(port);
     if (await probeAntlerVitePort(port)) {
-      return `http://127.0.0.1:${port}`;
+      return `http://localhost:${port}`;
     }
   }
-  return `http://127.0.0.1:${DEV_PORT}`;
+  return `http://localhost:${DEV_PORT}`;
 }
 
 let mainWindow = null;
 let tray = null;
 let voiceWakeService = null;
 let serverProcess = null;
+let openclawProcess = null;
 let pendingAuthUrl = null;
+
+const OPENCLAW_GATEWAY_PORT = 18789;
 
 function projectRoot() {
   return path.join(__dirname, '..');
@@ -187,6 +190,72 @@ function startServer() {
     serverProcess = null;
     if (code && code !== 0) console.error('[AntlerOffice] server exited', code);
   });
+}
+
+/**
+ * Returns true only if a HEALTHY OpenClaw gateway is answering on the port.
+ * A live gateway also serves HTTP (canvas host) on the same port, so any HTTP
+ * response means it's up. A dead/zombie listener that squats the port but
+ * resets connections will error/timeout here and be treated as unhealthy.
+ */
+function isGatewayHealthy(port = OPENCLAW_GATEWAY_PORT, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/__openclaw__/canvas/' }, (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Start the local OpenClaw gateway (ws://localhost:18789) that holds the agents
+ * and data AntlerOffice connects to. Runs in both dev and packaged mode so the
+ * app and its gateway come up together. Skips only if a healthy gateway already
+ * answers; otherwise starts with --force to clear any dead listener on the port.
+ * Requires the global openclaw CLI (npm i -g openclaw).
+ */
+async function startOpenClaw() {
+  if (openclawProcess) return;
+  if (await isGatewayHealthy()) {
+    console.log(`[AntlerOffice] OpenClaw gateway already healthy on ${OPENCLAW_GATEWAY_PORT}, skipping launch.`);
+    return;
+  }
+  try {
+    console.log('[AntlerOffice] Starting OpenClaw gateway (openclaw gateway run --force)...');
+    openclawProcess = spawn('openclaw gateway run --force', {
+      cwd: projectRoot(),
+      env: { ...process.env },
+      stdio: 'inherit',
+      shell: true,
+      windowsHide: true,
+    });
+    openclawProcess.on('exit', (code) => {
+      openclawProcess = null;
+      if (code && code !== 0) console.error('[AntlerOffice] OpenClaw gateway exited', code);
+    });
+    openclawProcess.on('error', (err) => {
+      openclawProcess = null;
+      console.error('[AntlerOffice] Could not launch OpenClaw. Is it installed? Run: npm i -g openclaw. Detail:', err.message);
+    });
+  } catch (e) {
+    openclawProcess = null;
+    console.error('[AntlerOffice] Could not start OpenClaw:', e.message);
+  }
+}
+
+/** Stop the OpenClaw gateway, but only if WE started it (leave a pre-existing one alone). */
+function stopOpenClaw() {
+  if (!openclawProcess) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/pid', String(openclawProcess.pid), '/T', '/F'], { windowsHide: true });
+    } else {
+      openclawProcess.kill();
+    }
+  } catch { /* */ }
+  openclawProcess = null;
 }
 
 function attachNavigationGuards(win) {
@@ -352,7 +421,7 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   console.error(
     isDev
-      ? '[AntlerOffice] Dev Electron is already running. Close the existing window (tray → Quit), then retry.'
+      ? '[AntlerOffice] Dev Electron is already running. Close the existing window (tray -> Quit), then retry.'
       : '[AntlerOffice] Another instance is already running. Quit it, then retry.',
   );
   app.quit();
@@ -380,6 +449,9 @@ if (!gotLock) {
 
     registerAntlerofficeProtocol();
 
+    // Start the local OpenClaw gateway alongside the app (both dev and packaged).
+    startOpenClaw();
+
     // Dev: backend runs via `npm run dev:electron` (system Node). Packaged: spawn from Electron.
     if (!isDev) startServer();
     try {
@@ -387,10 +459,10 @@ if (!gotLock) {
       if (isDev) {
         resolvedDevUrl = await discoverViteDevUrl();
         await waitForVite();
-        console.log(`[AntlerOffice] Dev UI at ${resolvedDevUrl} (API proxy → ${SERVER_URL})`);
-        if (resolvedDevUrl !== `http://127.0.0.1:${DEV_PORT}`) {
+        console.log(`[AntlerOffice] Dev UI at ${resolvedDevUrl} (API proxy -> ${SERVER_URL})`);
+        if (resolvedDevUrl !== `http://localhost:${DEV_PORT}`) {
           console.warn(
-            `[AntlerOffice] Port ${DEV_PORT} is not AntlerOffice — using ${resolvedDevUrl}. Free port ${DEV_PORT} or update DEV_PORT in .env.`,
+            `[AntlerOffice] Port ${DEV_PORT} is not AntlerOffice - using ${resolvedDevUrl}. Free port ${DEV_PORT} or update DEV_PORT in .env.`,
           );
         }
       }
@@ -422,6 +494,7 @@ if (!gotLock) {
     if (serverProcess) {
       try { serverProcess.kill(); } catch { /* */ }
     }
+    stopOpenClaw();
     try {
       const voiceSidecarManager = require(path.join(projectRoot(), 'server', 'antler', 'voice-sidecar-manager'));
       voiceSidecarManager.stopCosyVoiceSidecar();
