@@ -999,7 +999,7 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
   }
 
   if (pending.phase === 'project_path') {
-    const root = devPipeline.tryResolveProjectFromBossMessage(raw, resolvedThreadId);
+    const root = await devPipeline.tryResolveProjectFromBossMessage(raw, resolvedThreadId);
     if (!root) {
       chat('system', 'Could not resolve that path. Reply with a full path or list number.', resolvedThreadId, {
         authorName: 'Office',

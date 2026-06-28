@@ -356,9 +356,16 @@ async function pushApprovedDev(threadId) {
   };
 }
 
-function tryResolveProjectFromBossMessage(text, threadId) {
+async function tryResolveProjectFromBossMessage(text, threadId) {
   const pending = ceoPending.get(threadId);
   if (!pending || pending.phase !== 'project_path') return null;
+  // Boss pasted a GitHub/git URL -> clone it, then use the local clone.
+  if (projectResolver.isGitUrl(text)) {
+    const res = projectResolver.cloneRepoToWorkspace(text);
+    if (!res.ok) return null;
+    ceoPending.patch(threadId, { projectRoot: res.projectRoot, phase: null });
+    return res.projectRoot;
+  }
   const choice = projectResolver.parseBossProjectChoice(text, pending.candidates || []);
   if (!choice) return null;
   ceoPending.patch(threadId, { projectRoot: choice, phase: null });

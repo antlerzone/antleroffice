@@ -32,6 +32,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'clone_github_repo',
+    description:
+      'Download (git clone) a repo to the local workspace ONLY when the boss wants the IT team to actually work on / edit it. Do NOT clone a repo the boss only wants to look at, reference, or compare — for reference, just read it (web/browse) without cloning. Returns the local project path; reuses an existing clone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Repo URL, e.g. https://github.com/owner/repo or git@github.com:owner/repo.git' },
+      },
+      required: ['url'],
+    },
+  },
+  {
     name: 'retell_status',
     description:
       'Check whether the boss has connected their Retell AI account (API key). Returns configured:true/false and a masked key preview. Call this before trying to place calls.',
@@ -153,7 +165,9 @@ const TOOLS = [
         },
         skills: {
           type: 'array',
-          description: 'ECS skill defs: [{ id, name, system }].',
+          description:
+            'ECS skill defs: [{ id, name, system, description? }]. Each ships at version 1; ' +
+            'description is auto-generated from system when omitted.',
         },
         openclawSkills: {
           type: 'array',
@@ -625,6 +639,21 @@ async function callTool(name, args = {}) {
           : 'SSH is locked — CTO has no server access.',
       });
     }
+    case 'clone_github_repo': {
+      const resolver = require('./runtime/dev-project-resolver');
+      const url = String(args.url || '').trim();
+      if (!resolver.isGitUrl(url)) throw new Error(`Not a valid git/GitHub URL: ${url}`);
+      const res = resolver.cloneRepoToWorkspace(url);
+      if (!res.ok) throw new Error(res.message || 'clone failed');
+      return toolText({
+        ok: true,
+        projectRoot: res.projectRoot,
+        reused: !!res.reused,
+        note: res.reused
+          ? 'Already cloned; reusing. Tell the IT Engineer to edit this path.'
+          : 'Cloned. Tell the IT Engineer to edit this path.',
+      });
+    }
     case 'retell_status': {
       return toolText(retellClient().status());
     }
@@ -690,6 +719,21 @@ async function callTool(name, args = {}) {
       return toolText(data);
     }
     case 'create_saas_worker': {
+      // Every authored skill ships with a version (starts at 1) and a one-line
+      // description. If HR didn't supply a description, generate one from the
+      // skill's system prompt so the detail page and COO update notices always
+      // have something to show.
+      if (Array.isArray(args.skills)) {
+        const { autoDescribeSkill } = require('./skill-describe');
+        for (const sk of args.skills) {
+          if (!sk || typeof sk !== 'object') continue;
+          if (typeof sk.version !== 'number' || sk.version < 1) sk.version = 1;
+          sk.description = await autoDescribeSkill(sk.system, {
+            name: sk.name,
+            existing: sk.description,
+          });
+        }
+      }
       const data = await ecsAdminJson('/api/admin/catalog/workers', {
         method: 'POST',
         body: JSON.stringify(args),

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const store = require('../store');
+const { spawnSync } = require('node:child_process');
 
 function expandHome(p) {
   const s = String(p || '').trim();
@@ -70,6 +71,51 @@ function readDevSettings() {
   return s.dev || {};
 }
 
+function reposBase() {
+  return path.join(os.homedir(), '.openclaw', 'workspaces');
+}
+
+function isGitUrl(text) {
+  const s = String(text || '').trim();
+  if (/^git@[^\s:]+:.+/.test(s)) return true;
+  if (/^https?:\/\/\S+/.test(s) && (/\.git\/?$/.test(s) || /(github|gitlab)\.com|bitbucket\.org/.test(s))) return true;
+  return false;
+}
+
+function repoNameFromUrl(url) {
+  const s = String(url || '').trim().replace(/\.git$/i, '').replace(/[/]+$/, '');
+  const seg = s.split(/[/:]/).filter(Boolean).pop() || 'repo';
+  return seg.replace(/[^a-zA-Z0-9._-]/g, '-') || 'repo';
+}
+
+// Clone a remote repo into the OpenClaw workspaces folder so the dev pipeline
+// (and future auto-detect) can use it. Reuses an existing clone of the same name.
+function cloneRepoToWorkspace(url, { onLog } = {}) {
+  const u = String(url || '').trim();
+  if (!isGitUrl(u)) return { ok: false, message: `Not a git URL: ${u}` };
+  const base = reposBase();
+  try { fs.mkdirSync(base, { recursive: true }); } catch { /* ignore */ }
+  let name = repoNameFromUrl(u);
+  let dest = path.join(base, name);
+  if (fs.existsSync(dest)) {
+    if (isGitRepo(dest)) {
+      return { ok: true, projectRoot: dest, reused: true, message: `Repo already cloned at ${dest}` };
+    }
+    let i = 2;
+    while (fs.existsSync(path.join(base, `${name}-${i}`))) i += 1;
+    name = `${name}-${i}`;
+    dest = path.join(base, name);
+  }
+  if (typeof onLog === 'function') onLog(`Cloning ${u} -> ${dest}`);
+  const r = spawnSync('git', ['clone', u, dest], { encoding: 'utf8', timeout: 600000 });
+  if (r.status !== 0) {
+    const err = String((r.stderr || (r.error && r.error.message) || 'unknown error')).trim().slice(0, 500);
+    return { ok: false, message: `git clone failed: ${err}` };
+  }
+  if (!isGitRepo(dest)) return { ok: false, message: `Clone finished but ${dest} is not a git repo.` };
+  return { ok: true, projectRoot: dest, message: `Cloned to ${dest}` };
+}
+
 /**
  * @returns {{ ok: boolean, projectRoot?: string, candidates?: string[], needsBossInput?: boolean, message?: string }}
  */
@@ -103,7 +149,7 @@ function resolveDevProjectRoot({ bossOverride } = {}) {
       needsBossInput: true,
       candidates: [],
       message:
-        'No git project found from OpenClaw workspaces. Reply with the full path to the repo you want IT to edit.',
+        'No git project found from OpenClaw workspaces. Reply with the full path to the repo you want IT to edit, or paste a GitHub URL and I will clone it.',
     };
   }
   return {
@@ -132,4 +178,7 @@ module.exports = {
   parseBossProjectChoice,
   isGitRepo,
   expandHome,
+  isGitUrl,
+  repoNameFromUrl,
+  cloneRepoToWorkspace,
 };

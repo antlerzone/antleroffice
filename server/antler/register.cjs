@@ -1205,6 +1205,7 @@ function registerAntlerRoutes(app, hooks = {}) {
       skills: built.skills,
       baseSkills: built.baseSkills,
       additionalSkills: built.additionalSkills,
+      lockedSkills: built.lockedSkills,
       mcps: built.mcps,
       baseMcps: built.baseMcps,
       additionalMcps: built.additionalMcps,
@@ -1218,6 +1219,97 @@ function registerAntlerRoutes(app, hooks = {}) {
       soulPreview,
       modelRef,
     });
+  });
+  // Learn (download) a built-in skill the agent doesn't have yet.
+  // Built-in skills are free — no billing here. Only skills that belong to the
+  // role's latest catalog set are allowed, so this can't be used to side-load
+  // arbitrary paid skills.
+  app.post('/api/config/agents/:id/learn-skill', async (req, res) => {
+    const a = registry.getAgent(req.params.id);
+    if (!a) return res.status(404).json({ ok: false, error: 'Agent not found' });
+    const skillId = String((req.body && req.body.skillId) || '').trim();
+    if (!skillId) return res.status(400).json({ ok: false, error: 'skillId required' });
+
+    // Resolve the role's latest built-in skill set to validate the request.
+    let catalog = null;
+    try {
+      const templates = await ecsCatalog.loadCatalogMerged();
+      const tid = a.templateId;
+      catalog =
+        templates.find(
+          (t) =>
+            t.id === tid ||
+            t.departmentId === tid ||
+            t.bundleTemplateId === tid ||
+            t.templateId === tid ||
+            (a.role && t.role === a.role),
+        ) || null;
+      if (!catalog && tid) catalog = agentCatalog.getTemplate(tid);
+      if (!catalog && a.role) catalog = agentCatalog.getTemplate(a.role);
+    } catch {
+      catalog =
+        (a.templateId && agentCatalog.getTemplate(a.templateId)) ||
+        (a.role && agentCatalog.getTemplate(a.role)) ||
+        null;
+    }
+    const roleSkillIds =
+      catalog && Array.isArray(catalog.skillIds) && catalog.skillIds.length
+        ? catalog.skillIds
+        : a.baselineSkillIds || [];
+    if (!roleSkillIds.includes(skillId)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'Not a built-in skill for this agent' });
+    }
+
+    const current = a.skillIds || [];
+    if (current.includes(skillId)) {
+      return res.json({ ok: true, agent: redactAgent(a), alreadyLearned: true });
+    }
+
+    const updated = registry.updateAgent(req.params.id, {
+      skillIds: [...current, skillId],
+    });
+
+    // Keep the live office adapter in sync (mirror of PUT /agents/:id).
+    const cooStation = orgRoles.isCooRole(updated.role)
+      ? office.getAgent('coo') || office.getAgent('ceo')
+      : null;
+    const officeTarget =
+      orgRoles.isCooRole(updated.role) && cooStation?.userAgentId === updated.id
+        ? cooStation.id
+        : `user:${updated.id}`;
+    office.setAgent(officeTarget, {
+      label: updated.name,
+      role: updated.role,
+      charSprite: updated.sprite,
+      hueShift: updated.hueShift,
+      skillIds: updated.skillIds,
+      openclawSkillNames: updated.openclawSkillNames || [],
+      mcpIds: updated.mcpIds,
+      mcpBindings: updated.mcpBindings,
+      channels: updated.channels,
+      devEngine: updated.devEngine,
+      devScope: updated.devScope,
+    });
+
+    // Record the install for the admin dashboard (free built-in learn).
+    try {
+      const skillDef = registry.listSkills().find((s) => s.id === skillId);
+      await skillInstallLog.recordInstall({
+        skillName: skillDef?.name || skillId,
+        skillId,
+        source: 'builtin-learn',
+        npcTemplateId: a.templateId || a.role,
+        npcName: a.name,
+        triggeredBy: 'user',
+        status: 'installed',
+      });
+    } catch {
+      /* non-fatal */
+    }
+
+    res.json({ ok: true, agent: redactAgent(updated), learned: skillId });
   });
   app.put('/api/config/agents/:id/model', async (req, res) => {
     const a = registry.getAgent(req.params.id);
@@ -1378,7 +1470,20 @@ function registerAntlerRoutes(app, hooks = {}) {
 
   // ── Config: skills catalog ────────────────────────────────────────────────
   app.get('/api/config/skills', (_req, res) => res.json({ skills: registry.listSkills() }));
-  app.post('/api/config/skills', (req, res) => res.json({ ok: true, skill: registry.addSkill(req.body || {}) }));
+  app.post('/api/config/skills', async (req, res) => {
+    const body = req.body || {};
+    // Auto-fill a one-line description from the instructions when none is given.
+    if (!body.description && body.system) {
+      try {
+        body.description = await require('./skill-describe').autoDescribeSkill(body.system, {
+          name: body.name,
+        });
+      } catch {
+        /* non-fatal — skill is still created without a description */
+      }
+    }
+    res.json({ ok: true, skill: registry.addSkill(body) });
+  });
   app.put('/api/config/skills/:id', (req, res) => {
     const s = registry.updateSkill(req.params.id, req.body || {});
     if (!s) return res.status(404).json({ ok: false });
@@ -3136,7 +3241,7 @@ function mergeIncoming(current, incoming) {
       const inc = incoming.providers[key];
       if (!next.providers[key]) next.providers[key] = {};
       if (typeof inc.model === 'string') next.providers[key].model = inc.model;
-      if (typeof inc.apiKey === 'string' && inc.apiKey.length > 0) {
+            if (typeof inc.apiKey === 'string' && inc.apiKey.length > 0) {
         next.providers[key].apiKey = inc.apiKey;
       }
     }

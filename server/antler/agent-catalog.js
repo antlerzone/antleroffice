@@ -11,6 +11,7 @@ const ecsBundle = require('./ecs-bundle');
 const auth = require('./auth');
 const defaultMcpPack = require('./default-mcp-pack');
 const ceoPricing = require('./ceo-pricing');
+const { normalizeSkillDef } = require('./skill-meta');
 
 function catalogPath() {
   const primary = path.join(__dirname, '..', '..', 'agents', 'catalog.json');
@@ -541,7 +542,7 @@ function bundledSkillDef(skillId, templateId) {
     if (bundled) {
       try {
         const parsed = JSON.parse(fs.readFileSync(bundled, 'utf8'));
-        if (parsed?.id === skillId) return parsed;
+        if (parsed?.id === skillId) return normalizeSkillDef(parsed);
       } catch {
         /* fall through */
       }
@@ -551,7 +552,7 @@ function bundledSkillDef(skillId, templateId) {
   const skillsRoot = path.join(__dirname, '..', '..', 'skills');
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(skillsRoot, `${slug}.json`), 'utf8'));
-    return parsed?.id === skillId ? parsed : null;
+    return parsed?.id === skillId ? normalizeSkillDef(parsed) : null;
   } catch {
     return null;
   }
