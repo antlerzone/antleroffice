@@ -82,8 +82,9 @@ function recordLocalUsage(agent, { credits, durationMs, sessionKey }) {
 
 async function pingEcsPaygo(agent) {
   if (!ecsBillingRequired()) {
-    ecsReachable = true;
-    return billing.getBalance() >= PAYGO_CREDITS_PER_HOUR;
+    // No ECS configured = no MySQL billing source; block instead of fake-allow.
+    ecsReachable = false;
+    return false;
   }
 
   const { ecsToken, officeId } = resolveBillingContext();
@@ -116,14 +117,14 @@ async function pingEcsPaygo(agent) {
 async function ensurePaygoAllowed(agent) {
   if (!agent?.id || agent.payrollStatus === 'suspended') return false;
   if (!ecsBillingRequired()) {
-    return billing.getBalance() >= PAYGO_CREDITS_PER_HOUR;
+    return false;
   }
 
   const allowed = await pingEcsPaygo(agent);
   if (allowed) return true;
 
   // ECS temporarily unreachable — keep metering locally; resume sync when back.
-  if (!ecsReachable) return true;
+  if (!ecsReachable) return false; // ECS/MySQL unreachable: block, no offline spend
 
   return false;
 }

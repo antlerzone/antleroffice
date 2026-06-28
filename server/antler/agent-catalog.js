@@ -295,24 +295,11 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
     : billingIntervalMod.normalizeBillingInterval(billingInterval);
   const renew = autoRenew !== false;
   const charge = billingIntervalMod.creditsPerPeriod(salary, bill, billingCredits);
-  if (billingIntervalMod.isPaygo(bill)) {
-    if (ecsSubscriptions.ecsBaseUrl() && !useEcsBilling) {
-      const err = new Error('Pay-as-you-go requires ECS login and an online connection.');
-      err.code = 'ECS_REQUIRED';
-      throw err;
-    }
-    if (!useEcsBilling && billing.getBalance() < 1) {
-      const err = new Error('Insufficient credits — need at least 1 credit for pay-as-you-go.');
-      err.code = 'INSUFFICIENT_CREDITS';
-      err.balance = billing.getBalance();
-      err.required = 1;
-      throw err;
-    }
-  } else if (!useEcsBilling && charge > 0 && billing.getBalance() < charge) {
-    const err = new Error(`Insufficient credits for first ${billingIntervalMod.intervalLabel(bill)} salary.`);
-    err.code = 'INSUFFICIENT_CREDITS';
-    err.balance = billing.getBalance();
-    err.required = charge;
+  // Billing is authoritative on ECS/MySQL only. Any paid hire requires ECS
+  // billing (logged in + online); never check or charge a local balance.
+  if (!useEcsBilling && (billingIntervalMod.isPaygo(bill) || charge > 0)) {
+    const err = new Error('Billing is unavailable — connect your account (online) to hire paid workers.');
+    err.code = 'ECS_REQUIRED';
     throw err;
   }
 
@@ -470,16 +457,11 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
     });
     }
   } else if (charge > 0) {
-    billing.deductCredits(charge, {
-      reason: billingIntervalMod.firstChargeReason(bill),
-      templateId,
-      agentName: displayName,
-      period: new Date(hiredAt).toISOString().slice(0, 7),
-    });
-    registry.updateAgent(agent.id, {
-      lastSalaryPaidAt: hiredAt,
-    });
-    creditBalance = billing.getBalance();
+    // Unreachable in normal flow (paid hires without ECS are blocked earlier),
+    // but as a hard guard: never charge locally — billing is MySQL-only.
+    const err = new Error('Billing is unavailable — connect your account to hire paid workers.');
+    err.code = 'ECS_REQUIRED';
+    throw err;
   }
 
   const saved = registry.getAgent(agent.id);

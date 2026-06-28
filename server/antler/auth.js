@@ -67,15 +67,15 @@ function mockSession(username) {
       email,
     },
     subscription: { plan: 'Pro (mock)', status: 'active' },
-    creditBalance: billing.getBalance(),
-    currency: billing.getCurrency(),
+    // No local/fake balance — credits are authoritative on ECS/MySQL only.
+    creditBalance: null,
+    currency: 'credits',
   };
 }
 
 function syncSessionCredits(s) {
-  if (!s) return s;
-  s.creditBalance = billing.getBalance();
-  s.currency = billing.getCurrency();
+  // Credit balance is authoritative on ECS/MySQL only; never injected from the
+  // local store. ECS refresh (refreshSessionFromEcs) is what updates it.
   return s;
 }
 
