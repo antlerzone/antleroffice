@@ -432,7 +432,12 @@ async function hireFromTemplate({ templateId, name, bossToken, hirePassword, bil
       autoRenew: renew,
     });
     if (!ecsResult.ok) {
-      if (isLocalMonorepoTemplate(template) && isEcsDepartmentMissing(ecsResult)) {
+      // Local fallback is allowed ONLY for genuinely FREE local templates (charge <= 0).
+      // Billing for any PAID worker is ECS/MySQL-authoritative: if ECS does not approve
+      // the hire, fail closed — NEVER charge the local (forgeable) balance. This closes the
+      // "make ECS return 404 / department-missing → hire a paid worker for free" hole, since
+      // a local balance lives on the user's machine and cannot be trusted.
+      if (charge <= 0 && isLocalMonorepoTemplate(template) && isEcsDepartmentMissing(ecsResult)) {
         creditBalance = chargeLocalFirstPeriod({
           template,
           templateId,
