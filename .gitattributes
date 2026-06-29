@@ -1,0 +1,25 @@
+# Normalize line endings: store text as LF in the repo, check out native on each OS.
+# Stops the endless "phantom modified" noise from CRLF vs LF differences.
+* text=auto
+
+# Binary files — never normalize (protects images, fonts, media, compiled files)
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.svg   text
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.otf   binary
+*.mp3   binary
+*.mp4   binary
+*.wav   binary
+*.pyc   binary
+*.node  binary
