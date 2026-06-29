@@ -338,7 +338,7 @@ function alwaysLoadedSkillIds(agent) {
 // Resolve an agent's effective skill system prompt(s). Primary / baseline skills
 // are always loaded; skills learned after hire stay in a keyword index until the
 // current task text matches.
-function systemForAgent(agent, { taskText = '' } = {}) {
+async function systemForAgent(agent, { taskText = '', threadId = null } = {}) {
   const parts = [];
   const primaryId = roster.byRole(agent.role)?.skillId || null;
   const alwaysIds = alwaysLoadedSkillIds(agent);
@@ -369,7 +369,13 @@ function systemForAgent(agent, { taskText = '' } = {}) {
     const indexBlock = skillIndex.renderIndexBlock(indexEntries);
     if (indexBlock) parts.push(indexBlock);
 
-    for (const sk of skillIndex.matchSkills(taskText, indexEntries)) {
+    const { keywordMatched, semanticMatched } = await skillIndex.resolveExtraSkillMatches({
+      taskText,
+      indexEntries,
+      agent,
+      threadId,
+    });
+    for (const sk of [...keywordMatched, ...semanticMatched]) {
       pushSkillSystem(sk, sk.id);
     }
   }
@@ -467,7 +473,7 @@ async function runWorkerTask({
   office.work(agent.id, 'Processing…', { label: shortTask, step: 'Processing', progress: 1, total: 2 });
 
   const notes = skills.readSharedNotes();
-  let baseSystem = `${systemForAgent(agent, { taskText: rawTask || instruction || '' })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  let baseSystem = `${await systemForAgent(agent, { taskText: rawTask || instruction || '', threadId })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
   if (agent.role === 'human_resource') {
     const catalogBlock = await saasNpcBlock();
     if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
@@ -2150,7 +2156,7 @@ async function runStandupAgentTurn({ agent, instruction, ownerKey, threadId }) {
   });
 
   const notes = skills.readSharedNotes();
-  let baseSystem = `${systemForAgent(agent, { taskText: instruction || '' })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  let baseSystem = `${await systemForAgent(agent, { taskText: instruction || '', threadId })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
   if (agent.role === 'human_resource') {
     const catalogBlock = await saasNpcBlock();
     if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
