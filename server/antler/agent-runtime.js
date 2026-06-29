@@ -29,6 +29,8 @@ const cooRunTracker = require('./coo-run-tracker');
 const ceoDecisionNotify = require('./ceo-decision-notify');
 const skillIndex = require('./skill-index');
 const agentCatalog = require('./agent-catalog');
+const taskMonitor = require('./task-monitor');
+const taskPendingStore = require('./task-pending-store');
 
 function scheduleCooAutonomousContinue(_waitingOnBoss = false) {
   try {
@@ -159,6 +161,16 @@ async function handleInstruction(
   }
 
   if (!planning) {
+    const resumedWorker = await tryResumeWorkerTask({
+      raw,
+      threadId: activeThreadId,
+      ownerKey: userKey,
+      shortTask,
+      planning,
+    });
+    if (resumedWorker?.handled) {
+      return { ok: true, routedTo: 'worker-task-resume', threadId: activeThreadId };
+    }
     const resumedEarly = await tryResumeCeoPipeline({
       raw,
       threadId: activeThreadId,
@@ -508,28 +520,60 @@ async function runWorkerTask({
 }
 
 async function directToAgent({ instruction, agent, shortTask, planning = false, rawTask = '', threadId = null, ownerKey = null }) {
-  const { text, provider, needsBossInput: waitingOnBoss } = await runWorkerTask({
-    instruction,
-    agent,
-    shortTask,
-    planning,
-    rawTask,
-    threadId,
-    ownerKey,
-  });
-
-  const file = saveDeliverable(agent.role || 'agent', rawTask || instruction, text);
-  if (planning) {
-    recordDeliverable(agent, rawTask || instruction, file, { kind: 'plan_complete' });
+  let taskJob = null;
+  if (threadId && !planning) {
+    taskJob = workBoard.ensureTaskJob({
+      threadId,
+      agentId: agent.id,
+      agentLabel: agent.label || agent.role,
+      task: rawTask || instruction,
+      shortTask,
+      ownerKey,
+      departmentLabel: agent.label || agent.role,
+    });
+    workBoard.markTaskInProgress(taskJob.id);
+    taskMonitor.transition(taskJob.id, 'in_progress', { agent, threadId });
   }
-  finalizeAgentTurn({
-    agent,
-    text,
-    provider,
-    threadId,
-    planning,
-    needsBossInput: waitingOnBoss,
-  });
+
+  try {
+    const { text, provider, needsBossInput: waitingOnBoss } = await runWorkerTask({
+      instruction,
+      agent,
+      shortTask,
+      planning,
+      rawTask,
+      threadId,
+      ownerKey,
+    });
+
+    const file = saveDeliverable(agent.role || 'agent', rawTask || instruction, text);
+    if (planning) {
+      recordDeliverable(agent, rawTask || instruction, file, { kind: 'plan_complete' });
+    }
+    finalizeAgentTurn({
+      agent,
+      text,
+      provider,
+      threadId,
+      planning,
+      needsBossInput: waitingOnBoss,
+      taskJobId: taskJob?.id || null,
+      taskInstruction: instruction,
+      taskRawTask: rawTask,
+      shortTask,
+      ownerKey,
+    });
+  } catch (err) {
+    if (taskJob?.id) {
+      taskMonitor.handleFailed({
+        deliverableId: taskJob.id,
+        agent,
+        threadId,
+        error: err.message || String(err),
+      });
+    }
+    throw err;
+  }
 }
 
 function finalizeAgentTurn({
@@ -541,6 +585,11 @@ function finalizeAgentTurn({
   needsBossInput: waitingOnBoss = false,
   taskScope = 'home',
   tokens = 0,
+  taskJobId = null,
+  taskInstruction = '',
+  taskRawTask = '',
+  shortTask = '',
+  ownerKey = null,
 }) {
   const label = agent.label || agent.role || 'Agent';
   chat(agent.role, text, threadId);
@@ -559,7 +608,18 @@ function finalizeAgentTurn({
 
   if (waiting) {
     chat('system', bossInputAskMessage({ agentLabel: label, provider }), threadId);
-    if (orgRoles.isCooRole(agent.role)) {
+    if (taskJobId) {
+      taskMonitor.handleNeedsInput({
+        deliverableId: taskJobId,
+        agent,
+        threadId,
+        question: text,
+        instruction: taskInstruction,
+        rawTask: taskRawTask,
+        shortTask: shortTask || agent.currentJob?.label || label,
+        ownerKey,
+      });
+    } else if (orgRoles.isCooRole(agent.role)) {
       const pending = threadId ? ceoPipelinePending.get(threadId) : null;
       if (pending?.phase) {
         ceoDecisionNotify.releaseCooForParallelWork();
@@ -573,19 +633,51 @@ function finalizeAgentTurn({
         chatPreview: String(text || '').slice(0, 400),
       });
       return;
+    } else {
+      taskPendingStore.set(threadId, {
+        phase: 'needs_input',
+        agentId: agent.id,
+        instruction: taskInstruction || taskRawTask || '',
+        rawTask: taskRawTask || taskInstruction || '',
+        shortTask: shortTask || label,
+        partialText: text,
+        ownerKey,
+      });
+      ceoDecisionNotify.notifyCeoDecisionRequired({
+        threadId,
+        phase: 'needs_input',
+        shortTask: shortTask || label,
+        rawTask: String(text || '').slice(0, 200),
+        ownerKey,
+        chatPreview: String(text || '').slice(0, 400),
+      });
+    }
+    if (orgRoles.isCooRole(agent.role)) {
+      ceoDecisionNotify.releaseCooForParallelWork();
+      return;
     }
     office.setAgent(agent.id, {
       npcState: 'working',
-      bubbleText: 'Waiting for your key…',
+      bubbleText: 'Waiting for your key?',
       currentJob: { label: 'Needs input', step: 'Waiting', progress: 2, total: 2 },
       awaitingBossInput: true,
     });
     return;
   }
 
-  chat('system', `${label} finished — done (via ${provider || 'openclaw'}).`, threadId);
-  office.rest(agent.id, 'Done ✓');
+  if (taskJobId) {
+    taskMonitor.handleComplete({
+      deliverableId: taskJobId,
+      agent,
+      threadId,
+      result: text,
+    });
+  }
+
+  chat('system', `${label} finished ? done (via ${provider || 'openclaw'}).`, threadId);
+  office.rest(agent.id, 'Done ?');
 }
+
 
 function recordDeliverable(agent, task, file, { kind = 'plan_complete' } = {}) {
   try {
@@ -608,6 +700,7 @@ async function choreograph({ instruction, dept, shortTask, planning = false, raw
     office.work(ceo.id, `Processing: ${shortTask}`, { label: shortTask, step: 'Processing', progress: 1, total: 2 });
     chat('coo', `Assigning this to ${hired.label}.`, threadId);
     office.rest(ceo.id, '');
+    // TODO(P2): non-blocking dispatch ? COO returns immediately; monitor reports completion.
     await directToAgent({ instruction, agent: hired, shortTask, planning, rawTask, threadId });
     return;
   }
@@ -922,6 +1015,52 @@ async function runAsSecretary({
 
   await runAsCoo({ instruction, shortTask, planning, rawTask, threadId, ownerKey });
 }
+
+async function tryResumeWorkerTask({ raw, threadId, ownerKey, shortTask, planning }) {
+  if (planning) return null;
+  const pending = taskPendingStore.get(threadId);
+  if (!pending || pending.phase !== 'needs_input') return null;
+
+  const agent = office.getAgent(pending.agentId);
+  if (!agent) {
+    taskPendingStore.clear(threadId);
+    return null;
+  }
+
+  taskPendingStore.clear(threadId);
+  workBoard.completeCeoDecisionCard(threadId);
+
+  const coo = orgRoles.cooAgentOrFallback();
+  chat(
+    'coo',
+    `${coo.label || 'COO'}: Got it ? continuing with ${agent.label || agent.role}.`,
+    threadId,
+  );
+
+  if (pending.deliverableId) {
+    workBoard.markTaskInProgress(pending.deliverableId);
+    taskMonitor.transition(pending.deliverableId, 'in_progress', { agent, threadId });
+  }
+
+  const continuedInstruction = `${pending.instruction || pending.rawTask || ''}\n\nBoss clarification:\n${raw}`;
+  const continuedRaw =
+    `${pending.rawTask || pending.instruction || ''}\n\n` +
+    `Boss clarification:\n${raw}\n\n` +
+    `Continue from where you stopped. Do NOT restart or discard work already done.\n\n` +
+    `Your previous progress:\n${pending.partialText || '(none)'}`;
+
+  await directToAgent({
+    instruction: continuedInstruction,
+    agent,
+    shortTask: pending.shortTask || shortTask,
+    rawTask: continuedRaw,
+    threadId,
+    ownerKey: ownerKey || pending.ownerKey,
+  });
+
+  return { handled: true };
+}
+
 
 async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planning }) {
   if (planning) return null;

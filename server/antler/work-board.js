@@ -195,6 +195,44 @@ function syncPipelineGatesToBoard() {
   return synced;
 }
 
+function findActiveTaskJob(threadId) {
+  const tid = String(threadId || "").trim();
+  if (!tid) return null;
+  return (
+    registry.listDeliverables().find(
+      (d) =>
+        d.kind === "job" &&
+        d.threadId === tid &&
+        d.status !== "complete" &&
+        d.status !== "failed",
+    ) || null
+  );
+}
+
+function ensureTaskJob({ threadId, agentId, agentLabel, task, shortTask, ownerKey, departmentLabel } = {}) {
+  const existing = findActiveTaskJob(threadId);
+  if (existing) return existing;
+  const item = registry.addDeliverable({
+    kind: "job",
+    status: "pending",
+    threadId: threadId || null,
+    agentId: agentId || null,
+    agentLabel: agentLabel || "Agent",
+    task: task || shortTask || "",
+    summary: shortTask || clip(task || "Task", 100) || "Task",
+    ownerKey: ownerKey || null,
+    departmentLabel: departmentLabel || agentLabel || "Office",
+  });
+  emitDeliverablesUpdate();
+  return item;
+}
+
+function markTaskInProgress(deliverableId) {
+  const updated = registry.updateDeliverableProgress(deliverableId, { status: "in_progress" });
+  emitDeliverablesUpdate();
+  return updated;
+}
+
 module.exports = {
   createCeoInboxCard,
   markCooPlanning,
@@ -207,4 +245,7 @@ module.exports = {
   findByThread,
   findCeoDecisionCard,
   CEO_DECISION_PHASE_LABELS,
+  findActiveTaskJob,
+  ensureTaskJob,
+  markTaskInProgress,
 };

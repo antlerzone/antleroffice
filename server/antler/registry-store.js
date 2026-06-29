@@ -1112,6 +1112,9 @@ function updateDeliverableProgress(id, patch = {}) {
   if (patch.ceoAcknowledged !== undefined) d.ceoAcknowledged = !!patch.ceoAcknowledged;
   if (patch.ceoNotifiedAt !== undefined) d.ceoNotifiedAt = patch.ceoNotifiedAt;
   if (patch.ceoAcknowledgedAt !== undefined) d.ceoAcknowledgedAt = patch.ceoAcknowledgedAt;
+  if (patch.taskQuestion !== undefined) d.taskQuestion = String(patch.taskQuestion || '');
+  if (patch.taskResult !== undefined) d.taskResult = String(patch.taskResult || '');
+  if (patch.taskError !== undefined) d.taskError = String(patch.taskError || '');
   if (patch.standupSections !== undefined) d.standupSections = normalizeStandupSections(patch.standupSections);
   if (d.status === 'complete' || d.progressPercent === 100) {
     d.progressPercent = d.progressPercent ?? 100;
