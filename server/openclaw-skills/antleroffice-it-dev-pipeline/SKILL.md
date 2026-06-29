@@ -15,6 +15,13 @@ AntlerOffice spawns local CLIs — not OpenClaw MCP — for code tasks delegated
 - `cursor-agent` + `CURSOR_API_KEY`
 - `codex` CLI (install via IT Guys / Settings → Dev tools)
 
+## Frontend taste
+
+If the task builds or changes any **frontend / UI / web page**, load
+`antleroffice-frontend-taste` BEFORE writing and follow its anti-slop rules
+(layout, typography, spacing, motion). The reviewer checks the diff against it.
+Skip it for non-UI work (scripts, crawlers, backend, infra).
+
 ## Token saver
 
 OpenClaw = CEO planning only. Cursor = code. Codex = review. Do not overlap.
