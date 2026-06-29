@@ -82,6 +82,33 @@ function peekNextFuturePlanItem(framework = getFramework()) {
   return framework.futurePlan[0];
 }
 
+// Append CEO-confirmed items to the Future Plan. Source MUST be the CEO's own
+// stated/confirmed direction (read-back-and-approve flow) — never COO self-brainstorm.
+// Dedupes against existing pending + completed items; respects the 20-item cap.
+function addFuturePlanItems(items) {
+  const incoming = normalizeStringList(items);
+  if (!incoming.length) return { framework: getFramework(), added: [] };
+
+  const fw = getFramework();
+  const existing = new Set([
+    ...fw.futurePlan.map((s) => s.toLowerCase()),
+    ...fw.futurePlanCompleted.map((s) => s.toLowerCase()),
+  ]);
+
+  const added = [];
+  for (const item of incoming) {
+    const key = item.toLowerCase();
+    if (existing.has(key)) continue;
+    existing.add(key);
+    added.push(item);
+  }
+  if (!added.length) return { framework: fw, added: [] };
+
+  const nextPlan = [...fw.futurePlan, ...added].slice(0, 20);
+  const framework = saveFramework({ futurePlan: nextPlan });
+  return { framework, added };
+}
+
 function completeFuturePlanItem(itemText) {
   const fw = getFramework();
   const target = String(itemText || '').trim();
@@ -106,6 +133,65 @@ function completeFuturePlanItem(itemText) {
   });
 }
 
+// CEO coding-comprehension level (set during IT onboarding, saved as
+// dev.ceoCodingLevel). Drives how technical COO→CEO reports may be.
+const CODING_LEVEL_GUIDANCE = {
+  '1': [
+    '## CEO technical level: 1 — NON-TECHNICAL (plain language only)',
+    'The CEO has zero coding knowledge. In every report or message to the CEO:',
+    '- Use NO code, no jargon, no file names, no tool names. Explain everything in plain everyday language and simple analogies.',
+    '- Be short and direct. The CEO mainly nods or shakes (approve / reject) — present decisions as a simple either/or with a clear recommendation.',
+    '- Never show diffs, errors, configs, or commands. Translate "what changed and why it matters" into plain business terms.',
+  ],
+  '2': [
+    '## CEO technical level: 2 — SEMI-TECHNICAL',
+    'The CEO understands some technical terms. In reports to the CEO:',
+    '- You may use common terms, but briefly explain anything non-obvious.',
+    '- Lead with a one-line plain-language summary, then offer detail; invite the CEO to ask follow-ups when unsure.',
+    '- Keep deep code detail optional — summarize first, expand only if asked.',
+  ],
+  '3': [
+    '## CEO technical level: 3 — DEVELOPER',
+    'The CEO is a developer. In reports to the CEO:',
+    '- Full technical detail is welcome: code, diffs, file paths, architecture, trade-offs.',
+    '- Be precise and concise; no need to simplify or avoid jargon.',
+  ],
+};
+
+// Always-on: tells the COO how the CEO can change their technical level mid-chat.
+const CEO_LEVEL_CHANGE_INSTRUCTION = [
+  '## Adjusting the CEO technical level (changeable any time in chat)',
+  'The CEO can change how technical you are whenever they want — e.g. "讲简单点 / 我看不懂", "多给点技术细节", "把我的技术等级设成开发者 / 完全不懂".',
+  'When the CEO clearly asks for this, emit on its own line: SET_CEO_LEVEL: <1|2|3>  (1 = non-technical, 2 = semi-technical, 3 = developer).',
+  "Then confirm in ONE short sentence, already written in the NEW level's style. Never show the marker text itself to the CEO.",
+  'Only emit the marker on an explicit request to change the level — never for a normal question.',
+].join('\n');
+
+function formatCodingLevelBlock() {
+  const level = String(store.readSettings().dev?.ceoCodingLevel || '').trim();
+  const parts = [];
+  const guide = CODING_LEVEL_GUIDANCE[level];
+  if (guide) parts.push(guide.join('\n'));
+  parts.push(CEO_LEVEL_CHANGE_INSTRUCTION);
+  return parts.join('\n\n');
+}
+
+// Parse a COO "SET_CEO_LEVEL: N" directive out of chat text. Returns '1'|'2'|'3' or null.
+function parseCeoLevelDirective(text) {
+  const m = String(text || '').match(/SET_CEO_LEVEL\s*:\s*([123])\b/i);
+  return m ? m[1] : null;
+}
+
+// Persist the CEO's technical level (lives in dev settings, read by formatCodingLevelBlock).
+function setCeoCodingLevel(level) {
+  const lvl = String(level || '').trim();
+  if (!['1', '2', '3'].includes(lvl)) return null;
+  const s = store.readSettings();
+  s.dev = { ...(s.dev || {}), ceoCodingLevel: lvl };
+  store.writeSettings(s);
+  return lvl;
+}
+
 function formatPromptBlock(framework = getFramework()) {
   if (!framework.enabled) return '';
 
@@ -116,7 +202,20 @@ function formatPromptBlock(framework = getFramework()) {
     'Execute only: (1) direct CEO chat instructions, (2) CEO Future Plan items below, (3) resume stalled approved work.',
     'If work does not clearly advance the product below, refuse and ask the CEO to update scope or add a Future Plan item.',
     'Do NOT propose unrelated products (e.g. food menu apps, random consumer apps, side hustles).',
+    '',
+    '**Future Plan intake (CEO is non-technical — never ask them to edit Settings):**',
+    'When the CEO describes ongoing direction, a multi-item improvement list, or "keep doing X / I want it done by tomorrow"-style work,',
+    'do NOT start building immediately. First restate their intent as a numbered Future Plan, then emit this exact machine marker on its own line so the office can queue it:',
+    'FUTURE_PLAN_PROPOSE:',
+    '1. <item one>',
+    '2. <item two>',
+    '(one item per line after the marker). Then ask the CEO to reply APPROVED to queue it, or REVISION: to adjust.',
+    'ONLY list items the CEO actually said or clearly confirmed — this is transcription of THEIR direction, never your own new ideas.',
+    'A single concrete immediate task (e.g. "fix this button now") still runs the normal pipeline — use the proposal only for direction / multi-item / overnight work.',
   ];
+
+  const codingLevelBlock = formatCodingLevelBlock();
+  if (codingLevelBlock) lines.push('', codingLevelBlock);
 
   if (framework.productName) {
     lines.push('', `**Product:** ${framework.productName}`);
@@ -181,6 +280,28 @@ function formatExecuteFuturePlanInstruction(itemText, framework = getFramework()
   ].join('\n');
 }
 
+// Detect a COO "FUTURE_PLAN_PROPOSE:" marker in chat output and pull out the
+// proposed items (the numbered/bulleted lines that follow the marker).
+function parseFuturePlanProposal(text) {
+  const blob = String(text || '');
+  const idx = blob.search(/FUTURE_PLAN_PROPOSE\s*:/i);
+  if (idx < 0) return null;
+  const after = blob.slice(idx).replace(/^[^\n]*FUTURE_PLAN_PROPOSE\s*:/i, '');
+  const items = [];
+  for (const rawLine of after.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (items.length) break; // blank line after items ends the block
+      continue;
+    }
+    const cleaned = line.replace(/^(\d+[.)]|[-*•])\s*/, '').trim();
+    if (!cleaned) continue;
+    if (/^(approved|revision)\b/i.test(cleaned)) break;
+    items.push(cleaned);
+  }
+  return items.length ? items : null;
+}
+
 function looksOutOfScope(text, framework = getFramework()) {
   if (!framework.enabled || !framework.outOfScope.length) return false;
   const blob = String(text || '').toLowerCase();
@@ -198,8 +319,13 @@ module.exports = {
   isConfigured,
   hasPendingFuturePlan,
   peekNextFuturePlanItem,
+  addFuturePlanItems,
   completeFuturePlanItem,
   formatPromptBlock,
   formatExecuteFuturePlanInstruction,
+  parseFuturePlanProposal,
+  formatCodingLevelBlock,
+  parseCeoLevelDirective,
+  setCeoCodingLevel,
   looksOutOfScope,
 };

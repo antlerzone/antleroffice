@@ -251,6 +251,22 @@ async function applyCtoServerChoice() {
   }
 }
 
+async function applyCodingLevelChoice() {
+  // Save the CEO's own coding-comprehension level (asked on any IT-role onboarding).
+  // Stored globally as dev.ceoCodingLevel so every COO→CEO report adapts to it.
+  const level = answers.value['coding_level']
+  if (!level) return
+  try {
+    await fetch('/api/dev/settings', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ ceoCodingLevel: level }),
+    })
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function completeDone() {
   // Cancel any open browser session
   if (captureSessionId.value) {
@@ -258,6 +274,7 @@ function completeDone() {
     captureSessionId.value = ''
   }
   void applyCtoServerChoice()
+  void applyCodingLevelChoice()
   phase.value = 'done'
 }
 

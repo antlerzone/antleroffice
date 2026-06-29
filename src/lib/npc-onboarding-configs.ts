@@ -110,6 +110,22 @@ export const COMMON_PERSONALITY_POOL: PersonalityTrait[] = [
   { id: 'energetic',       label: '活力满满', emoji: '🌟' },
 ]
 
+// ── Shared: CEO coding-comprehension level ────────────────────────────────────
+// Asked when onboarding any IT-department role. The answer is the CEO's OWN
+// technical level (not the NPC's) and is saved globally as dev.ceoCodingLevel —
+// every COO→CEO report then adapts its explanation depth to this level.
+export const CODING_LEVEL_STEP: OnboardingStep = {
+  id: 'coding_level',
+  type: 'choice',
+  question: '在开始前 — 您对编程 / 技术的了解程度是？',
+  hint: '选好后，COO 以后跟您汇报任何技术相关的事，都会自动用最适合您的讲法。选错了也没关系——之后随时跟 COO 说「我看不懂，讲简单点」或「把我的技术等级改成开发者」就能改。',
+  options: [
+    { value: '1', label: '完全不懂', emoji: '🐣', hint: '不带任何代码名词，全大白话；您只需点头 / 摇头' },
+    { value: '2', label: '懂一点',   emoji: '🌱', hint: '认得一些术语，不确定时可以随时追问' },
+    { value: '3', label: '我是开发者', emoji: '🦾', hint: '技术细节直接讲，不用简化' },
+  ],
+}
+
 // ── NPC Onboarding Configs ────────────────────────────────────────────────────
 
 const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
@@ -600,7 +616,33 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical', label: '技术专精', emoji: '⌨️' },
       { id: 'problem_solver', label: '解决问题', emoji: '🔧' },
     ],
-    steps: [],
+    steps: [CODING_LEVEL_STEP],
+  },
+
+  // ── IT Engineer (A · all-rounder) ─────────────────────────────────────────
+  it_allrounder: {
+    templateId: 'it_allrounder',
+    greeting: '老板好！我是您的全能 IT 工程师，本地写代码、改网页、做小工具，写完会自己先审一遍再交。',
+    capabilities: ['本地写功能代码', '改网页 / 写小工具', '写完自审一遍', 'Git 提交（上传需您批准）'],
+    completionHint: '跟 COO 说：「叫 IT 工程师帮我加一个导出按钮」',
+    extraPersonality: [
+      { id: 'technical',  label: '技术专精', emoji: '⌨️' },
+      { id: 'systematic', label: '系统思维', emoji: '🧩' },
+    ],
+    steps: [CODING_LEVEL_STEP],
+  },
+
+  // ── IT Reviewer (B · 复查 + 测试) ─────────────────────────────────────────
+  it_reviewer: {
+    templateId: 'it_reviewer',
+    greeting: '老板好！我是代码复查员，IT 工程师写完后我再查第二遍、真跑测试，不过关就打回重写。',
+    capabilities: ['复查代码改动', '真跑项目测试', '不过关打回重写', '只读、绝不动手改'],
+    completionHint: '跟 COO 说：「这次让复查员把关再上传」',
+    extraPersonality: [
+      { id: 'rigorous', label: '严谨认真', emoji: '🎯' },
+      { id: 'detail_oriented', label: '细心仔细', emoji: '🔍' },
+    ],
+    steps: [CODING_LEVEL_STEP],
   },
 
   cursor_developer: {
@@ -612,7 +654,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical',  label: '技术专精', emoji: '⌨️' },
       { id: 'systematic', label: '系统思维', emoji: '🧩' },
     ],
-    steps: [],
+    steps: [CODING_LEVEL_STEP],
   },
 
   claude_developer: {
@@ -624,7 +666,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical',  label: '技术专精', emoji: '⌨️' },
       { id: 'systematic', label: '系统思维', emoji: '🧩' },
     ],
-    steps: [],
+    steps: [CODING_LEVEL_STEP],
   },
 
   codex_developer: {
@@ -636,7 +678,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical',  label: '技术专精', emoji: '⌨️' },
       { id: 'systematic', label: '系统思维', emoji: '🧩' },
     ],
-    steps: [],
+    steps: [CODING_LEVEL_STEP],
   },
   cto: {
     templateId: 'cto',
@@ -648,6 +690,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical', label: '技术专精', emoji: '⌨️' },
     ],
     steps: [
+      CODING_LEVEL_STEP,
       {
         id: 'enable_ssh',
         type: 'choice',

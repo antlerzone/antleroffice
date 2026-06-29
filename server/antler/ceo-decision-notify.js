@@ -13,6 +13,7 @@ function describePending(pending) {
   if (phase === 'push_approval') return `Push approval: ${pending?.branchName || task}`;
   if (phase === 'it_scan_ceo_gate') return `IT scan decision: ${task}`;
   if (phase === 'project_path') return `Project path needed: ${task}`;
+  if (phase === 'future_plan_confirm') return `Future Plan confirmation: ${task}`;
   return `${phase}: ${task}`;
 }
 

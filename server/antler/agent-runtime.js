@@ -281,6 +281,14 @@ function findHiredAgentFor(dept) {
   );
 }
 
+// Universal rule injected into EVERY agent's system prompt: agents on the boss's
+// own machine learn and crystallize reusable procedures into skills.
+const UNIVERSAL_AGENT_RULES = `## Learn and build your own skills (every agent, always)
+You run on the boss's own computer and get better the more you work for them. Whenever you work out a NEW, reusable multi-step procedure (a recurring task, navigating a specific website or system, a routine specific to this company), you MUST capture it as a reusable skill via the skill workshop: propose a new skill with a clear name and the exact steps you took. Next time you — or any teammate — can replay it instantly instead of figuring it out from scratch.
+- Propose low-risk read / lookup / reporting procedures freely.
+- For anything that writes data, changes settings, or moves money, clearly flag that in the proposal so a human reviews it before reuse.
+- Everything stays on the boss's own machine; never send learned procedures or credentials anywhere else.`;
+
 // Resolve an agent's effective skill system prompt(s). User-created agents carry
 // skillIds; resident department NPCs map to their roster skill.
 function systemForAgent(agent) {
@@ -297,6 +305,7 @@ function systemForAgent(agent) {
     if (dept) parts.push(skillFor(dept).system);
   }
   if (!parts.length) parts.push('You are a capable office worker agent inside AntlerOffice.');
+  parts.push(UNIVERSAL_AGENT_RULES);
   return parts.join('\n\n');
 }
 
@@ -903,6 +912,48 @@ async function tryResumeCeoPipeline({ raw, threadId, ownerKey, shortTask, planni
       brief: pending.brief || '',
       plan: pending.plan || '',
     });
+    return { handled: true };
+  }
+
+  if (pending.phase === 'future_plan_confirm') {
+    if (!outcome.approved && !outcome.needsRevision) {
+      chat(
+        'coo',
+        'Reply **APPROVED** to queue these into the plan, or **REVISION:** to adjust the list.',
+        resolvedThreadId,
+      );
+      ceoDecisionNotify.releaseCooForParallelWork('Awaiting Future Plan confirmation…');
+      return { handled: true };
+    }
+    if (outcome.needsRevision) {
+      ceoPipelinePending.clear(resolvedThreadId);
+      workBoard.completeCeoDecisionCard(resolvedThreadId);
+      await runAsCoo({
+        instruction: `${pending.instruction || raw}\n\nCEO revision to the proposed plan items:\n${raw}`,
+        shortTask: pending.shortTask || shortTask,
+        planning: false,
+        rawTask: `${pending.rawTask || raw}\n\nRevision: ${raw}`,
+        threadId: resolvedThreadId,
+        ownerKey,
+      });
+      return { handled: true };
+    }
+    // APPROVED → write the CEO-confirmed items into the Future Plan, then let the
+    // heartbeat work through them (one commit per item) — nothing pushed.
+    const cf = require('./company-framework');
+    const { added } = cf.addFuturePlanItems(pending.proposedItems || []);
+    ceoPipelinePending.clear(resolvedThreadId);
+    workBoard.completeCeoDecisionCard(resolvedThreadId);
+    const addedMd = added.length
+      ? added.map((it, i) => `${i + 1}. ${it}`).join('\n')
+      : '(no new items — they were already in the plan)';
+    chat(
+      'coo',
+      `Added to the CEO Future Plan:\n\n${addedMd}\n\nThe team will work through them automatically — you'll see the commits to review. Nothing is pushed or deployed without your approval.`,
+      resolvedThreadId,
+    );
+    ceoDecisionNotify.refreshCooOfficeState('Future Plan updated ✓');
+    scheduleCooAutonomousContinue(false);
     return { handled: true };
   }
 
@@ -1739,6 +1790,57 @@ async function runAsCoo({
     });
     lastProvider = provider || lastProvider;
     waitingOnBoss = needsBossInput;
+
+    // CEO described direction → COO read it back as a Future Plan proposal.
+    // Intercept the marker, post the proposal, and wait for the CEO's APPROVED
+    // before writing anything. Boss-driven runs only (never the heartbeat).
+    if (!autonomous) {
+      const cf = require('./company-framework');
+
+      // CEO asked to change how technical the COO is → update the saved level now.
+      const newLevel = cf.parseCeoLevelDirective(text);
+      if (newLevel) {
+        cf.setCeoCodingLevel(newLevel);
+        const levelLabel = { '1': '完全不懂（全大白话）', '2': '懂一点（可追问）', '3': '开发者（细节直给）' }[newLevel];
+        const cleaned = text.replace(/^.*SET_CEO_LEVEL\s*:\s*[123].*$/gim, '').trim();
+        chat(
+          'coo',
+          cleaned || `好的，已把您的技术等级设成「${levelLabel}」，之后我都按这个跟您讲。`,
+          threadId,
+        );
+        office.rest(coo.id, 'Level updated ✓');
+        return;
+      }
+
+      const proposedItems = cf.parseFuturePlanProposal(text);
+      if (proposedItems && proposedItems.length) {
+        const listMd = proposedItems.map((it, i) => `${i + 1}. ${it}`).join('\n');
+        ceoPipelinePending.set(threadId, {
+          phase: 'future_plan_confirm',
+          proposedItems,
+          instruction,
+          shortTask,
+          rawTask,
+          threadId,
+          ownerKey,
+        });
+        workBoard.markPlanAwaitingApproval(threadId);
+        chat(
+          'coo',
+          `I understand you'd like to add this to the plan:\n\n${listMd}\n\n---\n**CEO:** Reply **APPROVED** to queue these (the team will work through them and you'll see the commits), or **REVISION:** to adjust.`,
+          threadId,
+        );
+        ceoDecisionNotify.notifyCeoDecisionRequired({
+          threadId,
+          phase: 'future_plan_confirm',
+          shortTask,
+          rawTask,
+          ownerKey,
+          chatPreview: listMd.slice(0, 400),
+        });
+        return;
+      }
+    }
 
     if (skillId === 'ceo_brainstorm') brief = text;
     if (skillId === 'ceo_writing_plans') {
