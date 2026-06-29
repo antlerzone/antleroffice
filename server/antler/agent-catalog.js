@@ -60,7 +60,13 @@ function ensureBundledSkill(skillId, templateId) {
     }
   }
   if (!def?.id) return null;
-  return registry.ensureSkill({ id: def.id, name: def.name, system: def.system });
+  return registry.ensureSkill({
+    id: def.id,
+    name: def.name,
+    system: def.system,
+    description: def.description,
+    keywords: def.keywords,
+  });
 }
 
 function installOpenClawSkill(workspace, folderName, templateId) {

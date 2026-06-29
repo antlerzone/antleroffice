@@ -1500,6 +1500,18 @@ function registerAntlerRoutes(app, hooks = {}) {
   app.post('/api/config/skills', async (req, res) => {
     const body = req.body || {};
     // Auto-fill a one-line description from the instructions when none is given.
+    if ((!body.keywords || !body.keywords.length) && body.system) {
+      try {
+        body.keywords = require('./skill-index').resolveKeywords({
+          name: body.name,
+          description: body.description,
+          keywords: body.keywords,
+          system: body.system,
+        });
+      } catch {
+        /* non-fatal */
+      }
+    }
     if (!body.description && body.system) {
       try {
         body.description = await require('./skill-describe').autoDescribeSkill(body.system, {

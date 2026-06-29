@@ -8,6 +8,7 @@ const path = require('node:path');
 const { getDataDir } = require('./store');
 const { resolveMcpRuntimeFromBindings } = require('./mcp-runtime-helper');
 const { normalizeSkillDef, asVersion, nextVersion } = require('./skill-meta');
+const { resolveKeywords } = require('./skill-index');
 
 function dataPath(...p) {
   return path.join(getDataDir(), ...p);
@@ -40,7 +41,7 @@ function listSkills() {
   return Array.isArray(skills) ? skills.map(normalizeSkillDef) : [];
 }
 
-function addSkill({ name, system, mcpIds, description } = {}) {
+function addSkill({ name, system, mcpIds, description, keywords } = {}) {
   const skills = listSkills();
   const item = {
     id: newId('skill'),
@@ -49,6 +50,7 @@ function addSkill({ name, system, mcpIds, description } = {}) {
     mcpIds: Array.isArray(mcpIds) ? mcpIds.filter(Boolean) : [],
     version: 1,
     description: typeof description === 'string' ? description : '',
+    keywords: resolveKeywords({ name: name || 'New Skill', description, keywords, system }),
   };
   skills.push(item);
   writeJson('skills.json', skills);
@@ -72,6 +74,7 @@ function updateSkill(id, patch = {}) {
   if (typeof patch.description === 'string') s.description = patch.description;
   if (typeof patch.version === 'number') s.version = asVersion(patch.version);
   if (Array.isArray(patch.mcpIds)) s.mcpIds = patch.mcpIds.filter(Boolean);
+  if (Array.isArray(patch.keywords)) s.keywords = patch.keywords.map((k) => String(k).trim()).filter(Boolean);
   s.version = asVersion(s.version);
   writeJson('skills.json', skills);
   return s;
@@ -84,13 +87,25 @@ function removeSkill(id) {
   );
 }
 
-function ensureSkill({ id, name, system } = {}) {
+function ensureSkill({ id, name, system, description, keywords } = {}) {
   const sid = String(id || '').trim();
   if (!sid) return null;
   const skills = listSkills();
   const existing = skills.find((s) => s.id === sid);
-  if (existing) return existing;
-  const item = { id: sid, name: name || sid, system: system || '' };
+  if (existing) {
+    if ((!existing.keywords || !existing.keywords.length) && (keywords?.length || description || name)) {
+      existing.keywords = resolveKeywords({ ...existing, keywords, description, name });
+      writeJson('skills.json', skills);
+    }
+    return existing;
+  }
+  const item = normalizeSkillDef({
+    id: sid,
+    name: name || sid,
+    system: system || '',
+    description: typeof description === 'string' ? description : '',
+    keywords: resolveKeywords({ id: sid, name: name || sid, system, description, keywords }),
+  });
   skills.push(item);
   writeJson('skills.json', skills);
   return item;

@@ -27,6 +27,8 @@ const workBoard = require('./work-board');
 const itScanGate = require('./it-scan-gate');
 const cooRunTracker = require('./coo-run-tracker');
 const ceoDecisionNotify = require('./ceo-decision-notify');
+const skillIndex = require('./skill-index');
+const agentCatalog = require('./agent-catalog');
 
 function scheduleCooAutonomousContinue(_waitingOnBoss = false) {
   try {
@@ -300,21 +302,74 @@ How to ask:
 - Surface it to the boss through the COO; relay the boss's answer back to yourself, then continue from where you stopped — do not restart and do not throw away work already done.
 - If the situation is NOT one of the three above (a small, reversible, low-risk detail), just decide sensibly and continue — do not interrupt the boss over trivial things.`;
 
-// Resolve an agent's effective skill system prompt(s). User-created agents carry
-// skillIds; resident department NPCs map to their roster skill.
-function systemForAgent(agent) {
+function resolveSkillDef(skillId, agent) {
+  const sid = String(skillId || '').trim();
+  if (!sid) return null;
+  const fromRegistry = registry.listSkills().find((s) => s.id === sid);
+  if (fromRegistry) return fromRegistry;
+  return agentCatalog.bundledSkillDef(sid, agent?.templateId) || null;
+}
+
+function alwaysLoadedSkillIds(agent) {
+  const regAgent = registryAgentForOfficeAgent(agent);
+  const primaryId = roster.byRole(agent.role)?.skillId || null;
+  const ids = new Set();
+  if (primaryId) ids.add(primaryId);
+  const baseline = regAgent?.baselineSkillIds || agent.baselineSkillIds || [];
+  for (const sid of baseline) ids.add(sid);
+  if (!ids.size && Array.isArray(agent.skillIds) && agent.skillIds.length) {
+    for (const sid of agent.skillIds) ids.add(sid);
+  }
+  return ids;
+}
+
+// Resolve an agent's effective skill system prompt(s). Primary / baseline skills
+// are always loaded; skills learned after hire stay in a keyword index until the
+// current task text matches.
+function systemForAgent(agent, { taskText = '' } = {}) {
   const parts = [];
-  if (agent.skillIds && agent.skillIds.length) {
-    const all = registry.listSkills();
-    for (const sid of agent.skillIds) {
-      const sk = all.find((s) => s.id === sid);
-      if (sk && sk.system) parts.push(sk.system);
+  const primaryId = roster.byRole(agent.role)?.skillId || null;
+  const alwaysIds = alwaysLoadedSkillIds(agent);
+  const pushed = new Set();
+
+  function pushSkillSystem(sk, sid) {
+    const key = sk?.id || sid;
+    if (!sk?.system || (key && pushed.has(key))) return;
+    if (key) pushed.add(key);
+    parts.push(sk.system);
+  }
+
+  if (primaryId) {
+    const dept = roster.byRole(agent.role);
+    const sk = resolveSkillDef(primaryId, agent) || (dept ? skillFor(dept) : null);
+    pushSkillSystem(sk, primaryId);
+  }
+
+  for (const sid of alwaysIds) {
+    if (sid === primaryId) continue;
+    pushSkillSystem(resolveSkillDef(sid, agent), sid);
+  }
+
+  const extraIds = (agent.skillIds || []).filter((sid) => !alwaysIds.has(sid));
+  if (extraIds.length) {
+    const extraSkills = extraIds.map((sid) => resolveSkillDef(sid, agent)).filter(Boolean);
+    const indexEntries = skillIndex.buildIndex(extraSkills);
+    const indexBlock = skillIndex.renderIndexBlock(indexEntries);
+    if (indexBlock) parts.push(indexBlock);
+
+    for (const sk of skillIndex.matchSkills(taskText, indexEntries)) {
+      pushSkillSystem(sk, sk.id);
     }
   }
+
   if (!parts.length) {
     const dept = roster.byRole(agent.role);
-    if (dept) parts.push(skillFor(dept).system);
+    if (dept) {
+      const sk = skillFor(dept);
+      if (sk?.system) parts.push(sk.system);
+    }
   }
+
   if (!parts.length) parts.push('You are a capable office worker agent inside AntlerOffice.');
   parts.push(UNIVERSAL_AGENT_RULES);
   return parts.join('\n\n');
@@ -400,7 +455,7 @@ async function runWorkerTask({
   office.work(agent.id, 'Processing…', { label: shortTask, step: 'Processing', progress: 1, total: 2 });
 
   const notes = skills.readSharedNotes();
-  let baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  let baseSystem = `${systemForAgent(agent, { taskText: rawTask || instruction || '' })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
   if (agent.role === 'human_resource') {
     const catalogBlock = await saasNpcBlock();
     if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
@@ -1956,7 +2011,7 @@ async function runStandupAgentTurn({ agent, instruction, ownerKey, threadId }) {
   });
 
   const notes = skills.readSharedNotes();
-  let baseSystem = `${systemForAgent(agent)}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
+  let baseSystem = `${systemForAgent(agent, { taskText: instruction || '' })}\n\nShared office knowledge:\n${notes || '(none yet)'}`;
   if (agent.role === 'human_resource') {
     const catalogBlock = await saasNpcBlock();
     if (catalogBlock) baseSystem = `${baseSystem}\n\n${catalogBlock}`;
@@ -2058,6 +2113,9 @@ async function runStandupCooSummary(opts) {
 }
 
 module.exports = {
+  systemForAgent,
+  resolveSkillDef,
+  alwaysLoadedSkillIds,
   handleInstruction,
   savePlanDeliverable,
   runStandupAgentTurn,

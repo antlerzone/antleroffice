@@ -24,13 +24,19 @@ function nextVersion(prev) {
   return asVersion(prev) + 1;
 }
 
+function normalizeKeywords(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((k) => String(k).trim()).filter(Boolean);
+}
+
 function normalizeSkillDef(def) {
   if (!def || typeof def !== 'object') return def;
   return {
     ...def,
     version: asVersion(def.version),
     description: typeof def.description === 'string' ? def.description : '',
+    keywords: normalizeKeywords(def.keywords),
   };
 }
 
-module.exports = { asVersion, nextVersion, normalizeSkillDef };
+module.exports = { asVersion, nextVersion, normalizeSkillDef, normalizeKeywords };

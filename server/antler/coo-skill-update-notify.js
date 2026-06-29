@@ -22,6 +22,7 @@ const registry = require('./registry-store');
 const orgRoles = require('./org-roles');
 const bossChat = require('./boss-chat-store');
 const agentCatalog = require('./agent-catalog');
+const { resolveKeywords } = require('./skill-index');
 const ecsCatalog = require('./ecs-catalog');
 const debugLog = require('./debug-log');
 const { runBrain } = require('./llm');
@@ -84,9 +85,14 @@ async function latestRoleSkillIds(agent) {
 }
 
 function skillDef(skillId, agent) {
+  agentCatalog.ensureBundledSkill(skillId, agent.templateId);
   const managed = registry.listSkills().find((s) => s.id === skillId);
   if (managed) return managed;
-  return agentCatalog.bundledSkillDef(skillId, agent.templateId) || null;
+  const bundled = agentCatalog.bundledSkillDef(skillId, agent.templateId);
+  if (bundled && (!bundled.keywords || !bundled.keywords.length)) {
+    bundled.keywords = resolveKeywords(bundled);
+  }
+  return bundled || null;
 }
 
 // Find new-since-hire built-in skills a worker has not learned yet and that we
