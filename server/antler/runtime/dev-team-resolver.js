@@ -12,6 +12,9 @@ const DEV_TEMPLATE_IDS = new Set([
 
 const DEV_ENGINES = new Set(['cursor', 'claude', 'codex']);
 
+// Leads (e.g. CTO) deploy & advise; they are not auto-assigned as routine code reviewers.
+const LEAD_TEMPLATE_IDS = new Set(['cto']);
+
 const TEMPLATE_ENGINE = {
   cursor_developer: 'cursor',
   claude_developer: 'claude',
@@ -58,6 +61,7 @@ function listDevAgents() {
     role: a.role,
     devEngine: resolveAgentEngine(a),
     devScope: normalizeDevScope(a.devScope),
+    isLead: LEAD_TEMPLATE_IDS.has(a.templateId) || a.isLead === true,
   }));
 }
 
@@ -86,11 +90,18 @@ function validateDevTeam({ writerAgentId, reviewerAgentIds }) {
   }
 
   const reviewers = [];
+  const seenReviewer = new Set();
+
+  // The writer self-reviews FIRST (first pass) whenever it has review scope.
+  // This makes the IT Engineer a write+review developer; extra reviewers run after.
+  if (writer && writer.devScope.canReview) {
+    reviewers.push(writer);
+    seenReviewer.add(writer.id);
+  }
+
+  // Additional reviewers (e.g. the junior-manager checker/tester) run as later passes.
   for (const id of reviewerAgentIds || []) {
-    if (writerAgentId && id === writerAgentId) {
-      errors.push('Writer cannot also be a reviewer when multiple IT NPCs are hired');
-      continue;
-    }
+    if (seenReviewer.has(id)) continue; // writer already self-reviews — skip duplicate
     const r = byId.get(id);
     if (!r) {
       errors.push(`Reviewer ${id} not found`);
@@ -101,13 +112,12 @@ function validateDevTeam({ writerAgentId, reviewerAgentIds }) {
       continue;
     }
     reviewers.push(r);
+    seenReviewer.add(id);
   }
 
   const hiredCount = devAgents.length;
-  if (hiredCount === 1 && writer && reviewers.length === 0 && writer.devScope.canReview) {
-    reviewers.push(writer);
-  } else if (reviewers.length === 0 && hiredCount > 0) {
-    errors.push('At least one reviewer is required (or hire only one NPC with review scope for self-review)');
+  if (reviewers.length === 0 && hiredCount > 0) {
+    errors.push('At least one reviewer is required: hire an IT Engineer with review scope (self-review) or add a reviewer.');
   }
 
   return { ok: errors.length === 0, errors, writer, reviewers, devAgents };
@@ -115,28 +125,26 @@ function validateDevTeam({ writerAgentId, reviewerAgentIds }) {
 
 function resolveDevTeam(overrides = {}) {
   const settings = getDevTeamSettings();
-  const writerAgentId = overrides.writerAgentId ?? settings.writerAgentId;
+  const devAgents = listDevAgents();
+
+  let writerAgentId = overrides.writerAgentId ?? settings.writerAgentId;
   let reviewerAgentIds = overrides.reviewerAgentIds ?? settings.reviewerAgentIds;
 
-  const devAgents = listDevAgents();
-  if (!writerAgentId && devAgents.length === 1) {
-    const only = devAgents[0];
-    if (only.devScope.canWrite) {
-      return validateDevTeam({
-        writerAgentId: only.id,
-        reviewerAgentIds: only.devScope.canReview ? [] : reviewerAgentIds,
-      });
-    }
+  // Auto-pick the writer when not configured: first non-lead agent that can write.
+  if (!writerAgentId) {
+    const firstWriter =
+      devAgents.find((a) => a.devScope.canWrite && !a.isLead) ||
+      devAgents.find((a) => a.devScope.canWrite);
+    if (firstWriter) writerAgentId = firstWriter.id;
   }
 
-  if (!writerAgentId && devAgents.length > 1) {
-    const firstWriter = devAgents.find((a) => a.devScope.canWrite);
-    if (firstWriter) {
-      return validateDevTeam({
-        writerAgentId: firstWriter.id,
-        reviewerAgentIds,
-      });
-    }
+  // Auto-pick reviewers when not configured: every OTHER hired non-lead agent that
+  // can review (e.g. the junior-manager checker/tester). The writer self-reviews on
+  // its own as the first pass, and leads (CTO) deploy rather than routinely review.
+  if (!reviewerAgentIds || reviewerAgentIds.length === 0) {
+    reviewerAgentIds = devAgents
+      .filter((a) => a.id !== writerAgentId && a.devScope.canReview && !a.isLead)
+      .map((a) => a.id);
   }
 
   return validateDevTeam({ writerAgentId, reviewerAgentIds });

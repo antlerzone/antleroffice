@@ -273,7 +273,7 @@
       ],
       "devScopeDefault": {
         "canWrite": true,
-        "canReview": false
+        "canReview": true
       },
       "localOnly": true,
       "serverAccess": {

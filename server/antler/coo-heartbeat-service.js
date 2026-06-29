@@ -8,6 +8,7 @@ const departmentStandup = require('./department-standup-service');
 const companyFramework = require('./company-framework');
 const cooCeoFuturePlan = require('./coo-ceo-future-plan');
 const skillUpdateNotify = require('./coo-skill-update-notify');
+const templateSync = require('./coo-template-sync');
 const { runAsCoo } = require('./agent-runtime');
 
 let activeRun = null;
@@ -240,6 +241,14 @@ async function runHeartbeat({ trigger = 'manual', wait = true } = {}) {
       skillUpdates = await skillUpdateNotify.runSkillUpdateNotifications({ trigger });
     } catch (e) {
       debugLog.logInfo('coo-heartbeat', 'skill-update-error', e?.message || 'failed');
+    }
+
+    // Auto-sync in-service workers to their role's latest template (free, additive
+    // openclaw workflows + devScope; never serverAccess). Best-effort.
+    try {
+      await templateSync.runTemplateSync({ trigger });
+    } catch (e) {
+      debugLog.logInfo('coo-heartbeat', 'template-sync-error', e?.message || 'failed');
     }
 
     let autonomous = { ran: false, reason: 'skipped' };

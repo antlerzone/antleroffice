@@ -7,6 +7,7 @@ const projectResolver = require('./dev-project-resolver');
 const devGit = require('./dev-git');
 const { getEngine } = require('./dev-engine-registry');
 const devTeamResolver = require('./dev-team-resolver');
+const devTests = require('./dev-test-runner');
 const itRepoQueue = require('./it-repo-queue');
 
 function devSettings() {
@@ -201,6 +202,12 @@ async function runDevPipelineForProject({
   onLog(`Branch: ${branchName}`);
 
   const writerEng = getEngine(writer.devEngine);
+  // A dedicated checker (e.g. IT Reviewer "B") is any reviewer that is not the
+  // writer itself. Their presence enables the automated test gate below.
+  const hasDedicatedChecker = reviewers.some(
+    (r) => r && r.registryId && r.registryId !== writer.registryId,
+  );
+  const devCfg = devSettings();
   let revisionFeedback = '';
   let lastReviewText = '';
   let round = 0;
@@ -232,6 +239,36 @@ async function runDevPipelineForProject({
         branchName,
         projectRoot,
       };
+    }
+
+    // --- Checker/tester gate: B actually runs the project's tests ---
+    if (hasDedicatedChecker) {
+      const testRes = await devTests.runTests({
+        projectRoot,
+        configuredCommand: devCfg.testCommand,
+        onLog,
+      });
+      if (testRes.ran && !testRes.ok) {
+        const tail = (testRes.output || '').slice(-4000);
+        onLog(`tests: FAILED (${testRes.command})`);
+        if (round < maxRounds) {
+          revisionFeedback =
+            `Automated tests failed via \`${testRes.command}\`. ` +
+            'Fix the code so the test suite passes.\n\n```\n' +
+            tail +
+            '\n```';
+          onLog('Tests failed — sending back to writer for revision…');
+          continue;
+        }
+        return {
+          ok: false,
+          text: `Tests failed after ${round} round(s) (\`${testRes.command}\`):\n\n\`\`\`\n${tail}\n\`\`\``,
+          provider: 'dev-pipeline',
+          branchName,
+          projectRoot,
+        };
+      }
+      if (testRes.ran) onLog(`tests: passed (${testRes.command})`);
     }
 
     let approved = true;
