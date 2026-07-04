@@ -300,10 +300,17 @@
           "url": "http://127.0.0.1:8931/mcp",
           "suggestedAuthType": "none",
           "skipProbeOnHire": true
+        },
+        {
+          "slug": "motion",
+          "name": "Motion (text-to-video)",
+          "url": "https://mcp.motion.so/mcp",
+          "suggestedAuthType": "oauth"
         }
       ],
       "mcpHints": [
-        "antleroffice"
+        "antleroffice",
+        "motion"
       ],
       "highlights": [
         "Writes code locally (Cursor / Codex / Claude under the hood)",
@@ -357,10 +364,17 @@
           "url": "http://127.0.0.1:8931/mcp",
           "suggestedAuthType": "none",
           "skipProbeOnHire": true
+        },
+        {
+          "slug": "motion",
+          "name": "Motion (text-to-video)",
+          "url": "https://mcp.motion.so/mcp",
+          "suggestedAuthType": "oauth"
         }
       ],
       "mcpHints": [
-        "antleroffice"
+        "antleroffice",
+        "motion"
       ],
       "highlights": [
         "Reviews the IT Engineer's diff, flags issues",
@@ -410,10 +424,17 @@
           "url": "http://127.0.0.1:8931/mcp",
           "suggestedAuthType": "none",
           "skipProbeOnHire": true
+        },
+        {
+          "slug": "motion",
+          "name": "Motion (text-to-video)",
+          "url": "https://mcp.motion.so/mcp",
+          "suggestedAuthType": "oauth"
         }
       ],
       "mcpHints": [
-        "antleroffice"
+        "antleroffice",
+        "motion"
       ],
       "highlights": [
         "Plans big tasks & gives technical advice",

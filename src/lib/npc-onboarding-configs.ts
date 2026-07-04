@@ -126,6 +126,28 @@ export const CODING_LEVEL_STEP: OnboardingStep = {
   ],
 }
 
+// AI 视频生成（Motion）——三个 IT 角色共用，请人时问一次
+export const MOTION_VIDEO_STEP: OnboardingStep = {
+  id: 'enable_motion_video',
+  type: 'choice',
+  question: '要开启 AI 视频生成（Motion）吗？',
+  hint: '用一句话生成产品演示片、宣传片、Logo 动画等。需要登录 Motion 账号、按用量计费。默认不开；之后随时跟 COO 说「开启 / 关闭视频生成」都能改。',
+  optional: true,
+  options: [
+    { value: 'no',  label: '暂时不开（推荐）', emoji: '🚫', hint: '需要时再开，先不占额度' },
+    { value: 'yes', label: '现在开启',         emoji: '🎬', hint: '第一次使用时会弹出让您登录 Motion 账号' },
+  ],
+}
+
+const MOTION_ENABLED_NOTE: OnboardingStep = {
+  id: 'motion_enabled_note',
+  type: 'info',
+  showWhen: { stepId: 'enable_motion_video', value: 'yes' },
+  title: '已开启视频生成',
+  hint: '第一次让 TA 做视频时，会弹出浏览器请您登录 Motion 账号并授权；之后就能直接用。费用走您的 Motion 账号额度。',
+  optional: true,
+}
+
 // ── NPC Onboarding Configs ────────────────────────────────────────────────────
 
 const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
@@ -629,7 +651,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'technical',  label: '技术专精', emoji: '⌨️' },
       { id: 'systematic', label: '系统思维', emoji: '🧩' },
     ],
-    steps: [CODING_LEVEL_STEP],
+    steps: [CODING_LEVEL_STEP, MOTION_VIDEO_STEP, MOTION_ENABLED_NOTE],
   },
 
   // ── IT Reviewer (B · 复查 + 测试) ─────────────────────────────────────────
@@ -642,7 +664,7 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
       { id: 'rigorous', label: '严谨认真', emoji: '🎯' },
       { id: 'detail_oriented', label: '细心仔细', emoji: '🔍' },
     ],
-    steps: [CODING_LEVEL_STEP],
+    steps: [CODING_LEVEL_STEP, MOTION_VIDEO_STEP, MOTION_ENABLED_NOTE],
   },
 
   cursor_developer: {
@@ -709,6 +731,8 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
         hint: '服务器地址和登录用户可以稍后在 Settings → Dev tools 填写，或直接跟 COO 说「把服务器地址设成 …」。每次真正操作服务器前，CTO 都会回来请您批准。',
         optional: true,
       },
+      MOTION_VIDEO_STEP,
+      MOTION_ENABLED_NOTE,
     ],
   },
 }

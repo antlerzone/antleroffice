@@ -251,6 +251,23 @@ async function applyCtoServerChoice() {
   }
 }
 
+async function applyMotionVideoChoice() {
+  // IT roles (A / B / CTO) onboarding: record whether the boss wants AI video
+  // generation (Motion) on for this NPC. Default off; the Motion connector stays
+  // dormant until first use (OAuth login), so "no" simply means never activated.
+  if (!['it_allrounder', 'it_reviewer', 'cto'].includes(props.templateId)) return
+  const enabled = answers.value['enable_motion_video'] === 'yes'
+  try {
+    await fetch('/api/dev/settings', {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ motionVideoEnabled: enabled }),
+    })
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function applyCodingLevelChoice() {
   // Save the CEO's own coding-comprehension level (asked on any IT-role onboarding).
   // Stored globally as dev.ceoCodingLevel so every COO→CEO report adapts to it.
@@ -275,6 +292,7 @@ function completeDone() {
   }
   void applyCtoServerChoice()
   void applyCodingLevelChoice()
+  void applyMotionVideoChoice()
   phase.value = 'done'
 }
 
