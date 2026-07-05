@@ -25,7 +25,9 @@ import { useVoiceSetupProgress } from "@/composables/useVoiceSetupProgress";
 import DownloadToastManager from "@/components/common/DownloadToastManager.vue";
 import SummonWakeNotifier from "@/components/common/SummonWakeNotifier.vue";
 
-const HEARTBEAT_MS = 5 * 60 * 1000;
+// Must beat faster than the ECS online window (2 min) or the website
+// shows this desktop as offline between heartbeats.
+const HEARTBEAT_MS = 60 * 1000;
 
 const { theme } = useTheme();
 const route = useRoute();

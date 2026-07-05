@@ -7,6 +7,7 @@ let openclawWs = null;
 let reconnectTimer = null;
 let relayConnected = false;
 let started = false;
+let lastToken = '';
 
 function httpToWs(base) {
   return String(base || '').replace(/\/+$/, '').replace(/^http/i, 'ws');
@@ -121,6 +122,14 @@ function connect(ecsToken) {
   const url = registerUrl(ecsToken);
   if (!url) return { ok: false, error: 'ECS not configured' };
 
+  // Idempotent: already registered with the same token — keep the live socket.
+  // Reconnecting here would drop website sessions piped through this relay
+  // (the boss heartbeat calls connect() periodically).
+  if (relayConnected && registerWs?.readyState === WebSocket.OPEN && lastToken === ecsToken) {
+    return { ok: true, alreadyConnected: true };
+  }
+  lastToken = ecsToken;
+
   if (registerWs) {
     try { registerWs.close(); } catch { /* */ }
     registerWs = null;
@@ -176,10 +185,32 @@ function stop() {
   disconnect();
 }
 
+/** Wait until the relay is registered (or timeout). Lets callers read
+ *  getPublicGatewayUrl() AFTER the connection exists instead of racing it —
+ *  otherwise the first bind/heartbeat uploads ws://127.0.0.1 to ECS and the
+ *  website tries to reach the office at an address only this machine knows. */
+function waitForRelay(timeoutMs = 3000) {
+  if (relayConnected) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      if (relayConnected) {
+        clearInterval(timer);
+        resolve(true);
+      } else if (Date.now() - t0 >= timeoutMs) {
+        clearInterval(timer);
+        resolve(false);
+      }
+    }, 100);
+    timer.unref?.();
+  });
+}
+
 module.exports = {
   connect,
   startFromBossSession,
   stop,
   getPublicGatewayUrl,
+  waitForRelay,
   isRelayConnected: () => relayConnected,
 };

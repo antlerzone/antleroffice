@@ -433,13 +433,13 @@ async function runTaskSteps({ agent, steps, baseSystem, mcpServers, shortTask, p
     const mcpBlock = mcpContextForStep(step, mcpServers);
     const system = [baseSystem, mcpBlock].filter(Boolean).join('\n\n');
     const label = step.accountLabel ? `[${step.accountLabel}] ` : '';
-    const { text, provider } = await runAgentTask({
+    const { text, provider, degraded, degradedError } = await runAgentTask({
       agent,
       instruction: `${label}${step.instruction}`,
       system,
       mcpServers,
     });
-    return { text, provider, step, index };
+    return { text, provider, degraded, degradedError, step, index };
   };
 
   const results = parallel
@@ -454,7 +454,12 @@ async function runTaskSteps({ agent, steps, baseSystem, mcpServers, shortTask, p
     })
     .join('\n\n---\n\n');
   const providers = [...new Set(results.map((r) => r.provider).filter(Boolean))];
-  return { text: combined, provider: providers.join(', ') || 'demo' };
+  return {
+    text: combined,
+    provider: providers.join(', ') || 'demo',
+    degraded: results.some((r) => r.degraded),
+    degradedError: results.find((r) => r.degradedError)?.degradedError || '',
+  };
 }
 
 // Send one instruction straight to a chosen agent. AntlerOffice gathers context
@@ -521,8 +526,8 @@ async function runWorkerTask({
         });
       })();
 
-  const { text, provider, needsBossInput: waitingOnBoss } = await taskP;
-  return { text, provider, needsBossInput: waitingOnBoss };
+  const { text, provider, needsBossInput: waitingOnBoss, degraded, degradedError } = await taskP;
+  return { text, provider, needsBossInput: waitingOnBoss, degraded, degradedError };
 }
 
 async function directToAgent({ instruction, agent, shortTask, planning = false, rawTask = '', threadId = null, ownerKey = null }) {
@@ -542,7 +547,7 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
   }
 
   try {
-    const { text, provider, needsBossInput: waitingOnBoss } = await runWorkerTask({
+    const { text, provider, needsBossInput: waitingOnBoss, degraded, degradedError } = await runWorkerTask({
       instruction,
       agent,
       shortTask,
@@ -551,6 +556,23 @@ async function directToAgent({ instruction, agent, shortTask, planning = false, 
       threadId,
       ownerKey,
     });
+
+    if (degraded) {
+      // Execution actually failed after retries — `text` is only a placeholder.
+      // Don't save it as a deliverable and don't mark the task complete;
+      // report an honest failure so the boss/work board see the truth.
+      chat(agent.role, text, threadId);
+      if (taskJob?.id) {
+        taskMonitor.handleFailed({
+          deliverableId: taskJob.id,
+          agent,
+          threadId,
+          error: degradedError || 'OpenClaw run failed after retries',
+        });
+      }
+      office.rest(agent.id, 'Failed');
+      return;
+    }
 
     const file = saveDeliverable(agent.role || 'agent', rawTask || instruction, text);
     if (planning) {

@@ -338,6 +338,7 @@ function registerAntlerRoutes(app, hooks = {}) {
             fireAt: a.fireAt,
           }));
         desktopRelay.startFromBossSession(s);
+        await desktopRelay.waitForRelay(3000);
         const relayUrl = desktopRelay.getPublicGatewayUrl();
         const pkgVersion = require('../../package.json').version;
         const ecsResult = await ecsSubscriptions.payrollHeartbeat({

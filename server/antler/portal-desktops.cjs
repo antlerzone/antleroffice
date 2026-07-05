@@ -208,6 +208,7 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
 
       if (mode === 'local' && s.ecsAccessToken) {
         desktopRelay.startFromBossSession(s);
+        await desktopRelay.waitForRelay(4000);
         const relayUrl = desktopRelay.getPublicGatewayUrl() || wsUrl;
         const pkgVersion = require('../../package.json').version;
         const bindRes = await ecsFetch('/api/desktops/bind', s.ecsAccessToken, {

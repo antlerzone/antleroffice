@@ -1,8 +1,86 @@
 // Minimal multi-provider LLM client using global fetch (Node 18+/Electron 35).
 // Each NPC's "brain" picks a provider; the client supplies the API key in Settings.
 
+// ---------------------------------------------------------------------------
+// Transient-error retry (error recovery layer).
+// A single 429/5xx or a dropped connection should NOT fail the whole task.
+// Retries with exponential backoff + jitter, honors Retry-After, and never
+// retries permanent errors (401 bad key, 400 bad request, aborts).
+// ---------------------------------------------------------------------------
+
+const RETRY_MAX_ATTEMPTS = 3; // 1 original try + 2 retries
+const RETRY_BASE_DELAY_MS = 800;
+const RETRY_MAX_DELAY_MS = 8000;
+
+const TRANSIENT_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+function sleepMs(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => {
+        clearTimeout(t);
+        reject(new Error('aborted'));
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+function retryDelayMs(attempt, retryAfterHeader) {
+  const retryAfter = Number(retryAfterHeader);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, RETRY_MAX_DELAY_MS);
+  }
+  const base = RETRY_BASE_DELAY_MS * 2 ** attempt;
+  const jitter = Math.random() * 0.3 * base;
+  return Math.min(base + jitter, RETRY_MAX_DELAY_MS);
+}
+
+// fetch() rejects with TypeError/network-ish errors when the connection drops.
+function isNetworkError(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError' || /aborted/i.test(String(err.message || ''))) return false;
+  const msg = String(err.message || '');
+  return (
+    err.name === 'TypeError' ||
+    /fetch failed|network|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|UND_ERR/i.test(msg)
+  );
+}
+
+/**
+ * fetch() with retry on transient failures. Returns the successful Response.
+ * Non-OK permanent responses (401/400/...) are thrown immediately with body text,
+ * matching the previous error format: `<label> <status>: <body>`.
+ */
+async function fetchWithRetry(label, url, options = {}) {
+  const signal = options.signal;
+  let lastErr = null;
+  for (let attempt = 0; attempt < RETRY_MAX_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) throw lastErr || new Error('aborted');
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      if (!isNetworkError(err) || attempt === RETRY_MAX_ATTEMPTS - 1) throw err;
+      lastErr = err;
+      await sleepMs(retryDelayMs(attempt, null), signal);
+      continue;
+    }
+    if (res.ok) return res;
+    const bodyText = await res.text().catch(() => '');
+    const error = new Error(`${label} ${res.status}: ${bodyText}`);
+    error.status = res.status;
+    if (!TRANSIENT_STATUS.has(res.status) || attempt === RETRY_MAX_ATTEMPTS - 1) throw error;
+    lastErr = error;
+    await sleepMs(retryDelayMs(attempt, res.headers?.get?.('retry-after')), signal);
+  }
+  throw lastErr || new Error(`${label}: request failed`);
+}
+
 async function callOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, signal }) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetchWithRetry('OpenAI', 'https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     signal,
     headers: {
@@ -18,14 +96,15 @@ async function callOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, sig
       ],
     }),
   });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() || '';
 }
 
-/** Stream OpenAI chat completions; onDelta(textChunk) for each content delta. */
+/** Stream OpenAI chat completions; onDelta(textChunk) for each content delta.
+ *  Retries only cover connection setup — once deltas start flowing we never
+ *  retry (that would duplicate text the UI already showed). */
 async function streamOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, onDelta, signal }) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetchWithRetry('OpenAI', 'https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     signal,
     headers: {
@@ -42,7 +121,6 @@ async function streamOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, o
       ],
     }),
   });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
   if (!res.body) throw new Error('OpenAI stream body missing');
 
   const reader = res.body.getReader();
@@ -76,9 +154,10 @@ async function streamOpenAI({ apiKey, model, system, prompt, maxTokens = 1024, o
   return full.trim();
 }
 
-async function callAnthropic({ apiKey, model, system, prompt }) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+async function callAnthropic({ apiKey, model, system, prompt, signal }) {
+  const res = await fetchWithRetry('Anthropic', 'https://api.anthropic.com/v1/messages', {
     method: 'POST',
+    signal,
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
@@ -91,23 +170,22 @@ async function callAnthropic({ apiKey, model, system, prompt }) {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return (data.content || []).map((c) => c.text || '').join('').trim();
 }
 
-async function callGemini({ apiKey, model, system, prompt }) {
+async function callGemini({ apiKey, model, system, prompt, signal }) {
   const m = model || 'gemini-1.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
-  const res = await fetch(url, {
+  const res = await fetchWithRetry('Gemini', url, {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: system ? { parts: [{ text: system }] } : undefined,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     }),
   });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
 }
@@ -153,4 +231,4 @@ function demoAnswer(prompt, note) {
   );
 }
 
-module.exports = { runBrain, callOpenAI, streamOpenAI };
+module.exports = { runBrain, callOpenAI, streamOpenAI, fetchWithRetry };

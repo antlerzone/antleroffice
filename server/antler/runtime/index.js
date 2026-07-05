@@ -10,6 +10,38 @@ const demo = require('./demo');
 const openclaw = require('./openclaw');
 const materials = require('../materials.cjs');
 
+// --- Executor retry policy (error recovery) -------------------------------
+// A transient gateway hiccup (chat.send failed, gateway restarting) should be
+// retried before we fall back to the demo/placeholder path. We do NOT retry:
+//  - auth errors / boss-input asks (retrying won't help),
+//  - timeouts (the run may still be executing server-side; re-sending could
+//    double-execute side effects like posting or emailing),
+//  - "not available" (OpenClaw not installed — nothing to retry).
+const OPENCLAW_RETRY_DELAYS_MS = [2000, 5000];
+
+function isRetryableOpenclawFailure(r) {
+  if (!r || r.ok) return false;
+  if (!r.available) return false;
+  if (r.authError || r.needsBossInput) return false;
+  if (/timed out/i.test(String(r.error || ''))) return false;
+  return true;
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runOpenclawWithRetry(params) {
+  let r = await openclaw.run(params);
+  for (const delay of OPENCLAW_RETRY_DELAYS_MS) {
+    if (!isRetryableOpenclawFailure(r)) return r;
+    await sleepMs(delay);
+    r = await openclaw.run(params);
+  }
+  return r;
+}
+// ---------------------------------------------------------------------------
+
 // agent: { id, role, runtime, userAgentId }. memoryKey scopes memory + knowledge
 // to a user-created agent when present, else the department role.
 async function runTask({ agent = {}, instruction, system = '', mcpServers = [], threadId, ownerKey } = {}) {
@@ -41,9 +73,11 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
   // 2) Execute. Try OpenClaw unless the NPC is explicitly pinned to demo.
   let result = null;
   let note = '';
+  let failError = '';
   let needsInput = false;
+  let skipMemory = false;
   if (agent.runtime !== 'demo') {
-    const r = await openclaw.run({
+    const r = await runOpenclawWithRetry({
       instruction,
       system: fullSystem,
       agentId: agent.openclawAgentId,
@@ -61,8 +95,10 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
           provider: 'openclaw',
         };
         needsInput = true;
+        skipMemory = true; // canned "need your key" ask — not a real outcome
       } else {
-        note = `OpenClaw could not complete the run (${String(r.error || 'unknown').slice(0, 80)}). Showing a placeholder.`;
+        failError = String(r.error || 'unknown');
+        note = `OpenClaw could not complete the run after retries (${failError.slice(0, 80)}). Showing a placeholder.`;
       }
     }
   }
@@ -75,20 +111,27 @@ async function runTask({ agent = {}, instruction, system = '', mcpServers = [], 
   if (!needsInput) needsInput = detectBossInput(result.text, { authError: false });
 
   // 3) Remember the outcome: summarize + extract facts (not raw episode dumps).
-  try {
-    await hermes.recordAfterTask(memoryKey, {
-      instruction,
-      resultText: result.text,
-      role: agent.role || agent.id,
-    });
-  } catch {
-    hermes.record(memoryKey, {
-      kind: 'summary',
-      text: `Completed: ${String(instruction).slice(0, 120)}`,
-    });
+  // Skip placeholder results (provider 'demo' = no real work happened) — otherwise
+  // the NPC "remembers" completing tasks it never actually did (memory poisoning).
+  if (result.provider !== 'demo' && !skipMemory) {
+    try {
+      await hermes.recordAfterTask(memoryKey, {
+        instruction,
+        resultText: result.text,
+        role: agent.role || agent.id,
+      });
+    } catch {
+      hermes.record(memoryKey, {
+        kind: 'summary',
+        text: `Completed: ${String(instruction).slice(0, 120)}`,
+      });
+    }
   }
 
-  return { ...result, needsBossInput: needsInput };
+  // degraded = execution actually failed and `text` is only a placeholder
+  // (NOT the case when the boss's own key produced a real fallback answer).
+  const degraded = !!failError && result.provider === 'demo';
+  return { ...result, needsBossInput: needsInput, degraded, degradedError: degraded ? failError : '' };
 }
 
-module.exports = { runTask };
+module.exports = { runTask, isRetryableOpenclawFailure, runOpenclawWithRetry };
