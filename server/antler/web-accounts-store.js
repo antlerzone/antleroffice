@@ -239,7 +239,8 @@ function nextAccountAlias(accounts) {
 }
 
 function inferAlias(body, accounts) {
-  if (body.alias) return validateAlias(body.alias);
+  // 多公司：显式 alias 也去重，避免两家用同软件(如两家 Bukku=alias 'bukku')撞名覆盖 → bukku / bukku_2 / bukku_3...
+  if (body.alias) return uniqueAlias(validateAlias(body.alias), accounts);
   const label = String(body.displayName || body.label || '').trim();
   if (label) {
     const fromLabel = normalizeAlias(label);

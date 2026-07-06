@@ -72,6 +72,7 @@ const ROLE_CATEGORY: Record<string, CatalogCategory> = {
   admin: 'operations',
   accounting: 'operations',
   human_resource: 'operations',
+  security: 'operations',
   customer_service: 'customer',
   antlerchat_cs: 'customer',
   antlerhub_admin: 'operations',

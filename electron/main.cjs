@@ -409,6 +409,71 @@ function setupUpdaterIpc() {
     }
   });
 
+  // ── Security Worker: environment check / auto-install (Windows-first) ──────
+  function runCmd(cmd, args, onData) {
+    return new Promise((resolve) => {
+      let out = '';
+      let p;
+      try {
+        p = spawn(cmd, args, { shell: true, windowsHide: true });
+      } catch (err) {
+        return resolve({ code: -1, out: String(err) });
+      }
+      p.stdout?.on('data', (d) => { out += d; onData?.(String(d)); });
+      p.stderr?.on('data', (d) => { out += d; onData?.(String(d)); });
+      p.on('close', (code) => resolve({ code, out }));
+      p.on('error', (err) => resolve({ code: -1, out: String(err) }));
+    });
+  }
+
+  ipcMain.handle('env:check', async (_e, tool) => {
+    const map = {
+      node: ['node', ['-v']],
+      appium: ['appium', ['-v']],
+      adb: ['adb', ['version']],
+    };
+    const spec = map[tool];
+    if (!spec) return { ok: false, installed: false, reason: 'unknown tool' };
+    const r = await runCmd(spec[0], spec[1]);
+    return {
+      ok: r.code === 0,
+      installed: r.code === 0,
+      version: r.code === 0 ? r.out.trim().split('\n')[0] : '',
+    };
+  });
+
+  ipcMain.handle('env:install', async (e, tool) => {
+    const send = (line) => {
+      try { e.sender.send('env:progress', { tool, line }); } catch {}
+    };
+    if (tool === 'appium') {
+      send('npm i -g appium ...\n');
+      const a = await runCmd('npm', ['i', '-g', 'appium'], send);
+      if (a.code === 0) {
+        send('\nappium driver install uiautomator2 ...\n');
+        await runCmd('appium', ['driver', 'install', 'uiautomator2'], send);
+      }
+      return { ok: a.code === 0, needManual: a.code !== 0, url: 'https://appium.io/' };
+    }
+    if (tool === 'node') {
+      send('winget install OpenJS.NodeJS.LTS ...\n');
+      const r = await runCmd('winget', ['install', '-e', '--id', 'OpenJS.NodeJS.LTS'], send);
+      return { ok: r.code === 0, needManual: r.code !== 0, url: 'https://nodejs.org/' };
+    }
+    if (tool === 'adb') {
+      // 首版：给下载入口；platform-tools 全自动解压+PATH 留到后续
+      const url = 'https://developer.android.com/tools/releases/platform-tools';
+      try { await shell.openExternal(url); } catch {}
+      return { ok: false, needManual: true, url };
+    }
+    if (tool === 'android_studio') {
+      const url = 'https://developer.android.com/studio';
+      try { await shell.openExternal(url); } catch {}
+      return { ok: true, openedInstaller: true, url };
+    }
+    return { ok: false, reason: 'unknown tool' };
+  });
+
   const { createVoiceWakeService } = require('./voice-wake-service.cjs');
   voiceWakeService = createVoiceWakeService({
     ipcMain,

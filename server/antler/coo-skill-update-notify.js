@@ -199,6 +199,7 @@ async function cooCopy(ctx) {
     const { text } = await runBrain({
       settings,
       brain,
+      tier: 'light',
       system: isUpgrade
         ? '你是公司的 COO，用一句自然、口语化的中文提醒老板：某位员工学过的某技能升级到新版了，可以免费更新。' +
           '要简短友好，不要夸张，结尾轻轻问一句要不要更新到最新版。'

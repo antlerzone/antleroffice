@@ -44,6 +44,7 @@ export type OnboardingStepType =
   | 'api_credentials' // form with username + password (saves to web-accounts-store)
   | 'browser_login'   // opens Chrome, waits for boss to log in
   | 'info'            // read-only information panel
+  | 'env_setup'       // detect + auto-install a desktop tool (Electron only)
 
 export interface OnboardingStep {
   id: string
@@ -70,6 +71,10 @@ export interface OnboardingStep {
   tutorialSteps?: string[]
   /** Whether this step can be skipped */
   optional?: boolean
+  /** For 'env_setup': which desktop tool to detect / install */
+  tool?: 'node' | 'appium' | 'adb' | 'android_studio'
+  /** For 'env_setup'/'info': a download page to open as fallback */
+  downloadUrl?: string
   /**
    * For 'api_credentials' steps: after saving the account, also call
    * POST /api/onboard/mcp-pack/apply with these extra body params.
@@ -558,6 +563,87 @@ const NPC_ONBOARDING_CONFIGS: Record<string, NpcOnboardingConfig> = {
           { value: 'cs',       label: '客服专员',   emoji: '💬' },
           { value: 'ops',      label: '运营助理',   emoji: '⚙️' },
           { value: 'custom',   label: '自定义角色', emoji: '✨' },
+        ],
+      },
+    ],
+  },
+
+  // ── Security Worker ───────────────────────────────────────────────────────
+  agent_security: {
+    templateId: 'agent_security',
+    greeting: '老板好！我是安全自动化 worker，负责在手机上自动跑门禁/访客/物业系统的活。开工前需要先把运行环境装好、把手机连上。',
+    capabilities: ['自动跑 iCares/Veemios/eCommunity/GProp/Klik Asia', '访客/房产登记自动化', '结果上传云端', '心跳与任务轮询'],
+    completionHint: '环境装好、手机连上后，我会自动领到一个 worker 编号并开始接 job。',
+    steps: [
+      {
+        id: 'env_intro',
+        type: 'info',
+        title: '第一步：了解需要装什么',
+        question: '我需要以下三样工具才能工作：',
+        tutorialSteps: [
+          'Android Studio —— 含安卓 SDK 与模拟器',
+          'ADB —— 电脑和手机对话的桥（随 Android Studio 一起装）',
+          'Appium —— 帮我自动点手机的引擎',
+        ],
+      },
+      {
+        id: 'install_android_studio',
+        type: 'env_setup',
+        tool: 'android_studio',
+        optional: true,
+        title: '第二步：装 Android Studio',
+        question: '点「打开下载页」下载 Android Studio，一路下一步装好即可。',
+        downloadUrl: 'https://developer.android.com/studio',
+        tutorialSteps: [
+          '下载后运行安装器，勾选 Android SDK / Platform-Tools',
+          '装完打开一次，让它补齐 SDK 组件',
+        ],
+      },
+      {
+        id: 'verify_adb',
+        type: 'env_setup',
+        tool: 'adb',
+        optional: true,
+        title: '第三步：确认 ADB 能用',
+        question: '点「检测」看 ADB 装好没；没有就点「打开下载页」装 platform-tools。',
+        downloadUrl: 'https://developer.android.com/tools/releases/platform-tools',
+        tutorialSteps: [
+          'Platform-Tools 一般随 Android Studio 一起装好',
+          '若检测不到，把 platform-tools 目录加进系统 PATH',
+        ],
+      },
+      {
+        id: 'check_node',
+        type: 'env_setup',
+        tool: 'node',
+        optional: true,
+        title: '第四步：装 Node.js',
+        question: '点「检测」看 Node 装好没；没有就点「自动安装」（用 winget）。',
+        downloadUrl: 'https://nodejs.org/',
+        tutorialSteps: ['Appium 依赖 Node.js', '自动安装失败时可点下载页手动装'],
+      },
+      {
+        id: 'install_appium',
+        type: 'env_setup',
+        tool: 'appium',
+        optional: true,
+        title: '第五步：装 Appium',
+        question: '点「检测」看 Appium 装好没；没有就点「自动安装」（npm i -g appium）。',
+        downloadUrl: 'https://appium.io/',
+        tutorialSteps: [
+          '需要先装好 Node.js',
+          '装完会自动补 uiautomator2 驱动',
+        ],
+      },
+      {
+        id: 'connect_phone',
+        type: 'info',
+        title: '第六步：连上手机',
+        question: '用数据线把安卓手机插到电脑，开启「USB 调试」。',
+        tutorialSteps: [
+          '手机：设置 → 关于手机 → 连点版本号 7 次打开开发者选项',
+          '开发者选项里打开「USB 调试」，插线后手机上点「允许」',
+          '插好后我会自动认到这台机、分配一个 worker 编号',
         ],
       },
     ],

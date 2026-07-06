@@ -44,6 +44,7 @@ async function autoDescribeSkill(system, { name = '', existing = '' } = {}) {
     const { text } = await runBrain({
       settings,
       brain,
+      tier: 'light',
       system:
         'Summarize what this office-worker skill does in ONE short plain-English line ' +
         '(max ~20 words), for non-technical users. No surrounding quotes.',

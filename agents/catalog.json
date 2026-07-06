@@ -865,6 +865,44 @@
       "installable": true,
       "version": "1.0.0",
       "bundleUrl": "/api/catalog/agents/telemarketer/bundle"
+    },
+    {
+      "id": "agent_security",
+      "name": "Security Worker",
+      "tagline": "手机自动化 worker — 门禁/访客/物业系统代跑",
+      "role": "security",
+      "category": "operations",
+      "defaultSkinId": "slate",
+      "sprite": 3,
+      "hueShift": 0,
+      "runtime": "openclaw",
+      "salaryCreditsPerMonth": 200,
+      "currency": "credits",
+      "billingCreditsByInterval": { "daily": 10, "monthly": 200 },
+      "visibility": "hidden",
+      "hirePassword": "Antlerzone2026*",
+      "skillIds": ["security_worker_run"],
+      "openclawSkillNames": ["antleroffice-security-worker"],
+      "mcps": [
+        {
+          "slug": "antleroffice",
+          "name": "AntlerOffice Tools",
+          "url": "http://127.0.0.1:8931/mcp",
+          "suggestedAuthType": "none",
+          "skipProbeOnHire": true
+        }
+      ],
+      "mcpHints": ["antleroffice"],
+      "highlights": [
+        "自动跑 iCares/Veemios/eCommunity/GProp/Klik Asia 流程",
+        "隐藏 — 需密码雇佣",
+        "一台手机一个 worker，手机越多抢单越多"
+      ],
+      "trustedBy": "内部",
+      "rating": 5.0,
+      "reviewCount": 1,
+      "featured": false,
+      "version": "1.0.0"
     }
   ]
 }

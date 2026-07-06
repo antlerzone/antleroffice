@@ -90,6 +90,14 @@ const ROLE_RESUME: Record<
       'Publish a hidden VIP agent with a UUID and hire password.',
     ],
   },
+  security: {
+    description:
+      'This security worker drives an Android phone via ADB + Appium to auto-run gate, visitor, and property flows (iCares, Veemios, eCommunity, GProp, Klik Asia). One phone = one worker; plug in more phones to grab more jobs.',
+    examples: [
+      'Hire one Security Worker per Android phone you want to run jobs.',
+      'Follow the setup guide to install Android Studio, ADB, and Appium, then plug in your phone.',
+    ],
+  },
   secretary: {
     description:
       'Your COO and the only Boss Chat front door. The COO records what you need and delegates work to your department workers.',

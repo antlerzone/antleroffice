@@ -44,6 +44,7 @@ async function recordAfterTask(memoryKey, { instruction, resultText, role = 'ceo
     const { text } = await runBrain({
       settings,
       brain,
+      tier: 'light',
       system:
         'Extract durable memory from an agent task log. Reply with JSON only: ' +
         '{"summary":"one concise sentence","facts":["optional fact",...]}. ' +

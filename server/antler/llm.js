@@ -1,6 +1,28 @@
 // Minimal multi-provider LLM client using global fetch (Node 18+/Electron 35).
 // Each NPC's "brain" picks a provider; the client supplies the API key in Settings.
 
+const { slimForLLM } = require('./token-slim');
+
+// ---------------------------------------------------------------------------
+// Model routing (tiers). Light housekeeping work (memory extraction, skill
+// descriptions, notifications) runs on a cheap model; real NPC work keeps the
+// model configured in Settings. Override per provider via
+// settings.modelTiers.light[provider] if you want a different cheap model.
+// ---------------------------------------------------------------------------
+const LIGHT_MODELS = {
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-3-5-haiku-latest',
+  gemini: 'gemini-1.5-flash',
+};
+
+function resolveTierModel(settings, provider, configuredModel, tier) {
+  if (tier === 'light') {
+    const override = settings?.modelTiers?.light?.[provider];
+    return override || LIGHT_MODELS[provider] || configuredModel;
+  }
+  return configuredModel;
+}
+
 // ---------------------------------------------------------------------------
 // Transient-error retry (error recovery layer).
 // A single 429/5xx or a dropped connection should NOT fail the whole task.
@@ -193,7 +215,12 @@ async function callGemini({ apiKey, model, system, prompt, signal }) {
 // Resolve the provider/key for a given NPC brain + settings, then run.
 // Returns { text, provider } or throws. Falls back to a deterministic
 // "demo" answer when no key is configured, so the office still works offline.
-async function runBrain({ settings, brain, system, prompt, note }) {
+// Options:
+//   tier: 'light' routes to a cheap model (see LIGHT_MODELS) — use for
+//         housekeeping calls where top quality is wasted money.
+//   Prompts above ~3k chars are token-slimmed (HTML→text, base64/URL cleanup,
+//   dedupe) before hitting the API — same meaning, fewer tokens.
+async function runBrain({ settings, brain, system, prompt, note, tier }) {
   const mode = brain?.mode || 'ai';
   if (mode === 'ecs') {
     return { provider: 'ecs', text: demoAnswer(prompt, 'ECS connector not wired yet (stub).') };
@@ -206,7 +233,12 @@ async function runBrain({ settings, brain, system, prompt, note }) {
     return { provider: 'demo', text: demoAnswer(prompt, note) };
   }
 
-  const args = { apiKey: cfg.apiKey, model: cfg.model, system, prompt };
+  const args = {
+    apiKey: cfg.apiKey,
+    model: resolveTierModel(settings, provider, cfg.model, tier),
+    system,
+    prompt: slimForLLM(prompt),
+  };
   let text = '';
   if (provider === 'openai') text = await callOpenAI(args);
   else if (provider === 'anthropic') text = await callAnthropic(args);
@@ -231,4 +263,4 @@ function demoAnswer(prompt, note) {
   );
 }
 
-module.exports = { runBrain, callOpenAI, streamOpenAI, fetchWithRetry };
+module.exports = { runBrain, callOpenAI, streamOpenAI, fetchWithRetry, resolveTierModel };

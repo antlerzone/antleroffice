@@ -7,3 +7,9 @@ backups
 data/wizard.db-shm
 data/wizard.db-wal
 .trae
+release
+__pycache__
+*.pyc
+server/voice-sidecar/wake-debug.log
+vue-tsc-errors.txt
+build.log

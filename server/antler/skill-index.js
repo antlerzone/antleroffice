@@ -217,6 +217,7 @@ async function semanticMatch({ taskText, candidates, agent, threadId } = {}) {
   const { text, provider: used } = await runBrain({
     settings,
     brain,
+    tier: 'light',
     system:
       'You pick office skills relevant to a task. Reply with JSON only: {"skillIds":["id1"]}. ' +
       'Pick zero or more skill ids from the catalog that are clearly needed. If none fit, return {"skillIds":[]}.',

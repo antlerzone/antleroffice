@@ -8,7 +8,7 @@
  * All setup steps are defined in src/lib/npc-onboarding-configs.ts.
  * No code changes needed here when adding a new NPC — just update the configs file.
  */
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useBossStore } from '@/stores/boss'
@@ -499,6 +499,81 @@ const currentStepCanProceed = computed(() => {
   if (step.type === 'browser_login') return captureDone.value
   return true
 })
+
+// ── Security Worker environment setup (Electron only) ─────────────────────────
+const desktop = (window as unknown as { antlerDesktop?: any }).antlerDesktop
+const isDesktop = !!(desktop && desktop.isElectron)
+
+interface EnvState {
+  checked: boolean
+  installed: boolean
+  version: string
+  busy: boolean
+  log: string
+}
+const envStates = ref<Record<string, EnvState>>({})
+const DEFAULT_ENV: EnvState = { checked: false, installed: false, version: '', busy: false, log: '' }
+
+/** Read-only accessor for templates (never mutates during render). */
+function envState(tool: string): EnvState {
+  return envStates.value[tool] || DEFAULT_ENV
+}
+
+/** Ensure a mutable state entry exists — call only from actions, not render. */
+function ensureEnv(tool: string): EnvState {
+  if (!envStates.value[tool]) {
+    envStates.value[tool] = { checked: false, installed: false, version: '', busy: false, log: '' }
+  }
+  return envStates.value[tool]
+}
+
+async function checkEnv(tool: string) {
+  if (!isDesktop || !desktop.envCheck) return
+  const s = ensureEnv(tool)
+  s.busy = true
+  try {
+    const r = await desktop.envCheck(tool)
+    s.checked = true
+    s.installed = !!r?.installed
+    s.version = r?.version || ''
+  } finally {
+    s.busy = false
+  }
+}
+
+async function installEnv(tool: string, downloadUrl?: string) {
+  if (!isDesktop || !desktop.envInstall) {
+    if (downloadUrl && desktop?.openExternal) desktop.openExternal(downloadUrl)
+    return
+  }
+  const s = ensureEnv(tool)
+  s.busy = true
+  s.log = ''
+  try {
+    const r = await desktop.envInstall(tool)
+    if (r?.needManual && r?.url && desktop.openExternal) desktop.openExternal(r.url)
+    await checkEnv(tool)
+  } finally {
+    s.busy = false
+  }
+}
+
+function openDownload(url?: string) {
+  if (url && desktop?.openExternal) desktop.openExternal(url)
+}
+
+let unsubscribeEnvProgress: null | (() => void) = null
+onMounted(() => {
+  if (isDesktop && desktop.onEnvProgress) {
+    unsubscribeEnvProgress = desktop.onEnvProgress((data: { tool: string; line: string }) => {
+      const s = ensureEnv(data.tool)
+      s.log = (s.log + (data.line || '')).slice(-2000)
+    })
+  }
+})
+onUnmounted(() => {
+  unsubscribeEnvProgress?.()
+})
 </script>
 
 <template>
@@ -658,7 +733,60 @@ const currentStepCanProceed = computed(() => {
           <!-- Info step -->
           <template v-else-if="currentStep.type === 'info'">
             <h3 class="now-step-title">{{ currentStep.title }}</h3>
-            <p class="now-step-hint">{{ currentStep.hint }}</p>
+            <p v-if="currentStep.hint" class="now-step-hint">{{ currentStep.hint }}</p>
+            <p v-if="currentStep.question" class="now-step-hint">{{ currentStep.question }}</p>
+            <ul v-if="currentStep.tutorialSteps?.length" style="margin: 8px 0 0; padding-left: 18px; line-height: 1.7;">
+              <li v-for="(t, i) in currentStep.tutorialSteps" :key="i">{{ t }}</li>
+            </ul>
+          </template>
+
+          <template v-else-if="currentStep.type === 'env_setup'">
+            <h3 class="now-step-title">{{ currentStep.title }}</h3>
+            <p v-if="currentStep.question" class="now-step-hint">{{ currentStep.question }}</p>
+            <ul v-if="currentStep.tutorialSteps?.length" style="margin: 8px 0 0; padding-left: 18px; line-height: 1.7;">
+              <li v-for="(t, i) in currentStep.tutorialSteps" :key="i">{{ t }}</li>
+            </ul>
+            <div style="margin-top: 12px;">
+              <div style="margin-bottom: 8px; font-size: 14px;">
+                <template v-if="envState(currentStep.tool || '').busy">⏳ 处理中…</template>
+                <template v-else-if="envState(currentStep.tool || '').checked">
+                  <span v-if="envState(currentStep.tool || '').installed">✅ 已装 {{ envState(currentStep.tool || '').version }}</span>
+                  <span v-else>❌ 未检测到</span>
+                </template>
+                <template v-else>尚未检测</template>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button
+                  class="now-btn"
+                  :disabled="envState(currentStep.tool || '').busy"
+                  @click="checkEnv(currentStep.tool || '')"
+                >
+                  检测
+                </button>
+                <button
+                  v-if="currentStep.tool !== 'android_studio'"
+                  class="now-btn primary"
+                  :disabled="envState(currentStep.tool || '').busy"
+                  @click="installEnv(currentStep.tool || '', currentStep.downloadUrl)"
+                >
+                  自动安装
+                </button>
+                <button
+                  v-if="currentStep.downloadUrl"
+                  class="now-btn ghost"
+                  @click="openDownload(currentStep.downloadUrl)"
+                >
+                  打开下载页
+                </button>
+              </div>
+              <pre
+                v-if="envState(currentStep.tool || '').log"
+                style="margin-top: 10px; max-height: 140px; overflow: auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap;"
+              >{{ envState(currentStep.tool || '').log }}</pre>
+              <p v-if="!isDesktop" class="now-step-hint" style="margin-top: 8px;">
+                网页版无法自动安装，请点「打开下载页」手动装好，再点「继续」。
+              </p>
+            </div>
           </template>
 
           <!-- Step navigation -->

@@ -24,10 +24,15 @@ const path = require('node:path');
 const { getDataDir } = require('./store');
 const embeddings = require('./embeddings');
 
-const KIND_WEIGHT = { fact: 2.5, summary: 1.5, episode: 1.0 };
+const KIND_WEIGHT = { fact: 2.5, digest: 1.8, summary: 1.5, episode: 1.0 };
 const MAX_ENTRIES = 1000;
 const COMPRESS_EPISODE_THRESHOLD = 60;
 const COMPRESS_BATCH = 20;
+// Memory-tree layer 2 (OpenHuman-style): when summaries pile up, the oldest
+// batch is folded into ONE higher-level "digest" entry. Tree shape:
+//   episodes → summaries (existing) → digests (this layer)
+const SUMMARY_CONSOLIDATE_THRESHOLD = 24;
+const SUMMARY_CONSOLIDATE_BATCH = 12;
 const PINNED_CHAR_LIMIT = 800;
 const RETRIEVED_CHAR_LIMIT = 800;
 
@@ -97,6 +102,9 @@ function append(agentId, { kind = 'episode', text = '', pinned } = {}) {
   if (entries.length > MAX_ENTRIES) entries.splice(0, entries.length - MAX_ENTRIES);
   write(agentId, entries);
   maybeCompressEpisodes(agentId);
+  // Fire-and-forget: layer-2 consolidation may call an LLM, so it must never
+  // block (or fail) a synchronous append.
+  maybeConsolidateSummaries(agentId).catch(() => {});
   return item;
 }
 
@@ -298,6 +306,79 @@ function maybeCompressEpisodes(agentId) {
   return true;
 }
 
+// ── Memory tree layer 2: summaries → digest ─────────────────────────────────
+// Without this, summaries grow forever and retrieval noise creeps back in.
+// LLM path (cheap "light" model) writes a clean thematic digest; if no key is
+// configured we fall back to a deterministic merge, so nothing depends on AI.
+
+function heuristicDigest(batch) {
+  const seen = new Set();
+  const lines = [];
+  for (const e of batch) {
+    for (const raw of String(e.text || '').split('\n')) {
+      const line = raw.replace(/^[-•]\s*/, '').replace(/\s+/g, ' ').trim();
+      if (!line || line.startsWith('Compressed ')) continue;
+      const key = line.toLowerCase().slice(0, 60);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`• ${line.slice(0, 110)}`);
+      if (lines.length >= 10) return lines.join('\n');
+    }
+  }
+  return lines.join('\n');
+}
+
+async function maybeConsolidateSummaries(agentId) {
+  const summaries = list(agentId).filter((e) => e.kind === 'summary');
+  if (summaries.length < SUMMARY_CONSOLIDATE_THRESHOLD) return false;
+
+  const batch = summaries
+    .slice()
+    .sort((a, b) => a.ts - b.ts)
+    .slice(0, SUMMARY_CONSOLIDATE_BATCH);
+  const from = new Date(batch[0].ts).toISOString().slice(0, 10);
+  const to = new Date(batch[batch.length - 1].ts).toISOString().slice(0, 10);
+
+  let body = '';
+  try {
+    // Lazy requires avoid a circular dependency (memory-record → llm → …).
+    const store = require('./store');
+    const { runBrain } = require('./llm');
+    const settings = store.readSettings();
+    const provider = settings.defaultProvider;
+    const cfg = settings.providers?.[provider];
+    if (provider && provider !== 'demo' && cfg?.apiKey) {
+      const { text, provider: used } = await runBrain({
+        settings,
+        brain: { mode: 'ai', provider },
+        tier: 'light',
+        system:
+          'Merge these task summaries into ONE digest of at most 8 bullet lines. ' +
+          'Group by theme, keep concrete names, dates, amounts and decisions, drop routine noise. ' +
+          'Answer in the dominant language of the input. Bullets only, no preamble.',
+        prompt: batch.map((e) => `- ${String(e.text).slice(0, 400)}`).join('\n'),
+      });
+      if (used !== 'demo') body = String(text || '').trim();
+    }
+  } catch {
+    /* fall through to heuristic */
+  }
+  if (!body) body = heuristicDigest(batch);
+  if (!body) return false;
+
+  // Re-read: appends may have happened while the LLM was running.
+  const ids = new Set(batch.map((e) => e.id));
+  const entries = list(agentId);
+  const digest = {
+    id: memId(),
+    kind: 'digest',
+    text: `Digest ${from} – ${to} (${batch.length} summaries):\n${body.slice(0, 1200)}`,
+    ts: Date.now(),
+  };
+  write(agentId, entries.filter((e) => !ids.has(e.id)).concat(digest));
+  return true;
+}
+
 module.exports = {
   list,
   append,
@@ -306,4 +387,5 @@ module.exports = {
   getRelevant,
   context,
   maybeCompressEpisodes,
+  maybeConsolidateSummaries,
 };

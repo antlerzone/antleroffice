@@ -5,6 +5,13 @@ contextBridge.exposeInMainWorld('antlerDesktop', {
   isElectron: true,
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   showItemInFolder: (filePath) => ipcRenderer.invoke('shell:showItemInFolder', filePath),
+  envCheck: (tool) => ipcRenderer.invoke('env:check', tool),
+  envInstall: (tool) => ipcRenderer.invoke('env:install', tool),
+  onEnvProgress: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('env:progress', handler);
+    return () => ipcRenderer.removeListener('env:progress', handler);
+  },
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   approveUpdate: () => ipcRenderer.invoke('updater:approve'),
   scheduleUpdate: (isoTime, preApproved = false) =>
