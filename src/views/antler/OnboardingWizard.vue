@@ -341,7 +341,7 @@ const goalOptions = computed(() => [
   { value: 'sales',             label: t('onboarding.goals.options.sales.label'),            sub: t('onboarding.goals.options.sales.sub'),            npc: 'sales_senior' },
   { value: 'customer_service',  label: t('onboarding.goals.options.customer_service.label'), sub: t('onboarding.goals.options.customer_service.sub'), npc: 'customer_service_senior' },
   { value: 'admin',             label: t('onboarding.goals.options.admin.label'),            sub: t('onboarding.goals.options.admin.sub'),            npc: 'admin_manager' },
-  { value: 'dev',               label: t('onboarding.goals.options.dev.label'),              sub: t('onboarding.goals.options.dev.sub'),              npc: 'it_guys' },
+  { value: 'dev',               label: t('onboarding.goals.options.dev.label'),              sub: t('onboarding.goals.options.dev.sub'),              npc: 'it_allrounder' },
   { value: 'hr',                label: t('onboarding.goals.options.hr.label'),               sub: t('onboarding.goals.options.hr.sub'),               npc: 'human_resource' },
 ])
 

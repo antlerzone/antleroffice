@@ -64,7 +64,7 @@ const HIRE_TEMPLATE_BY_ROLE = {
   sales: 'sales_senior',
   business_development: 'business_development_manager',
   human_resource: 'human_resource',
-  it: 'cursor_developer',
+  it: 'it_allrounder',
 };
 
 function normalizePlanRoleLabel(label) {
