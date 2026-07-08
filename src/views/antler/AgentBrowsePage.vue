@@ -1415,36 +1415,52 @@ onUnmounted(() => {
           :key="group.category || 'all'"
           class="npc-market-card npc-bundle-card"
         >
-          <div class="npc-market-body">
-            <span class="npc-market-dept-pill npc-bundle-pill">{{ group.label }}</span>
-            <h3 class="npc-market-name">{{ group.label }} Department</h3>
-            <div class="npc-market-tagline">
-              <span class="npc-market-tagline-icon">◆</span>
-              {{ group.templates.length }} worker{{ group.templates.length === 1 ? '' : 's' }} — hire the whole team at once
-            </div>
-            <div class="npc-market-info">
-              <ul class="npc-market-features">
-                <li v-for="m in group.templates" :key="m.id">
-                  <span class="npc-market-check">✓</span>{{ m.name }}
-                  <span class="npc-bundle-member-price">{{ m.salaryCreditsPerMonth ?? 0 }} {{ m.currency || 'credits' }}</span>
-                </li>
-              </ul>
-              <div class="npc-market-price npc-bundle-total">
-                <div class="npc-market-price-icon">◎</div>
-                <div class="npc-market-price-text">
-                  <strong>{{ bundleTotalCredits(group.templates) }}</strong>
-                  <span>credits / month total</span>
-                </div>
+          <div class="npc-bundle-head">
+            <div class="npc-bundle-avatars">
+              <div
+                v-for="m in group.templates"
+                :key="m.id"
+                class="npc-bundle-avatar"
+                :title="m.name"
+              >
+                <canvas
+                  :width="SKIN_CANVAS_SIZE"
+                  :height="SKIN_CANVAS_SIZE"
+                  :data-palette="templatePreviewSkin(m).palette"
+                  :data-hue="templatePreviewSkin(m).hueShift"
+                  role="img"
+                  :aria-label="`${m.name} preview`"
+                />
               </div>
             </div>
-            <div class="npc-market-actions">
+          </div>
+          <div class="npc-bundle-body">
+            <span class="npc-market-dept-pill npc-bundle-pill">{{ group.label }}</span>
+            <h3 class="npc-market-name">{{ group.label }} Department</h3>
+            <div class="npc-bundle-sub">
+              {{ group.templates.length }} worker{{ group.templates.length === 1 ? '' : 's' }} · hire the whole team at once
+            </div>
+            <ul class="npc-bundle-members">
+              <li v-for="m in group.templates" :key="m.id">
+                <span class="npc-bundle-member-name">
+                  <span class="npc-market-check">✓</span>{{ m.name }}
+                  <span v-if="m.hired" class="npc-bundle-owned">on team</span>
+                </span>
+                <span class="npc-bundle-member-price">{{ m.salaryCreditsPerMonth ?? 0 }} {{ m.currency || 'credits' }}</span>
+              </li>
+            </ul>
+            <div class="npc-bundle-foot">
+              <div class="npc-bundle-total">
+                <strong>{{ bundleTotalCredits(group.templates) }}</strong>
+                <span>credits / month total</span>
+              </div>
               <button
                 type="button"
-                class="btn npc-market-hire"
+                class="btn npc-market-hire npc-bundle-hire"
                 :disabled="bundleHiring === group.category"
                 @click="hireBundle(group)"
               >
-                {{ bundleHiring === group.category ? 'Hiring…' : `▣ Hire ${group.label} department` }}
+                {{ bundleHiring === group.category ? 'Hiring…' : `Hire all ${group.templates.length}` }}
               </button>
             </div>
           </div>
@@ -1857,26 +1873,102 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.npc-bundle-card .npc-market-body {
-  padding-top: 16px;
+.npc-bundle-card {
+  display: flex;
+  flex-direction: column;
+}
+.npc-bundle-head {
+  padding: 14px 16px 0;
+}
+.npc-bundle-avatars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.npc-bundle-avatar {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  background: rgba(120, 180, 140, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.npc-bundle-avatar canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+.npc-bundle-body {
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 .npc-bundle-pill {
   position: static;
   display: inline-block;
+  align-self: flex-start;
   margin-bottom: 6px;
 }
-.npc-bundle-member-price {
-  margin-left: auto;
-  opacity: 0.7;
+.npc-bundle-sub {
   font-size: 12px;
+  opacity: 0.65;
+  margin-bottom: 10px;
 }
-.npc-bundle-card .npc-market-features li {
+.npc-bundle-members {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
   display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.npc-bundle-members li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.npc-bundle-member-name {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.npc-bundle-total {
-  margin-top: 10px;
+.npc-bundle-owned {
+  font-size: 10px;
+  opacity: 0.6;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 0 5px;
+}
+.npc-bundle-member-price {
+  opacity: 0.6;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.npc-bundle-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+}
+.npc-bundle-total strong {
+  font-size: 22px;
+  line-height: 1;
+}
+.npc-bundle-total span {
+  display: block;
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+.npc-bundle-hire {
+  white-space: nowrap;
 }
 .view-title {
   margin: 0 0 8px;
