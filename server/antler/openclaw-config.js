@@ -379,12 +379,35 @@ async function removeGatewayScheduledTask() {
 
 async function gatewayStartHidden() {
   logAction('spawn gateway (hidden background)');
-  // Run the exact command that works when typed by hand —
-  // `openclaw gateway --port 18789` — just detached with no visible console,
-  // so the user never has to open a terminal. spawnHiddenDetached goes through
-  // `cmd.exe /c`, which resolves the `openclaw` .cmd shim on PATH. This is the
-  // proven-reliable path; the earlier `gateway run` / hidden-VBS variants often
-  // failed to bind :18789, leaving the gateway offline.
+  // Windows: a plain `detached` cmd.exe spawns a VISIBLE console window. The
+  // reliable way to run truly hidden in the background is a tiny VBS shim —
+  // WScript.Shell.Run(cmd, 0, False): 0 = hidden window, False = don't wait.
+  // It runs the exact proven command (`openclaw gateway --port 18789`) with no
+  // console, and the gateway keeps running after the shim exits.
+  if (process.platform === 'win32') {
+    try {
+      const { spawn } = require('node:child_process');
+      const stateDir = path.join(os.homedir(), '.openclaw');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const vbsPath = path.join(stateDir, 'gateway-hidden.vbs');
+      const cli = String(openclawCmd()).replace(/"/g, '""');
+      const vbs = [
+        'Set sh = CreateObject("WScript.Shell")',
+        `sh.Run "cmd /c ""${cli}"" gateway --port 18789", 0, False`,
+        '',
+      ].join('\r\n');
+      fs.writeFileSync(vbsPath, vbs, 'utf8');
+      const child = spawn('wscript.exe', ['//B', '//Nologo', vbsPath], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+      return;
+    } catch {
+      /* fall through to plain spawn */
+    }
+  }
   spawnHiddenDetached(openclawCmd(), ['gateway', '--port', '18789']);
 }
 
