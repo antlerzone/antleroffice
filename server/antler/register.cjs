@@ -22,6 +22,7 @@ const openclaw = require('./openclaw-config');
 const debugLog = require('./debug-log');
 const portalDesktops = require('./portal-desktops.cjs');
 const desktopRelay = require('./desktop-relay-client.cjs');
+const inboundGateway = require('./inbound-gateway.cjs');
 const appUpdater = require('./app-updater.cjs');
 const billing = require('./billing');
 const payroll = require('./payroll');
@@ -339,7 +340,13 @@ function registerAntlerRoutes(app, hooks = {}) {
           }));
         desktopRelay.startFromBossSession(s);
         await desktopRelay.waitForRelay(3000);
-        const relayUrl = desktopRelay.getPublicGatewayUrl();
+        // Phase 2 / A1: if a public gateway is configured, prefer a DIRECT
+        // connection (data does not go through ECS). Falls back to the ECS
+        // relay when no public host/port is set — so this is opt-in and
+        // non-breaking for users who have not exposed their gateway.
+        inboundGateway.start();
+        const directUrl = inboundGateway.publicGatewayUrl();
+        const relayUrl = directUrl || desktopRelay.getPublicGatewayUrl();
         const pkgVersion = require('../../package.json').version;
         const ecsResult = await ecsSubscriptions.payrollHeartbeat({
           ecsToken: s.ecsAccessToken,

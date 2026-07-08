@@ -195,6 +195,13 @@ function registerPortalDesktopRoutes(app, hooks = {}) {
         activeDesktopId = desktopId;
         officeId = desk.officeId || desk.office_id || officeId;
         if (!wsUrl) return res.status(400).json({ ok: false, error: 'Gateway URL not registered for this desktop' });
+        // Phase 2 / A1: direct connection to the owner's public gateway —
+        // present OUR per-share token so their inbound gateway can authorize us.
+        // ECS relay URLs contain "/relay/desktop/" and keep the legacy auth path.
+        const shareToken = data.share?.accessToken || data.share?.access_token || '';
+        if (shareToken && !/\/relay\/desktop\//.test(wsUrl)) {
+          wsUrl = `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(shareToken)}`;
+        }
       }
 
       if (typeof reconnectGateway === 'function') {
