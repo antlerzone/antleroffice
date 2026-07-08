@@ -379,16 +379,13 @@ async function removeGatewayScheduledTask() {
 
 async function gatewayStartHidden() {
   logAction('spawn gateway (hidden background)');
-  await patchGatewayCmdHidden();
-  const cmdPath = path.join(os.homedir(), '.openclaw', 'gateway.cmd');
-  if (process.platform === 'win32' && fs.existsSync(cmdPath)) {
-    spawnHiddenDetached('cmd.exe', ['/c', cmdPath]);
-    return;
-  }
-  const entry = openclawGatewayEntry();
-  const nodeExe = resolveNodeExe();
-  if (entry) spawnNodeHidden(nodeExe, entry, ['gateway', '--port', '18789']);
-  else spawnHiddenDetached(openclawCmd(), ['gateway', 'run']);
+  // Run the exact command that works when typed by hand —
+  // `openclaw gateway --port 18789` — just detached with no visible console,
+  // so the user never has to open a terminal. spawnHiddenDetached goes through
+  // `cmd.exe /c`, which resolves the `openclaw` .cmd shim on PATH. This is the
+  // proven-reliable path; the earlier `gateway run` / hidden-VBS variants often
+  // failed to bind :18789, leaving the gateway offline.
+  spawnHiddenDetached(openclawCmd(), ['gateway', '--port', '18789']);
 }
 
 async function waitForGatewayProbe({ attempts = 8, delayMs = 1500 } = {}) {
