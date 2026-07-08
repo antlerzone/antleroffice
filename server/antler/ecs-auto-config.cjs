@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const PROD_ECS_DEFAULTS = {
-  ECS_BASE_URL: 'https://api.antlerzone.com',
+  ECS_BASE_URL: 'https://office.antlerzone.com',
   ECS_AUTH_URL: 'https://office.antlerzone.com',
   VITE_OFFICE_WEB_URL: 'https://office.antlerzone.com',
 };
@@ -74,16 +74,40 @@ function ensurePackagedEcsEnv(envPath) {
     }
   }
 
+  // Heal stale ECS endpoints in packaged apps. Older installs wrote
+  // ECS_BASE_URL=api.antlerzone.com (a dead host); on update we must FORCE the
+  // current PROD endpoints, otherwise the app connects to nothing and silently
+  // falls back to the empty local catalog (Disconnected + no NPCs).
+  if (packaged) {
+    for (const [key, value] of Object.entries(PROD_ECS_DEFAULTS)) {
+      if (merged[key] !== value) {
+        merged[key] = value;
+        changed = true;
+      }
+    }
+  }
+
+  // ALWAYS load the merged values into process.env — even when the .env file
+  // is already up to date. (Previously this only ran on first write, so every
+  // later launch of the packaged app started with no ECS_BASE_URL and fell
+  // back to the empty local catalog.)
+  for (const [key, value] of Object.entries(merged)) {
+    if (!process.env[key]) process.env[key] = value;
+  }
+  // Force the healed PROD endpoints into process.env even if a stale value was
+  // inherited from the parent environment.
+  if (packaged) {
+    for (const [key, value] of Object.entries(PROD_ECS_DEFAULTS)) {
+      process.env[key] = value;
+    }
+  }
+
   if (!changed) {
     return { updated: false, packaged, reason: 'already-configured' };
   }
 
   fs.mkdirSync(path.dirname(envPath), { recursive: true });
   fs.writeFileSync(envPath, stringifyEnvFile(merged), 'utf8');
-
-  for (const [key, value] of Object.entries(merged)) {
-    if (!process.env[key]) process.env[key] = value;
-  }
 
   return { updated: true, packaged, keys: Object.keys(fill).filter((k) => merged[k]) };
 }

@@ -455,9 +455,54 @@ const gridGroups = computed(() => {
 
 function setBrowseSection(section: BrowseSection) {
   browseSection.value = section
-  if (section === 'leadership') categoryFilter.value = ''
+  // Department shows grouped bundles across every category, so it has no
+  // per-category sub-tabs — always clear the category filter when entering it.
+  if (section === 'leadership' || section === 'department') categoryFilter.value = ''
   saveFilterPrefs()
   void mountPreviews()
+}
+
+function bundleTotalCredits(list: Template[]) {
+  return list.reduce((sum, m) => sum + (m.salaryCreditsPerMonth ?? 0), 0)
+}
+
+const bundleHiring = ref<string>('')
+
+// Hire an entire department bundle — every member NPC at once.
+async function hireBundle(group: { category: string; label: string; templates: Template[] }) {
+  if (bundleHiring.value) return
+  const toHire = group.templates.filter((m) => !m.hired)
+  if (!toHire.length) {
+    message.info(`${group.label} department is already on your team`)
+    return
+  }
+  bundleHiring.value = group.category
+  const loading = message.loading(`Hiring ${group.label} department…`, { duration: 0 })
+  let ok = 0
+  let failed = 0
+  try {
+    for (const m of toHire) {
+      try {
+        const r = await api.send<{ ok: boolean; creditBalance?: number; error?: string }>(
+          'POST',
+          '/api/config/agents/hire',
+          { templateId: m.id, name: m.name, billingInterval: m.billingInterval || 'monthly' },
+        )
+        if (boss.session && r.creditBalance !== undefined) boss.session.creditBalance = r.creditBalance
+        if (r.ok) ok++
+        else failed++
+      } catch {
+        failed++
+      }
+    }
+    await load()
+    emit('hired')
+    if (failed) message.warning(`${group.label}: hired ${ok}, ${failed} failed`)
+    else message.success(`${group.label} department hired — ${ok} worker${ok === 1 ? '' : 's'}`)
+  } finally {
+    loading.destroy()
+    bundleHiring.value = ''
+  }
 }
 
 function setCategoryFilter(next: CatalogCategory | '') {
@@ -1096,7 +1141,7 @@ onUnmounted(() => {
     <p class="hint agent-browse-section-hint">{{ activeBrowseSection?.hint }}</p>
 
     <div
-      v-if="browseSection !== 'leadership'"
+      v-if="browseSection !== 'leadership' && browseSection !== 'department'"
       class="seg agent-browse-category-seg"
       role="tablist"
       aria-label="Department category"
@@ -1362,6 +1407,48 @@ onUnmounted(() => {
             per page
           </label>
         </div>
+      </template>
+
+      <template v-else-if="viewMode === 'grid' && browseSection === 'department' && filtered.length">
+        <article
+          v-for="group in gridGroups"
+          :key="group.category || 'all'"
+          class="npc-market-card npc-bundle-card"
+        >
+          <div class="npc-market-body">
+            <span class="npc-market-dept-pill npc-bundle-pill">{{ group.label }}</span>
+            <h3 class="npc-market-name">{{ group.label }} Department</h3>
+            <div class="npc-market-tagline">
+              <span class="npc-market-tagline-icon">◆</span>
+              {{ group.templates.length }} worker{{ group.templates.length === 1 ? '' : 's' }} — hire the whole team at once
+            </div>
+            <div class="npc-market-info">
+              <ul class="npc-market-features">
+                <li v-for="m in group.templates" :key="m.id">
+                  <span class="npc-market-check">✓</span>{{ m.name }}
+                  <span class="npc-bundle-member-price">{{ m.salaryCreditsPerMonth ?? 0 }} {{ m.currency || 'credits' }}</span>
+                </li>
+              </ul>
+              <div class="npc-market-price npc-bundle-total">
+                <div class="npc-market-price-icon">◎</div>
+                <div class="npc-market-price-text">
+                  <strong>{{ bundleTotalCredits(group.templates) }}</strong>
+                  <span>credits / month total</span>
+                </div>
+              </div>
+            </div>
+            <div class="npc-market-actions">
+              <button
+                type="button"
+                class="btn npc-market-hire"
+                :disabled="bundleHiring === group.category"
+                @click="hireBundle(group)"
+              >
+                {{ bundleHiring === group.category ? 'Hiring…' : `▣ Hire ${group.label} department` }}
+              </button>
+            </div>
+          </div>
+        </article>
       </template>
 
       <template v-else-if="viewMode === 'grid' && filtered.length">
@@ -1770,6 +1857,27 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.npc-bundle-card .npc-market-body {
+  padding-top: 16px;
+}
+.npc-bundle-pill {
+  position: static;
+  display: inline-block;
+  margin-bottom: 6px;
+}
+.npc-bundle-member-price {
+  margin-left: auto;
+  opacity: 0.7;
+  font-size: 12px;
+}
+.npc-bundle-card .npc-market-features li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.npc-bundle-total {
+  margin-top: 10px;
+}
 .view-title {
   margin: 0 0 8px;
   font-size: 22px;
