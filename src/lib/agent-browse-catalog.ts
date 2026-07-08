@@ -37,24 +37,19 @@ export type BrowseTemplate = {
 
 export const BROWSE_SECTIONS: { id: BrowseSection; label: string; hint: string }[] = [
   {
-    id: 'department',
-    label: 'Departments',
-    hint: 'Full department bundles — operations, creative, growth, and more.',
+    id: 'all',
+    label: 'All',
+    hint: 'Every hireable NPC in the catalog.',
   },
   {
-    id: 'leadership',
-    label: 'Leadership',
-    hint: 'Executive advisors and strategic operators.',
+    id: 'department',
+    label: 'Department',
+    hint: 'Full department bundles — hire a whole team at once.',
   },
   {
     id: 'vip',
     label: 'VIP Workers',
-    hint: 'Included free — Coliving, AntlerChat, AntlerHub, and partner tools.',
-  },
-  {
-    id: 'all',
-    label: 'All',
-    hint: 'Every hireable NPC in the catalog.',
+    hint: 'Included free — admin only.',
   },
 ]
 

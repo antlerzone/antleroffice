@@ -8,6 +8,7 @@ import { NModal, NButton, NInput, NCheckbox, NSpace, useMessage, useDialog } fro
 import { useAntlerApi } from '@/composables/useAntlerApi'
 import { useBossStore } from '@/stores/boss'
 import { useOfficeShareStore } from '@/stores/officeShare'
+import { useEcsSessionStore } from '@/stores/ecsSession'
 import {
   loadCharacterImages,
   registerPreview,
@@ -120,6 +121,7 @@ const LIST_PAGE_SIZES = [10, 20, 50, 100, 200] as const
 const api = useAntlerApi()
 const boss = useBossStore()
 const officeShare = useOfficeShareStore()
+const ecsSession = useEcsSessionStore()
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
@@ -134,7 +136,17 @@ const viewMode = ref<'grid' | 'list'>(
 )
 
 const search = ref('')
-const browseSection = ref<BrowseSection>('department')
+const browseSection = ref<BrowseSection>('all')
+// VIP Workers tab is only visible to SaaS admins.
+const visibleSections = computed(() =>
+  BROWSE_SECTIONS.filter((s) => s.id !== 'vip' || !!ecsSession.session?.isSaasAdmin),
+)
+watch(
+  () => ecsSession.session?.isSaasAdmin,
+  (admin) => {
+    if (!admin && browseSection.value === 'vip') browseSection.value = 'all'
+  },
+)
 const categoryFilter = ref<CatalogCategory | ''>('')
 // Category tabs — start with the built-in fallback, replaced by the server list
 // once load() fetches /api/config/agents/categories.
@@ -255,9 +267,8 @@ function loadFilterPrefs() {
     if (typeof saved.search === 'string') search.value = saved.search
     if (
       saved.browseSection === 'department'
-      || saved.browseSection === 'leadership'
-      || saved.browseSection === 'vip'
       || saved.browseSection === 'all'
+      || (saved.browseSection === 'vip' && !!ecsSession.session?.isSaasAdmin)
     ) {
       browseSection.value = saved.browseSection
     }
@@ -457,7 +468,7 @@ function setCategoryFilter(next: CatalogCategory | '') {
 
 function clearFilters() {
   search.value = ''
-  browseSection.value = 'department'
+  browseSection.value = 'all'
   categoryFilter.value = ''
   status.value = ''
   role.value = ''
@@ -1072,7 +1083,7 @@ onUnmounted(() => {
 
     <div class="tabs agent-browse-section-tabs" role="tablist">
       <button
-        v-for="section in BROWSE_SECTIONS"
+        v-for="section in visibleSections"
         :key="section.id"
         type="button"
         class="tab"
