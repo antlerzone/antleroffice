@@ -31,6 +31,7 @@ export function useLocalGateway() {
   let connectAttempted = false
   let backgroundStarted = false
   let stopWsWatch: (() => void) | null = null
+  let starting = false
 
   function applyLiveFromWs() {
     if (wsStore.state === ConnectionState.CONNECTED) {
@@ -78,13 +79,18 @@ export function useLocalGateway() {
   }
 
   async function tryStartGateway() {
-    if (!openclawAvailable.value || live.value) return
+    if (starting || !openclawAvailable.value || live.value) return
+    starting = true
     try {
-      await fetchJson('/api/gateway/start', { method: 'POST' }, 8000)
+      // Server-side gatewayStart spawns OpenClaw then waits up to ~30s for it
+      // to answer, so give the request room instead of aborting at 8s.
+      await fetchJson('/api/gateway/start', { method: 'POST' }, 35000)
       await new Promise((resolve) => setTimeout(resolve, GATEWAY_START_WAIT_MS))
-      await refresh({ markChecking: false })
     } catch {
-      /* gateway may still be starting or misconfigured */
+      /* gateway may still be booting — the offline poll will retry */
+    } finally {
+      await refresh({ markChecking: false })
+      starting = false
     }
   }
 
@@ -95,7 +101,11 @@ export function useLocalGateway() {
         stopPolling()
         return
       }
-      void refresh({ markChecking: false })
+      // Keep RETRYING to auto-start the gateway (not just polling its status),
+      // so a slow/missed first attempt doesn't leave it offline forever —
+      // the user should never have to launch OpenClaw by hand.
+      if (openclawAvailable.value && !starting) void tryStartGateway()
+      else void refresh({ markChecking: false })
     }, OFFLINE_POLL_MS)
   }
 
