@@ -39,6 +39,8 @@
     "@xterm/xterm": "^6.0.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
+    "archiver-utils": "^5.0.2",
+    "defaults": "^1.0.4",
     "better-sqlite3": "^12.9.0",
     "check-disk-space": "^3.4.0",
     "cors": "^2.8.6",
