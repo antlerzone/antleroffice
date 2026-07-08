@@ -120,11 +120,13 @@ function applyLocalPricingOverlay(templates) {
 }
 
 function normalizeCategory(value) {
+  // Server-driven categories: accept ANY non-empty id (e.g. "it", "finance",
+  // "marketing", "design", "customer_services"). The category tabs come from
+  // ECS (data/categories.json), so we must not clamp to a stale allow-list.
   const raw = String(value || '')
     .trim()
     .toLowerCase();
-  const allowed = ['operations', 'customer', 'creative', 'growth', 'digital', 'executive'];
-  return allowed.includes(raw) ? raw : 'operations';
+  return raw || 'operations';
 }
 
 function inferCategory(template = {}) {
