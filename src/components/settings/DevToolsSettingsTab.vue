@@ -65,7 +65,7 @@ const reviewerAgentIds = ref<string[]>([])
 
 const writerOptions = computed(() =>
   devAgents.value
-    .filter((a) => a.devScope.canWrite)
+    .filter(() => true)
     .map((a) => ({ label: `${a.name} (${a.devEngine})`, value: a.id })),
 )
 
@@ -328,13 +328,17 @@ onMounted(() => {
         </div>
 
         <NForm label-placement="top" style="max-width: 560px">
-          <NFormItem label="Cursor API key" :show-feedback="false">
+          <p class="hint sm" style="margin: 0 0 8px">
+            Provider API keys live in <strong>Models → Quick provider setup</strong>. The dev CLIs
+            pick them up automatically — no need to re-enter them here.
+          </p>
+          <NFormItem v-if="false" label="Cursor API key" :show-feedback="false">
             <NInput v-model:value="cursorApiKey" type="password" show-password-on="click" :placeholder="cursorApiKeySet ? cursorApiKeyMasked : 'cursor.com/dashboard'" />
           </NFormItem>
-          <NFormItem label="Claude API key" :show-feedback="false">
+          <NFormItem v-if="false" label="Claude API key" :show-feedback="false">
             <NInput v-model:value="claudeApiKey" type="password" show-password-on="click" :placeholder="claudeApiKeySet ? claudeApiKeyMasked : 'console.anthropic.com'" />
           </NFormItem>
-          <NFormItem label="Codex / OpenAI API key" :show-feedback="false">
+          <NFormItem v-if="false" label="Codex / OpenAI API key" :show-feedback="false">
             <NInput v-model:value="codexApiKey" type="password" show-password-on="click" :placeholder="codexApiKeySet ? codexApiKeyMasked : 'platform.openai.com/api-keys'" />
           </NFormItem>
           <NFormItem label="Project path override (optional)" :show-feedback="false">
