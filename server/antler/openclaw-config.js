@@ -574,7 +574,10 @@ async function listAgents() {
 
 async function setConfig(dotPath, jsonValue) {
   if (!(await isAvailable())) return { ok: false, available: false };
-  const r = await exec(['config', 'set', dotPath, JSON.stringify(jsonValue), '--strict-json', '--merge']);
+  // NOTE: OpenClaw 2026.3.x removed `--merge` ("unknown option '--merge'").
+  // Callers already read-modify-write the full value (e.g. agents.list), so a
+  // plain set is correct — do NOT re-add --merge.
+  const r = await exec(['config', 'set', dotPath, JSON.stringify(jsonValue), '--strict-json']);
   return { ok: r.ok, available: true, error: r.ok ? undefined : r.stderr || r.error };
 }
 

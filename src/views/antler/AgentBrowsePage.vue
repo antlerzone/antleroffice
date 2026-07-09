@@ -265,11 +265,7 @@ function loadFilterPrefs() {
   try {
     const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}')
     if (typeof saved.search === 'string') search.value = saved.search
-    if (
-      saved.browseSection === 'department'
-      || saved.browseSection === 'all'
-      || (saved.browseSection === 'vip' && !!ecsSession.session?.isSaasAdmin)
-    ) {
+    if (saved.browseSection === 'department' || saved.browseSection === 'all') {
       browseSection.value = saved.browseSection
     }
     if (typeof saved.categoryFilter === 'string') categoryFilter.value = saved.categoryFilter as CatalogCategory | ''

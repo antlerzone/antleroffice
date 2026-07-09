@@ -46,11 +46,6 @@ export const BROWSE_SECTIONS: { id: BrowseSection; label: string; hint: string }
     label: 'Department',
     hint: 'Full department bundles — hire a whole team at once.',
   },
-  {
-    id: 'vip',
-    label: 'VIP Workers',
-    hint: 'Included free — admin only.',
-  },
 ]
 
 export const CATEGORY_TABS: { id: CatalogCategory | ''; label: string }[] = [
