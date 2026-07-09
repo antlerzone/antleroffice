@@ -66,13 +66,13 @@ const reviewerAgentIds = ref<string[]>([])
 const writerOptions = computed(() =>
   devAgents.value
     .filter(() => true)
-    .map((a) => ({ label: `${a.name} (${a.devEngine})`, value: a.id })),
+    .map((a) => ({ label: a.name, value: a.id })),
 )
 
 const reviewerOptions = computed(() =>
   devAgents.value
     .filter((a) => a.devScope.canReview)
-    .map((a) => ({ label: `${a.name} (${a.devEngine})`, value: a.id })),
+    .map((a) => ({ label: a.name, value: a.id })),
 )
 
 async function loadDevAgents() {
