@@ -167,7 +167,7 @@ const modelModalAgent = ref<UserAgent | null>(null)
 const modelRefInput = ref('')
 const modelBusy = ref(false)
 const modelError = ref('')
-const modelOptions = ref<{ label: string; value: string }[]>([])
+const modelOptions = ref<any[]>([])
 const resumeOpen = ref(false)
 const resumeAgent = ref<UserAgent | null>(null)
 const resumeBuiltinRole = ref<string | null>(null)
@@ -646,20 +646,56 @@ function userMenuOptions(agent: UserAgent): DropdownOption[] {
   return opts
 }
 
+function providerLabel(id: string) {
+  const map: Record<string, string> = {
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    google: 'Google Gemini',
+    'google-vertex': 'Google Vertex',
+    'google-gemini-cli': 'Gemini CLI',
+    groq: 'Groq',
+    mistral: 'Mistral',
+    openrouter: 'OpenRouter',
+    'amazon-bedrock': 'Amazon Bedrock',
+    'github-copilot': 'GitHub Copilot',
+    cerebras: 'Cerebras',
+    xai: 'xAI',
+    zai: 'Z.ai',
+    huggingface: 'Hugging Face',
+    minimax: 'MiniMax',
+    'vercel-ai-gateway': 'Vercel AI Gateway',
+  }
+  return map[id] || (id.charAt(0).toUpperCase() + id.slice(1))
+}
+
 async function loadModelOptions() {
+  // OpenClaw returns each model as { key: "provider/model", name, available, tags }.
+  // Build a grouped picker: an "Auto" option, then one group per provider that
+  // has a key configured (available === true). Adding a provider key later makes
+  // its group appear automatically.
+  const auto = { label: 'Auto — use gateway default', value: '' }
   try {
-    const r = await api.get<{ models?: { id?: string; ref?: string; model?: string; provider?: string }[] }>(
-      '/api/openclaw/models?all=1',
-    )
-    const opts: { label: string; value: string }[] = []
+    const r = await api.get<{
+      models?: { key?: string; name?: string; available?: boolean; tags?: string[] }[]
+    }>('/api/openclaw/models?all=1')
+    const groups = new Map<string, { label: string; value: string }[]>()
     for (const m of r.models || []) {
-      const ref = m.ref || m.id || (m.provider && m.model ? `${m.provider}/${m.model}` : m.model)
-      if (!ref) continue
-      opts.push({ label: ref, value: ref })
+      const key = m.key || ''
+      if (!key || m.available === false) continue // only keyed / usable models
+      const provider = key.includes('/') ? key.split('/')[0] : 'other'
+      const isDefault = Array.isArray(m.tags) && m.tags.includes('default')
+      const label = `${m.name || key}${isDefault ? ' · default' : ''}`
+      const list = groups.get(provider) || []
+      list.push({ label, value: key })
+      groups.set(provider, list)
+    }
+    const opts: any[] = [auto]
+    for (const [provider, children] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      opts.push({ type: 'group', label: providerLabel(provider), key: `grp-${provider}`, children })
     }
     modelOptions.value = opts
   } catch {
-    modelOptions.value = []
+    modelOptions.value = [auto]
   }
 }
 
@@ -1512,7 +1548,10 @@ onUnmounted(() => stopSkinPreviews())
       :title="modelModalAgent ? `Set model — ${modelModalAgent.name}` : 'Set model'"
       style="max-width: 480px"
     >
-      <p class="hint">OpenClaw model ref for this worker (e.g. openai/gpt-4o-mini).</p>
+      <p class="hint">
+        Pick a model for this worker, or <strong>Auto</strong> to use the gateway default.
+        Only providers you&apos;ve added a key for appear here. You can also type a custom ref.
+      </p>
       <NSelect
         v-model:value="modelRefInput"
         filterable
