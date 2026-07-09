@@ -1745,7 +1745,7 @@ onUnmounted(() => {
         <NInput v-model:value="hireName" style="margin: 8px 0 12px" />
         <template v-if="isDevTemplate(hireTemplate)">
           <template v-if="hireEngineOptions.length">
-            <label class="channels-filter-label">写代码引擎</label>
+            <label class="channels-filter-label">Coding engine</label>
             <NSpace style="margin: 8px 0 6px">
               <NButton
                 v-for="eng in hireEngineOptions"
@@ -1758,8 +1758,10 @@ onUnmounted(() => {
               </NButton>
             </NSpace>
             <p class="hint sm" style="margin-top: 0">
-              聘用后会请您填入 <strong>{{ DEV_ENGINE_LABELS[hireDevEngine] || hireDevEngine }}</strong> 的 API Key。
-              没填的话这位员工暂时无法写代码，之后可在 Settings → Dev tools 补上。
+              After hiring you&apos;ll be asked for your
+              <strong>{{ DEV_ENGINE_LABELS[hireDevEngine] || hireDevEngine }}</strong> API key.
+              Without it this worker can&apos;t write code yet — you can add it later in
+              Settings → Dev tools.
             </p>
           </template>
           <label class="channels-filter-label">Job scope</label>

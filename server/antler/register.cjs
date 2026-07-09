@@ -2717,6 +2717,13 @@ function registerAntlerRoutes(app, hooks = {}) {
   });
   function redactDevSettings(dev = {}) {
     const out = { ...dev };
+    const mask = (v) => {
+      const s = String(v || '').trim();
+      return s ? `••••••••${s.slice(-4)}` : '';
+    };
+    out.cursorApiKeyMasked = mask(out.cursorApiKey);
+    out.codexApiKeyMasked = mask(out.codexApiKey);
+    out.claudeApiKeyMasked = mask(out.claudeApiKey);
     out.cursorApiKeySet = Boolean(String(out.cursorApiKey || '').trim());
     out.codexApiKeySet = Boolean(String(out.codexApiKey || '').trim());
     out.claudeApiKeySet = Boolean(String(out.claudeApiKey || '').trim());

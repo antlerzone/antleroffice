@@ -8,6 +8,12 @@ const DEV_TEMPLATE_IDS = new Set([
   'claude_developer',
   'codex_developer',
   'it_guys',
+  'it_allrounder',
+  'it_reviewer',
+  'cto',
+  'it_engineer_dept',
+  'it_reviewer_dept',
+  'cto_dept',
 ]);
 
 const DEV_ENGINES = new Set(['cursor', 'claude', 'codex']);
