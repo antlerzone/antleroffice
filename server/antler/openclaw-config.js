@@ -779,8 +779,30 @@ async function agentsAdd({ name, model } = {}) {
   const r = await exec(args, { timeoutMs: 60000 });
   invalidate();
   const data = parseLooseJson(r.stdout || '') || {};
-  if (!data.agentId) return { ok: false, available: true, error: r.stderr || r.error || 'no agentId returned' };
-  return { ok: true, available: true, agentId: data.agentId, workspace: data.workspace, agentDir: data.agentDir };
+  // OpenClaw 2026.3.x reports the created agent under `id` (older builds used
+  // `agentId`). If neither is present — e.g. the agent already existed and the
+  // CLI returned an error — look it up by slug/name so we still LINK to the real
+  // OpenClaw agent instead of falling back to the "demo" runtime.
+  let agentId = data.agentId || data.id || null;
+  let workspaceOut = data.workspace || workspace;
+  let agentDir = data.agentDir || null;
+  if (!agentId) {
+    try {
+      const list = await agentsList();
+      const found = (list.agents || []).find(
+        (a) => a && (a.id === slug || a.name === name || a.id === name),
+      );
+      if (found) {
+        agentId = found.id;
+        workspaceOut = found.workspace || workspaceOut;
+        agentDir = found.agentDir || agentDir;
+      }
+    } catch {
+      /* ignore lookup failure */
+    }
+  }
+  if (!agentId) return { ok: false, available: true, error: r.stderr || r.error || 'no agentId returned' };
+  return { ok: true, available: true, agentId, workspace: workspaceOut, agentDir };
 }
 
 async function agentsList() {
