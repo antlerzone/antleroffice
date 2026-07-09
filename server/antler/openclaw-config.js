@@ -1766,11 +1766,18 @@ async function setAgentModelRef(agentId, modelRef) {
   const { config } = await getConfig();
   const list = Array.isArray(config?.agents?.list) ? [...config.agents.list] : [];
   const idx = list.findIndex((a) => a && (a.id === id || a.agentId === id));
-  const patch = { model: ref ? { primary: ref } : null };
+  // Auto = no per-agent override: REMOVE the model field (OpenClaw's config
+  // validator rejects `model: null` with "Invalid input"). A concrete ref is
+  // stored as { primary: ref }.
   if (idx >= 0) {
-    list[idx] = { ...list[idx], ...patch };
+    const next = { ...list[idx] };
+    if (ref) next.model = { primary: ref };
+    else delete next.model;
+    list[idx] = next;
+  } else if (ref) {
+    list.push({ id, model: { primary: ref } });
   } else {
-    list.push({ id, ...patch });
+    list.push({ id });
   }
   const r = await setConfig('agents.list', list);
   return { ok: r.ok, available: true, error: r.error };

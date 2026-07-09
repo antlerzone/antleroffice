@@ -670,28 +670,31 @@ function providerLabel(id: string) {
 
 async function loadModelOptions() {
   // OpenClaw returns each model as { key: "provider/model", name, available, tags }.
-  // Build a grouped picker: an "Auto" option, then one group per provider that
-  // has a key configured (available === true). Adding a provider key later makes
-  // its group appear automatically.
+  // Provider-level picker: "Auto" + ONE option per provider that has a key
+  // configured (available === true). The stored value is that provider's default
+  // model, so the worker gets a usable brain without the user choosing a version.
   const auto = { label: 'Auto — use gateway default', value: '' }
   try {
     const r = await api.get<{
       models?: { key?: string; name?: string; available?: boolean; tags?: string[] }[]
     }>('/api/openclaw/models?all=1')
-    const groups = new Map<string, { label: string; value: string }[]>()
+    const byProvider = new Map<string, { key?: string; name?: string; tags?: string[] }[]>()
     for (const m of r.models || []) {
       const key = m.key || ''
-      if (!key || m.available === false) continue // only keyed / usable models
+      if (!key || m.available === false) continue // only keyed / usable providers
       const provider = key.includes('/') ? key.split('/')[0] : 'other'
-      const isDefault = Array.isArray(m.tags) && m.tags.includes('default')
-      const label = `${m.name || key}${isDefault ? ' · default' : ''}`
-      const list = groups.get(provider) || []
-      list.push({ label, value: key })
-      groups.set(provider, list)
+      const list = byProvider.get(provider) || []
+      list.push(m)
+      byProvider.set(provider, list)
     }
     const opts: any[] = [auto]
-    for (const [provider, children] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      opts.push({ type: 'group', label: providerLabel(provider), key: `grp-${provider}`, children })
+    for (const [provider, models] of [...byProvider.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const def =
+        models.find((m) => (m.tags || []).includes('default')) ||
+        models.find((m) => (m.tags || []).includes('configured')) ||
+        models[0]
+      if (!def?.key) continue
+      opts.push({ label: `${providerLabel(provider)} — ${def.name || def.key}`, value: def.key })
     }
     modelOptions.value = opts
   } catch {
@@ -1549,8 +1552,8 @@ onUnmounted(() => stopSkinPreviews())
       style="max-width: 480px"
     >
       <p class="hint">
-        Pick a model for this worker, or <strong>Auto</strong> to use the gateway default.
-        Only providers you&apos;ve added a key for appear here. You can also type a custom ref.
+        Pick which AI provider powers this worker, or <strong>Auto</strong> for the gateway
+        default. Only providers you&apos;ve added a key for appear here.
       </p>
       <NSelect
         v-model:value="modelRefInput"
